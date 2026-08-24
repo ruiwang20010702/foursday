@@ -47,6 +47,8 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/foursday_test
       - run: npm run runtime:setup -- --apply
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run check:python
       - run: npm pack --dry-run
       - run: npm run reuse:verify

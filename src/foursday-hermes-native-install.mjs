@@ -109,6 +109,10 @@ export function officialHermesInstallerUrl(lock) {
   return `https://raw.githubusercontent.com/NousResearch/hermes-agent/${lock.commit}/${lock.installerPath}`;
 }
 
+export function officialHermesInstallerApiUrl(lock) {
+  return `https://api.github.com/repos/NousResearch/hermes-agent/contents/${lock.installerPath}?ref=${lock.commit}`;
+}
+
 export function buildFoursdayNativeInstallPlan({
   lock,
   layout,
@@ -526,9 +530,10 @@ function nativeEnvironment(layout) {
   };
 }
 
-async function downloadVerifiedInstaller(lock, {
+export async function downloadVerifiedInstaller(lock, {
   fetchImpl = fetch,
   fallbackPath = null,
+  environment = process.env,
 } = {}) {
   const url = officialHermesInstallerUrl(lock);
   let body;
@@ -537,8 +542,31 @@ async function downloadVerifiedInstaller(lock, {
     if (!response.ok) throw new Error("download failed");
     body = Buffer.from(await response.arrayBuffer());
   } catch {
-    if (!fallbackPath) throw new Error("Official Hermes installer download failed");
-    body = await readFile(fallbackPath);
+    try {
+      const token = String(environment.GITHUB_TOKEN ?? "").trim();
+      const response = await fetchImpl(officialHermesInstallerApiUrl(lock), {
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "foursday-installer",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!response.ok) throw new Error("API download failed");
+      const payload = await response.json();
+      if (
+        payload?.type !== "file" ||
+        payload?.encoding !== "base64" ||
+        typeof payload?.content !== "string" ||
+        payload.content.length > 4 * 1024 * 1024
+      ) throw new Error("API installer payload is invalid");
+      body = Buffer.from(payload.content.replaceAll(/\s/gu, ""), "base64");
+    } catch {
+      if (!fallbackPath) throw new Error("Official Hermes installer download failed");
+      body = await readFile(fallbackPath);
+    }
   }
   if (body.length < 10_000 || body.length > 2 * 1024 * 1024) {
     throw new Error("Official Hermes installer size is invalid");

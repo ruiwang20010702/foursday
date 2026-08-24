@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   buildFoursdayNativeInstallPlan,
   assertFoursdayEmbeddedRuntimeIdentity,
+  downloadVerifiedInstaller,
   finishFoursdayNativeProfileInstall,
   foursdayNativeHermesLayout,
   inspectFoursdaySourceCommit,
@@ -85,6 +86,34 @@ test("native Hermes plan uses only official Profile and Gateway surfaces", async
   assert.equal(plan.profile.gatewayInstallRequested, true);
   assert.equal(plan.messagesSent, 0);
   assert.equal(plan.productionWrite, false);
+});
+
+test("official installer falls back to authenticated GitHub contents with the same digest", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-installer-api-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const body = Buffer.from("#!/bin/sh\n" + "#".repeat(10_000));
+  const upstream = lock(body);
+  const calls = [];
+  const installer = await downloadVerifiedInstaller(upstream, {
+    environment: { GITHUB_TOKEN: "test-token" },
+    fetchImpl: async (url, options) => {
+      calls.push([url, options]);
+      if (String(url).startsWith("https://raw.githubusercontent.com/")) {
+        return new Response("rate limited", { status: 429 });
+      }
+      return new Response(JSON.stringify({
+        type: "file",
+        encoding: "base64",
+        content: body.toString("base64"),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  t.after(() => rm(installer.directory, { recursive: true, force: true }));
+  assert.deepEqual(await readFile(installer.path), body);
+  assert.equal(installer.digest, upstream.installerSha256);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1].headers.Authorization, "Bearer test-token");
+  assert.match(calls[1][0], /^https:\/\/api\.github\.com\/repos\/NousResearch\/hermes-agent\/contents\//u);
 });
 
 test("source commit identity requires a clean worktree without hidden index flags", async () => {
