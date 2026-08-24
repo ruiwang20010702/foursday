@@ -39,7 +39,9 @@ class FoursdayWorkTwinHookTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_pre_llm_hook_adds_only_hashed_session_identity(self):
-        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": str(self.path)}):
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": str(self.path)}), patch(
+            "agent.runtime_cwd.set_session_cwd"
+        ) as set_session_cwd:
             changed = _enrich_work_context(
                 user_message=f"work\n\n<!-- foursday-context:{self.token} -->",
                 session_id="hermes-session-1",
@@ -49,6 +51,7 @@ class FoursdayWorkTwinHookTests(unittest.TestCase):
                 now=1_000,
             )
         self.assertTrue(changed)
+        set_session_cwd.assert_called_once_with(str(self.root))
         context = json.loads(self.path.read_text(encoding="utf-8"))["contexts"][self.token]
         self.assertRegex(context["hermesSessionHash"], r"^[a-f0-9]{64}$")
         self.assertRegex(context["hermesTurnHash"], r"^[a-f0-9]{64}$")
@@ -103,7 +106,7 @@ class FoursdayWorkTwinHookTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "FOURSDAY_WORK_CONTEXT_FILE": str(self.path),
             "FOURSDAY_PROJECT_REGISTRY": str(registry),
-        }):
+        }), patch("agent.runtime_cwd.set_session_cwd") as set_session_cwd:
             result = _on_pre_llm_call(
                 user_message="Check the project.\n\n<!-- foursday-schedule:project -->",
                 session_id="cron-session",
@@ -112,6 +115,7 @@ class FoursdayWorkTwinHookTests(unittest.TestCase):
                 platform="cron",
             )
         self.assertRegex(result["context"], r"<!-- foursday-context:fctx_[a-f0-9]{64} -->")
+        set_session_cwd.assert_called_once_with(str(self.root))
         token = re.search(r"(fctx_[a-f0-9]{64})", result["context"]).group(1)
         context = json.loads(self.path.read_text(encoding="utf-8"))["contexts"][token]
         self.assertEqual(context["projectId"], "project")

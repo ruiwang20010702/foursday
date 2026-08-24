@@ -3,7 +3,11 @@ import { watch } from "node:fs";
 import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { DwsAdapter, isAutomatedSelfMessage } from "./dws.mjs";
+import {
+  DwsAdapter,
+  dwsMessageContentDigest,
+  isAutomatedSelfMessage,
+} from "./dws.mjs";
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
 import { isMainModule } from "./main-module.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
@@ -259,12 +263,22 @@ export async function createSidecarRuntime({
   ]));
   const sendLedger = new Map(Object.entries(state.sendLedger));
   const automatedSendEvidence = [...sendLedger.values()]
-    .filter((entry) => entry?.status === "completed" && entry.messageId)
+    .filter((entry) => entry && typeof entry === "object")
     .map((entry) => ({
       conversationId: entry.conversationId,
       startedAt: entry.startedAt,
-      receipt: { messageId: entry.messageId },
+      contentDigest: entry.contentDigest,
+      idempotencyKey: entry.idempotencyKey,
+      receipt: entry.messageId ? { messageId: entry.messageId } : undefined,
     }));
+  const rememberAutomatedSend = (evidence) => {
+    const index = automatedSendEvidence.findIndex((item) =>
+      item?.idempotencyKey === evidence?.idempotencyKey
+    );
+    if (index >= 0) automatedSendEvidence[index] = evidence;
+    else automatedSendEvidence.push(evidence);
+    if (automatedSendEvidence.length > 1_000) automatedSendEvidence.shift();
+  };
   const watchers = [];
   let fallbackTimer = null;
   let debounceTimer = null;
@@ -420,9 +434,27 @@ export async function createSidecarRuntime({
         const start = new Date(last == null
           ? end.getTime() - config.initialLookbackMs
           : Math.max(0, last - 5_000));
-        const messages = target.kind === "user"
-          ? await dws.fetchBySender({ senderUserId: target.id, start, end })
-          : await dws.fetchGroupMentions({ groupIds: [target.id], start, end });
+        let messages;
+        if (target.kind === "user" && target.id === config.selfUserId) {
+          const lookbackMs = Math.min(
+            24 * 60 * 60 * 1_000,
+            Math.max(60_000, end.getTime() - start.getTime()),
+          );
+          messages = (await dws.fetchDirect({
+            userId: target.id,
+            identityKind: "user_id",
+            before: end,
+            limit: 50,
+            lookbackMs,
+          })).filter((message) =>
+            (epoch(message.createTime) ?? 0) >= start.getTime() &&
+            !isAutomatedSelfMessage(message, automatedSendEvidence)
+          );
+        } else if (target.kind === "user") {
+          messages = await dws.fetchBySender({ senderUserId: target.id, start, end });
+        } else {
+          messages = await dws.fetchGroupMentions({ groupIds: [target.id], start, end });
+        }
         return { target, messages };
       }));
       const errors = [];
@@ -652,9 +684,16 @@ export async function createSidecarRuntime({
         };
       }
       const idempotencyKey = idempotencyUuid(sendKey);
-      const startedAt = new Date().toISOString();
-      const intent = { status: "sending", conversationId, startedAt, idempotencyKey };
+      const startedAt = now().toISOString();
+      const intent = {
+        status: "sending",
+        conversationId,
+        startedAt,
+        idempotencyKey,
+        contentDigest: dwsMessageContentDigest(payload?.content),
+      };
       sendLedger.set(sendKey, intent);
+      rememberAutomatedSend(intent);
       while (sendLedger.size > 1_000) sendLedger.delete(sendLedger.keys().next().value);
       state.sendLedger = Object.fromEntries(sendLedger);
       await persistState();
@@ -694,9 +733,10 @@ export async function createSidecarRuntime({
           text: String(payload?.content ?? ""),
           idempotencyKey,
         });
-        dws.verifySendReceipt(receipt);
       } catch {
-        sendLedger.set(sendKey, { ...intent, status: "unknown" });
+        const unknown = { ...intent, status: "unknown" };
+        sendLedger.set(sendKey, unknown);
+        rememberAutomatedSend(unknown);
         state.sendLedger = Object.fromEntries(sendLedger);
         await persistState();
         return {
@@ -706,17 +746,33 @@ export async function createSidecarRuntime({
         };
       }
       const evidence = {
-        conversationId,
+        ...intent,
         taskId: idempotencyKey,
-        idempotencyKey,
-        startedAt,
-        content: String(payload?.content ?? ""),
         receipt,
       };
+      let receiptError = null;
+      try {
+        dws.verifySendReceipt(receipt);
+      } catch (error) {
+        receiptError = error;
+      }
+      if (receiptError?.code === "dws_send_failed") {
+        const failed = { ...intent, status: "failed" };
+        sendLedger.set(sendKey, failed);
+        rememberAutomatedSend({ ...failed, receipt });
+        state.sendLedger = Object.fromEntries(sendLedger);
+        await persistState();
+        return {
+          success: false,
+          error: "DWS returned an explicit send failure",
+        };
+      }
       const serverMessageId = messageIdFromReceipt(receipt) ??
         await readBackSentMessage({ dws, route, conversationId, evidence });
       if (!serverMessageId) {
-        sendLedger.set(sendKey, { ...intent, status: "unknown" });
+        const unknown = { ...intent, status: "unknown" };
+        sendLedger.set(sendKey, unknown);
+        rememberAutomatedSend({ ...unknown, receipt });
         state.sendLedger = Object.fromEntries(sendLedger);
         await persistState();
         return {
@@ -725,15 +781,15 @@ export async function createSidecarRuntime({
           error: "DWS explicit receipt did not include a server message ID",
         };
       }
-      sendLedger.set(sendKey, {
+      const completed = {
         ...intent,
         status: "completed",
         messageId: serverMessageId,
-      });
+      };
+      sendLedger.set(sendKey, completed);
+      rememberAutomatedSend({ ...completed, receipt });
       state.sendLedger = Object.fromEntries(sendLedger);
       await persistState();
-      automatedSendEvidence.push(evidence);
-      if (automatedSendEvidence.length > 1_000) automatedSendEvidence.shift();
       return {
         success: true,
         messageId: serverMessageId,

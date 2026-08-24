@@ -68,6 +68,12 @@ _IRREVERSIBLE_COMMITMENT = re.compile(
     r"|\b(?:I|we)\s+(?:guarantee|commit|approve|agree)\b.{0,40}\b(?:pay|transfer|sign|hire|fire|salary|contract|irrevocable)\b",
     re.IGNORECASE,
 )
+_INTERNAL_GATEWAY_NOTICE = re.compile(
+    r"^(?:↪ Redirected current run|⚡ Interrupting current task"
+    r"|⏳ (?:Queued for the next turn|Subagent working|Compressing context)"
+    r"|⏩ Steered into current run)(?:\s|\(|[.—-])",
+    re.IGNORECASE,
+)
 
 
 def _digest(value: Any) -> str:
@@ -654,6 +660,12 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        if _INTERNAL_GATEWAY_NOTICE.search(str(content).strip()):
+            message_id = hashlib.sha256(str(content).encode("utf-8")).hexdigest()[:24]
+            return SendResult(
+                success=True,
+                message_id=f"suppressed-internal-{message_id}",
+            )
         if _OUTBOUND_SECRET.search(str(content)) or _IRREVERSIBLE_COMMITMENT.search(str(content)):
             return SendResult(
                 success=False,

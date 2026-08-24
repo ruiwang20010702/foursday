@@ -305,7 +305,12 @@ export function codexProcessEnvironment(source, realCodex, configuredCodex = rea
   if (typeof source.FOURSDAY_PYTHON_PATH === "string" && source.FOURSDAY_PYTHON_PATH !== "") {
     environment.PYTHON = source.FOURSDAY_PYTHON_PATH;
   }
-  environment.PATH = [dirname(configuredCodex), dirname(realCodex), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+  const managedNode = typeof source.FOURSDAY_NODE_PATH === "string" &&
+    isAbsolute(source.FOURSDAY_NODE_PATH)
+    ? dirname(source.FOURSDAY_NODE_PATH)
+    : null;
+  environment.PATH = [managedNode, dirname(configuredCodex), dirname(realCodex), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    .filter(Boolean)
     .filter((value, index, values) => values.indexOf(value) === index)
     .join(":");
   environment.CI = "1";

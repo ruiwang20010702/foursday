@@ -156,6 +156,7 @@ test("proxy gives Codex only runtime essentials and three MCP path bindings", ()
     FOURSDAY_PROJECT_REGISTRY: "/private/projects.json",
     FOURSDAY_WORK_CONTEXT_FILE: "/private/contexts.json",
     FOURSDAY_PYTHON_PATH: "/managed/python/bin/python3",
+    FOURSDAY_NODE_PATH: "/managed/node/bin/node",
     FOURSDAY_DINGTALK_USERS: "private-user-id",
     DWS_PERSONAL_ALLOWED_USERS: "private-user-id",
     GH_TOKEN: "secret",
@@ -164,6 +165,8 @@ test("proxy gives Codex only runtime essentials and three MCP path bindings", ()
   assert.equal(environment.HOME, "/home/foursday");
   assert.equal(environment.FOURSDAY_PROJECT_REGISTRY, "/private/projects.json");
   assert.equal(environment.PYTHON, "/managed/python/bin/python3");
+  assert.equal(environment.PATH.split(":")[0], "/managed/node/bin");
+  assert.equal(environment.FOURSDAY_NODE_PATH, undefined);
   assert.equal(environment.FOURSDAY_PYTHON_PATH, undefined);
   assert.equal(environment.FOURSDAY_DINGTALK_USERS, undefined);
   assert.equal(environment.DWS_PERSONAL_ALLOWED_USERS, undefined);

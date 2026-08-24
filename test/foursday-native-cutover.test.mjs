@@ -13,7 +13,7 @@ function acceptance(releaseSha, createdAt = "2026-08-20T00:00:00.000Z") {
     createdAt,
     scenarios: Object.fromEntries([
       "allowlistedMessage", "projectRoute", "personalMemory", "naturalReply", "followup",
-      "codeWork", "humanTakeover", "restartRecovery", "sendDisabled", "noDuplicate",
+      "codeWork", "ownerIntervention", "restartRecovery", "sendDisabled", "noDuplicate",
     ].map((name) => [name, true])),
   };
 }

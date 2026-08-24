@@ -119,6 +119,8 @@ class FakeDws {
     this.manualReply = false;
     this.withdrawn = false;
     this.receiptWithoutMessageId = false;
+    this.receiptUnknown = false;
+    this.transportFailure = false;
     this.readBackMessage = null;
     this.media = false;
     this.downloadFailures = 0;
@@ -147,12 +149,18 @@ class FakeDws {
 
   async sendMessage(input) {
     this.sent.push(input);
+    if (this.transportFailure) throw new Error("transport outcome unknown");
     return this.receiptWithoutMessageId
       ? { status: "SENT" }
       : { status: "SENT", messageId: "server-message-1" };
   }
 
   verifySendReceipt(receipt) {
+    if (this.receiptUnknown) {
+      const error = new Error("DWS send did not return an explicit success receipt");
+      error.code = "dws_send_receipt_unknown";
+      throw error;
+    }
     assert.equal(receipt.status, "SENT");
   }
 
@@ -184,6 +192,80 @@ class FakeDws {
     return { path };
   }
 }
+
+test("self allowlist reads only the dedicated direct conversation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-self-direct-"));
+  const frames = [];
+  const calls = [];
+  const dws = new FakeDws();
+  let includeAutomatedReply = false;
+  dws.fetchBySender = async ({ senderUserId }) => {
+    calls.push(["sender", senderUserId]);
+    return [];
+  };
+  dws.fetchDirect = async (input) => {
+    calls.push(["direct", input.userId, input.identityKind]);
+    const messages = [{
+      id: "self-message-1",
+      senderUserId: "owner-user",
+      senderName: "Owner",
+      conversationId: "self-conversation",
+      content: "self shadow check",
+      createTime: "2026-08-24T10:00:30+08:00",
+      isSelf: true,
+      isWithdrawn: false,
+      media: [],
+    }];
+    if (includeAutomatedReply) {
+      messages.push({
+        id: "automated-self-message",
+        senderUserId: "owner-user",
+        senderName: "Owner",
+        conversationId: "self-conversation",
+        content: "automated reply",
+        createTime: "2026-08-24T10:00:45+08:00",
+        isSelf: true,
+        isWithdrawn: false,
+        media: [],
+        raw: { aiTag: true },
+      });
+    }
+    return messages;
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["owner-user", "trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-24T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    assert.deepEqual(calls, [
+      ["direct", "owner-user", "user_id"],
+      ["sender", "trusted-user"],
+    ]);
+    assert.equal(frames.some((frame) =>
+      frame.record?.conversationId === "self-conversation"), true);
+    includeAutomatedReply = true;
+    const retry = await runtime.check({ deferEmit: true });
+    assert.equal(retry.some((frame) =>
+      frame.record?.id === "automated-self-message"), false);
+  } finally {
+    await runtime.stop();
+  }
+});
 
 test("failed media download does not consume the message before retry succeeds", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-media-retry-"));
@@ -743,4 +825,115 @@ test("Hermes DWS sidecar verifies a missing receipt id by exact DWS readback", a
   await runtime.stop();
   assert.equal(receipt.success, true);
   assert.equal(receipt.messageId, "readback-message-1");
+});
+
+test("Hermes DWS sidecar resolves an ambiguous receipt through exact readback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-ambiguous-readback-"));
+  const dws = new FakeDws();
+  dws.receiptUnknown = true;
+  dws.receiptWithoutMessageId = true;
+  dws.readBackMessage = {
+    id: "readback-message-ambiguous",
+    conversationId: "conversation-1",
+    createTime: "2026-08-18T14:01:01+08:00",
+    content: "完成了",
+    raw: {},
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    now: () => new Date("2026-08-18T14:01:00+08:00"),
+  });
+  await runtime.start();
+  const receipt = await runtime.send({
+    conversationId: "conversation-1",
+    content: "完成了",
+    ownerRevision: 0,
+    sendGeneration: 1,
+  });
+  await runtime.stop();
+  assert.equal(receipt.success, true);
+  assert.equal(receipt.messageId, "readback-message-ambiguous");
+  assert.equal(dws.sent.length, 1);
+});
+
+test("Hermes DWS sidecar filters its own message after an unknown transport outcome", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-unknown-self-loop-"));
+  const frames = [];
+  const dws = new FakeDws();
+  let phase = "inbound";
+  dws.fetchBySender = async () => [];
+  dws.fetchDirect = async () => phase === "inbound" ? [{
+    id: "owner-request",
+    senderUserId: "owner-user",
+    senderName: "Owner",
+    conversationId: "self-conversation",
+    content: "请核对状态",
+    createTime: "2026-08-24T10:00:30+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+    raw: {},
+  }] : [{
+    id: "ambiguous-ai-reply",
+    senderUserId: "owner-user",
+    senderName: "Owner",
+    conversationId: "self-conversation",
+    content: "已核对完成",
+    createTime: "2026-08-24T10:01:01+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+    raw: {},
+  }];
+  dws.transportFailure = true;
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["owner-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: true,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-24T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    const result = await runtime.send({
+      conversationId: "self-conversation",
+      content: "已核对完成",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(result.outcomeUnknown, true);
+    phase = "outbound";
+    const retry = await runtime.check({ deferEmit: true });
+    assert.equal(retry.some((frame) => frame.record?.id === "ambiguous-ai-reply"), false);
+    const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    const intent = Object.values(persisted.sendLedger)[0];
+    assert.match(intent.contentDigest, /^[a-f0-9]{64}$/u);
+    assert.equal(Object.hasOwn(intent, "content"), false);
+    assert.equal(Object.hasOwn(intent, "receipt"), false);
+  } finally {
+    await runtime.stop();
+  }
 });

@@ -7,6 +7,7 @@ import {
   assertSuccessfulSendReceipt,
   collectMessages,
   DwsAdapter,
+  dwsMessageContentDigest,
   extractDwsMediaDescriptors,
   isAutomatedSelfMessage,
 } from "../src/dws.mjs";
@@ -255,6 +256,17 @@ test("AI 标签、发送标识或同次发送内容不会冒充人工回复", ()
     ...evidence[0],
     content: "第一行\n第二行",
   }]), true);
+  assert.equal(isAutomatedSelfMessage({
+    id: "m5",
+    conversationId: "c1",
+    createTime: "2026-07-31T10:00:01Z",
+    content: "第一行 第二行",
+    raw: {},
+  }, [{
+    conversationId: "c1",
+    startedAt: "2026-07-31T10:00:00Z",
+    contentDigest: dwsMessageContentDigest("第一行\n第二行"),
+  }]), true);
 });
 
 test("发送者分页只保留单聊消息", async () => {
@@ -365,11 +377,13 @@ test("发送者查询拒绝响应中不匹配的身份", async () => {
   );
 });
 
-test("通讯录详情受策略限制时按显示名搜索并精确绑定双身份", async () => {
+test("通讯录详情受策略限制时经AI搜问精确绑定双身份", async () => {
   const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
   dws.run = async (args) => {
     if (args[2] === "get") throw new Error("PAT_ORG_POLICY_DENIED");
-    assert.deepEqual(args.slice(0, 4), ["contact", "user", "search", "--query"]);
+    assert.deepEqual(args, [
+      "aisearch", "person", "--keyword", "测试用户", "--dimension", "name",
+    ]);
     return {
       result: [
         { userId: "other-user", openDingTalkId: "open-other" },

@@ -24,6 +24,21 @@ _SCHEDULE_MARKER = re.compile(r"<!-- foursday-schedule:([a-z0-9][a-z0-9_-]{0,63}
 _CONTEXT_LOCK = threading.Lock()
 
 
+def _pin_workspace(value: object) -> str:
+    workspace = Path(str(value or "").strip()).expanduser()
+    if (
+        not workspace.is_absolute()
+        or not workspace.exists()
+        or workspace.is_symlink()
+        or not workspace.is_dir()
+        or workspace.resolve(strict=True) != workspace
+    ):
+        raise RuntimeError("Foursday routed workspace is unsafe")
+    from agent.runtime_cwd import set_session_cwd
+    set_session_cwd(str(workspace))
+    return str(workspace)
+
+
 def _bounded_identity(value: object, label: str) -> str:
     text = str(value or "").strip()
     if not text or len(text) > 500 or any(ord(char) < 32 or ord(char) == 127 for char in text):
@@ -72,6 +87,7 @@ def _enrich_work_context(
         context = contexts.get(token) if isinstance(contexts, dict) else None
         if not isinstance(context, dict) or int(context.get("expiresAt", 0)) <= timestamp:
             raise RuntimeError("Foursday work context is unavailable")
+        _pin_workspace(context.get("workspace"))
         context.update({
             "hermesSessionHash": _hash_identity(session_id, "session id"),
             "hermesTurnHash": _hash_identity(turn_id, "turn id"),
@@ -131,9 +147,7 @@ def _scheduled_work_context(
     )
     if not isinstance(project, dict):
         raise RuntimeError("Foursday scheduled project is unavailable")
-    workspace = Path(str(project.get("root") or "")).expanduser()
-    if not workspace.is_absolute() or workspace.resolve(strict=True) != workspace or not workspace.is_dir():
-        raise RuntimeError("Foursday scheduled workspace is unsafe")
+    workspace = Path(_pin_workspace(project.get("root")))
     timestamp = int(time.time()) if now is None else int(now)
     token = f"fctx_{secrets.token_hex(32)}"
     slugs = ", ".join(str(value) for value in list(project.get("gbrainSlugs") or [])[:20]) or "none"

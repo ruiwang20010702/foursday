@@ -495,6 +495,19 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(receipt.success)
         self.assertFalse(receipt.retryable)
 
+    async def test_internal_gateway_busy_notice_is_silently_suppressed(self):
+        before = len(self.bridge.sent)
+        for content in [
+            "↪ Redirected current run (iteration 0/500). I'll adjust using your correction.",
+            "⚡ Interrupting current task (iteration 0/500). I'll respond to your message shortly.",
+            "⏳ Queued for the next turn. I'll respond once the current task finishes.",
+            "⏩ Steered into current run. Your message arrives after the next tool call.",
+        ]:
+            receipt = await self.adapter.send("direct-1", content)
+            self.assertTrue(receipt.success)
+            self.assertTrue(receipt.message_id.startswith("suppressed-internal-"))
+        self.assertEqual(len(self.bridge.sent), before)
+
     async def test_stale_owner_revision_is_not_retryable(self):
         self.bridge.send_result = {
             "success": False,

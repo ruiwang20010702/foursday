@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -253,6 +254,10 @@ function normalizedText(value) {
     .trim();
 }
 
+export function dwsMessageContentDigest(value) {
+  return createHash("sha256").update(normalizedText(value)).digest("hex");
+}
+
 function explicitAiMarker(raw) {
   const values = [
     raw?.aiTag,
@@ -318,13 +323,18 @@ export function isAutomatedSelfMessage(message, evidence = []) {
       return true;
     }
     const startedAt = epoch(item.startedAt);
+    const contentDigest = String(item.contentDigest ?? "").trim();
     if (
       messageTime != null &&
       startedAt != null &&
       messageTime >= startedAt - 5_000 &&
       messageTime <= startedAt + 10 * 60 * 1_000 &&
       normalizedText(message?.content) !== "" &&
-      normalizedText(message?.content) === normalizedText(item.content)
+      (
+        normalizedText(message?.content) === normalizedText(item.content) ||
+        (/^[a-f0-9]{64}$/u.test(contentDigest) &&
+          dwsMessageContentDigest(message?.content) === contentDigest)
+      )
     ) {
       return true;
     }
@@ -505,11 +515,12 @@ export class DwsAdapter {
       const name = String(displayName ?? "").trim();
       if (!name) throw error;
       payload = await this.run([
-        "contact",
-        "user",
-        "search",
-        "--query",
+        "aisearch",
+        "person",
+        "--keyword",
         name,
+        "--dimension",
+        "name",
       ]);
     }
     const candidates = Array.isArray(payload?.result)

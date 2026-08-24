@@ -5,7 +5,7 @@ const acceptanceScenarios = Object.freeze([
   "naturalReply",
   "followup",
   "codeWork",
-  "humanTakeover",
+  "ownerIntervention",
   "restartRecovery",
   "sendDisabled",
   "noDuplicate",
