@@ -750,7 +750,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             shadow_mode = str(
                 os.getenv("FOURSDAY_MODE", "")
             ).strip().lower() == "shadow"
-            if shadow_mode:
+            if shadow_mode and isinstance(result, dict) and result.get("sendDisabled") is True:
                 shadow_id = hashlib.sha256(
                     f"{chat_id}\n{content}".encode("utf-8")
                 ).hexdigest()[:24]

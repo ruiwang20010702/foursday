@@ -643,7 +643,11 @@ test("Hermes DWS sidecar keeps real sending disabled unless explicitly enabled",
     content: "完成了",
     ownerRevision: 0,
     sendGeneration: 1,
-  }), { success: false, error: "DWS personal send is disabled" });
+  }), {
+    success: false,
+    sendDisabled: true,
+    error: "DWS personal send is disabled",
+  });
   await disabled.stop();
 
   const enabled = await createSidecarRuntime({
@@ -719,7 +723,7 @@ test("outbound quiet window lets a six-second follow-up invalidate the old reply
       eventWakeEnabled: false,
       outboundQuietMs: 8_000,
       outboundMaxQuietMs: 20_000,
-      sendEnabled: true,
+      sendEnabled: false,
     },
     dws,
     emit: () => {},

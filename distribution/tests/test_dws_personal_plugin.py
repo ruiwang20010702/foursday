@@ -548,6 +548,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         evidence = Path(self.temp.name).resolve() / "shadow-evidence.jsonl"
         self.bridge.send_result = {
             "success": False,
+            "sendDisabled": True,
             "error": "DWS personal send is disabled",
         }
         with patch.dict(os.environ, {

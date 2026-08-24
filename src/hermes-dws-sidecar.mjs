@@ -763,9 +763,6 @@ export async function createSidecarRuntime({
       }
     },
     async send(payload) {
-      if (!config.sendEnabled) {
-        return { success: false, error: "DWS personal send is disabled" };
-      }
       const conversationId = String(payload?.conversationId ?? "").trim();
       const route = recipients.get(conversationId);
       if (!route) return { success: false, error: "DWS conversation recipient is unknown" };
@@ -818,6 +815,13 @@ export async function createSidecarRuntime({
           success: false,
           staleGeneration: true,
           error: "DWS reply was replaced during the outbound quiet window",
+        };
+      }
+      if (!config.sendEnabled) {
+        return {
+          success: false,
+          sendDisabled: true,
+          error: "DWS personal send is disabled",
         };
       }
       const sendKey = stableSendKey(payload);
