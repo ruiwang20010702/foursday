@@ -63,6 +63,17 @@ class FakeBridge:
         return {"success": True}
 
 
+class BufferedFakeBridge(FakeBridge):
+    def __init__(self, record):
+        super().__init__()
+        self.record = record
+        self.released = False
+
+    async def release_events(self):
+        self.released = True
+        await self.callback(self.record)
+
+
 @dataclass
 class FakeRoute:
     workspace_path: str
@@ -176,6 +187,36 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.workspaces), 1)
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
+
+    async def test_startup_events_are_released_after_adapter_connects(self):
+        await self.adapter.disconnect()
+        record = {
+            "id": "startup-message",
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "startup-conversation",
+            "content": "启动回放",
+            "createTime": "2026-08-18T14:00:00+08:00",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        }
+        self.bridge = BufferedFakeBridge(record)
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 0,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        self.assertFalse(self.bridge.released)
+        await asyncio.sleep(0.3)
+        self.assertTrue(self.bridge.released)
+        self.assertEqual(self.events[-1].text, "启动回放")
 
     async def test_image_attachment_reaches_hermes_event_and_private_work_context(self):
         context_path = str((Path(self.temp.name) / "state-image" / "work-contexts.json").resolve())

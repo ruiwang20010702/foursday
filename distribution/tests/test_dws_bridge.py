@@ -45,10 +45,9 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                 asyncio.create_task(acknowledge())
 
             await bridge.start(on_event)
-            for _ in range(20):
-                if events:
-                    break
-                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.02)
+            self.assertEqual(events, [])
+            await bridge.release_events()
             self.assertEqual(events[0]["id"], "message-1")
             receipt = await bridge.send({"content": "done"})
             self.assertEqual(receipt["messageId"], "sent-1")

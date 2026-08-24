@@ -310,6 +310,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._pending: dict[str, list[dict]] = {}
         self._bundle_tasks: dict[str, asyncio.Task] = {}
         self._control_ack_tasks: set[asyncio.Task] = set()
+        self._startup_release_task: Optional[asyncio.Task] = None
 
     @property
     def enforces_own_access_policy(self) -> bool:
@@ -326,9 +327,23 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             return False
         await self._bridge.start(self._on_record)
         self._running = True
+        release_events = getattr(self._bridge, "release_events", None)
+        if callable(release_events):
+            async def release_after_gateway_registration() -> None:
+                await asyncio.sleep(0.25)
+                if self._running:
+                    await release_events()
+
+            self._startup_release_task = asyncio.create_task(
+                release_after_gateway_registration()
+            )
         return True
 
     async def disconnect(self) -> None:
+        if self._startup_release_task is not None:
+            self._startup_release_task.cancel()
+            await asyncio.gather(self._startup_release_task, return_exceptions=True)
+            self._startup_release_task = None
         pending = list(self._pending.values())
         self._pending.clear()
         for task in self._bundle_tasks.values():

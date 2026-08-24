@@ -52,6 +52,8 @@ class JsonLineDwsBridge:
         self._ready: Optional[asyncio.Future] = None
         self._pending: dict[str, asyncio.Future] = {}
         self._counter = 0
+        self._buffering_events = True
+        self._event_buffer: list[dict] = []
         self._stderr_codes: deque[str] = deque(maxlen=20)
         self._logged_stderr_codes: set[str] = set()
 
@@ -95,6 +97,8 @@ class JsonLineDwsBridge:
         if self._process is not None:
             return
         self._callback = callback
+        self._buffering_events = True
+        self._event_buffer.clear()
         loop = asyncio.get_running_loop()
         self._ready = loop.create_future()
         self._process = await asyncio.create_subprocess_exec(
@@ -147,7 +151,11 @@ class JsonLineDwsBridge:
                         self._ready.set_result(True)
                     continue
                 if frame.get("type") == "event" and isinstance(frame.get("record"), dict):
-                    if self._callback is not None:
+                    if self._buffering_events:
+                        if len(self._event_buffer) >= 10_000:
+                            raise RuntimeError("DWS startup event buffer exceeded its bound")
+                        self._event_buffer.append(frame["record"])
+                    elif self._callback is not None:
                         await self._callback(frame["record"])
                     continue
                 if frame.get("type") == "response":
@@ -163,6 +171,15 @@ class JsonLineDwsBridge:
                 if not future.done():
                     future.set_exception(error)
             self._pending.clear()
+
+    async def release_events(self) -> None:
+        while self._event_buffer:
+            records = self._event_buffer
+            self._event_buffer = []
+            if self._callback is not None:
+                for record in records:
+                    await self._callback(record)
+        self._buffering_events = False
 
     async def _request(self, action: str, payload: Optional[dict] = None) -> Any:
         if self._process is None or self._process.stdin is None:
@@ -218,6 +235,8 @@ class JsonLineDwsBridge:
         self._process = None
         self._reader_task = None
         self._stderr_task = None
+        self._buffering_events = True
+        self._event_buffer.clear()
 
 
 __all__ = ["JsonLineDwsBridge"]
