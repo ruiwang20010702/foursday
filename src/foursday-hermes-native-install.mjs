@@ -905,12 +905,20 @@ export async function runFoursdayNativeHermesInstall({
     };
   }
   await recoverInterruptedNativeHermesInstall(layout);
-  const fallbackInstaller = join(layout.installDirectory, lock.installerPath);
+  const fallbackCandidates = [
+    join(layout.installDirectory, lock.installerPath),
+    join(layout.projectRoot, ".runtime", "hermes-poc", "upstream", lock.installerPath),
+  ];
+  let fallbackInstaller = null;
+  for (const candidate of fallbackCandidates) {
+    if (await access(candidate, constants.R_OK).then(() => true).catch(() => false)) {
+      fallbackInstaller = candidate;
+      break;
+    }
+  }
   const installer = await downloadVerifiedInstaller(lock, {
     fetchImpl,
-    fallbackPath: await access(fallbackInstaller, constants.R_OK)
-      .then(() => fallbackInstaller)
-      .catch(() => null),
+    fallbackPath: fallbackInstaller,
   });
   const prepared = await prepareNativeHermesInstallDirectory(layout, lock);
   if (prepared.backup) {

@@ -116,6 +116,22 @@ test("official installer falls back to authenticated GitHub contents with the sa
   assert.match(calls[1][0], /^https:\/\/api\.github\.com\/repos\/NousResearch\/hermes-agent\/contents\//u);
 });
 
+test("official installer accepts only a digest-matched local fallback when GitHub is unavailable", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-installer-local-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const body = Buffer.from("#!/bin/sh\n" + "#".repeat(10_000));
+  const fallback = join(root, "install.sh");
+  await writeFile(fallback, body, { mode: 0o600 });
+  const installer = await downloadVerifiedInstaller(lock(body), {
+    fallbackPath: fallback,
+    environment: {},
+    fetchImpl: async () => new Response("unavailable", { status: 429 }),
+  });
+  t.after(() => rm(installer.directory, { recursive: true, force: true }));
+  assert.deepEqual(await readFile(installer.path), body);
+  assert.equal(installer.digest, createHash("sha256").update(body).digest("hex"));
+});
+
 test("source commit identity requires a clean worktree without hidden index flags", async () => {
   const head = "f".repeat(40);
   const run = async (_path, args) => {

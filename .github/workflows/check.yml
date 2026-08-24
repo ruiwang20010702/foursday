@@ -41,14 +41,20 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      - name: 准备锁定的 Hermes 安装回退
+        run: |
+          locked_commit="$(node -p "require('./distribution/upstream.lock.json').commit")"
+          mkdir -p .runtime/hermes-poc/upstream
+          git -C .runtime/hermes-poc/upstream init
+          git -C .runtime/hermes-poc/upstream remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C .runtime/hermes-poc/upstream fetch --depth=1 origin "$locked_commit"
+          git -C .runtime/hermes-poc/upstream checkout --detach FETCH_HEAD
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run check
         env:
           TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/foursday_test
       - run: npm run runtime:setup -- --apply
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run check:python
       - run: npm pack --dry-run
       - run: npm run reuse:verify
