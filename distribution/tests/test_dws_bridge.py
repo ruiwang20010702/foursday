@@ -106,6 +106,9 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "FOURSDAY_DWS_SIDECAR": str(sidecar),
                     "DWS_PATH": "/absolute/dws",
                     "DWS_PERSONAL_ALLOWED_USERS": "trusted",
+                    "DWS_PERSONAL_EVENT_WAKE_ENABLED": "true",
+                    "DWS_PERSONAL_OUTBOUND_QUIET_MS": "8000",
+                    "DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS": "20000",
                     "FOURSDAY_DWS_HOME": root,
                     "FOURSDAY_CONTROL_FILE": str(Path(root, "control.json")),
                     "DATABASE_URL": "must-not-cross",
@@ -118,6 +121,9 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["DWS_PATH"], "/absolute/dws")
             self.assertEqual(bridge.environment["HOME"], root)
             self.assertEqual(bridge.environment["FOURSDAY_CONTROL_FILE"], str(Path(root, "control.json")))
+            self.assertEqual(bridge.environment["DWS_PERSONAL_EVENT_WAKE_ENABLED"], "true")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_QUIET_MS"], "8000")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS"], "20000")
             self.assertNotIn("FOURSDAY_DWS_HOME", bridge.environment)
             self.assertNotIn("DATABASE_URL", bridge.environment)
             self.assertNotIn("AI_EMPLOYEE_DATA_KEY", bridge.environment)

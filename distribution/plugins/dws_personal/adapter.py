@@ -444,6 +444,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             task.add_done_callback(finish_ack)
 
     async def _bundle_after(self, key: str) -> None:
+        current_task = asyncio.current_task()
         try:
             while key in self._pending:
                 records = self._pending[key]
@@ -456,11 +457,16 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                     await asyncio.sleep((due - now) / 1_000)
                     continue
                 records = self._pending.pop(key, [])
+                if self._bundle_tasks.get(key) is current_task:
+                    self._bundle_tasks.pop(key, None)
                 if records:
                     await self._deliver_records(records)
                 return
         finally:
-            self._bundle_tasks.pop(key, None)
+            if self._bundle_tasks.get(key) is current_task:
+                self._bundle_tasks.pop(key, None)
+            if key in self._pending and key not in self._bundle_tasks:
+                self._bundle_tasks[key] = asyncio.create_task(self._bundle_after(key))
 
     async def _queue_record(self, record: Dict[str, Any]) -> None:
         if self._bundle_quiet_ms == 0:

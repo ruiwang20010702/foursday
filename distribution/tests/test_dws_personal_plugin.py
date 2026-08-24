@@ -351,6 +351,73 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             ["bundle-1", "bundle-2"],
         )
 
+    async def test_followup_bundle_is_not_stranded_while_first_agent_turn_runs(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 20,
+                "bundle_max_wait_ms": 8_000,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        followup_delivered = asyncio.Event()
+
+        async def blocking_handler(event):
+            self.events.append(event)
+            if event.text == "第一句":
+                first_started.set()
+                await release_first.wait()
+            else:
+                followup_delivered.set()
+
+        self.adapter.set_message_handler(blocking_handler)
+        self.assertTrue(await self.adapter.connect())
+        base = {
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "direct-running-followup",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        }
+        await self.bridge.emit({
+            **base,
+            "id": "running-1",
+            "content": "第一句",
+            "createTime": "2026-08-18T14:00:00+08:00",
+        })
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        try:
+            await self.bridge.emit({
+                **base,
+                "id": "running-2",
+                "content": "第二句",
+                "createTime": "2026-08-18T14:00:05+08:00",
+            })
+            await self.bridge.emit({
+                **base,
+                "id": "running-3",
+                "content": "第三句",
+                "createTime": "2026-08-18T14:00:09+08:00",
+            })
+            await asyncio.sleep(0.05)
+            release_first.set()
+            await asyncio.wait_for(followup_delivered.wait(), timeout=1)
+        finally:
+            release_first.set()
+            await asyncio.sleep(0)
+        self.assertEqual([event.text for event in self.events], [
+            "第一句",
+            "第二句\n第三句",
+        ])
+        self.assertEqual(self.events[1].metadata["bundle_size"], 2)
+
     async def test_messages_beyond_source_max_wait_become_sequential_session_turns(self):
         await self.adapter.disconnect()
         self.bridge = FakeBridge()

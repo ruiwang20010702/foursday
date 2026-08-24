@@ -279,6 +279,19 @@ export async function createSidecarRuntime({
   if (config.outboundQuietMs > config.outboundMaxQuietMs) {
     throw new Error("DWS outbound quiet window exceeds its maximum");
   }
+  const wakePriority = new Map([
+    ["dws_event", 4],
+    ["filesystem", 3],
+    ["fallback", 2],
+    ["startup", 1],
+    ["manual", 0],
+  ]);
+  const strongerWakeSource = (current, candidate) => {
+    if (!current) return candidate;
+    return (wakePriority.get(candidate) ?? -1) > (wakePriority.get(current) ?? -1)
+      ? candidate
+      : current;
+  };
   await access(config.dwsPath);
   if (config.mediaRoot) {
     await mkdir(config.mediaRoot, { recursive: true, mode: 0o700 });
@@ -317,6 +330,7 @@ export async function createSidecarRuntime({
   let debounceTimer = null;
   let running = false;
   let pending = false;
+  let pendingWakeSource = null;
   let stateWrite = Promise.resolve();
   const persistState = () => {
     const snapshot = structuredClone(state);
@@ -458,6 +472,7 @@ export async function createSidecarRuntime({
   const check = async ({ deferEmit = false, wakeSource = "manual" } = {}) => {
     if (running) {
       pending = true;
+      pendingWakeSource = strongerWakeSource(pendingWakeSource, wakeSource);
       return;
     }
     running = true;
@@ -656,20 +671,21 @@ export async function createSidecarRuntime({
       running = false;
       if (pending) {
         pending = false;
-        queueMicrotask(() => check().catch((error) => {
+        const source = pendingWakeSource ?? "manual";
+        pendingWakeSource = null;
+        queueMicrotask(() => check({ wakeSource: source }).catch((error) => {
           diagnose(`dws_sidecar_check_failed:${String(error?.code ?? error?.name ?? "error")}`);
         }));
       }
     }
   };
 
-  let pendingWakeSource = "filesystem";
   const trigger = (wakeSource = "filesystem") => {
-    pendingWakeSource = wakeSource;
+    pendingWakeSource = strongerWakeSource(pendingWakeSource, wakeSource);
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      const source = pendingWakeSource;
-      pendingWakeSource = "filesystem";
+      const source = pendingWakeSource ?? wakeSource;
+      pendingWakeSource = null;
       check({ wakeSource: source }).catch((error) => {
       diagnose(`dws_sidecar_check_failed:${String(error?.code ?? error?.name ?? "error")}`);
       });

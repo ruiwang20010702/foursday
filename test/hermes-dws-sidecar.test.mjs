@@ -329,6 +329,77 @@ test("DWS event wake triggers the same allowlisted history read with event laten
   assert.equal(dws.eventWakeStopped, true);
 });
 
+test("DWS event wake source survives a check already in progress", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-pending-"));
+  const frames = [];
+  const dws = new FakeDws();
+  let fetchCalls = 0;
+  let releaseBlockedFetch;
+  let markBlockedFetch;
+  const blockedFetch = new Promise((accept) => { markBlockedFetch = accept; });
+  const releaseFetch = new Promise((accept) => { releaseBlockedFetch = accept; });
+  dws.fetchBySender = async ({ senderUserId }) => {
+    fetchCalls += 1;
+    if (fetchCalls === 2) {
+      markBlockedFetch();
+      await releaseFetch;
+      return [];
+    }
+    if (fetchCalls >= 3) return [{
+      id: "pending-event-message",
+      senderUserId,
+      senderOpenDingTalkId: "open-trusted",
+      senderName: "Trusted",
+      conversationId: "pending-event-conversation",
+      content: "pending event wake",
+      createTime: "2026-08-24T10:00:01+08:00",
+      isSelf: false,
+      isWithdrawn: false,
+      media: [],
+    }];
+    return [];
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-24T10:00:02+08:00"),
+  });
+  try {
+    await runtime.start();
+    const firstCheck = runtime.check({ wakeSource: "filesystem" });
+    await blockedFetch;
+    await runtime.check({ wakeSource: "dws_event" });
+    await runtime.check({ wakeSource: "fallback" });
+    releaseBlockedFetch();
+    await firstCheck;
+    for (let index = 0; index < 50 && !frames.some((frame) =>
+      frame.record?.id === "pending-event-message"); index += 1) {
+      await new Promise((accept) => setTimeout(accept, 10));
+    }
+    const frame = frames.find((item) => item.record?.id === "pending-event-message");
+    assert.equal(frame.record.wakeSource, "dws_event");
+  } finally {
+    releaseBlockedFetch?.();
+    await runtime.stop();
+  }
+});
+
 test("unavailable DWS event wake is visible while history fallback remains usable", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-degraded-"));
   const frames = [];
