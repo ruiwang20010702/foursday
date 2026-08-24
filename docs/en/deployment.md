@@ -23,6 +23,8 @@ Create private `600`-permission copies of:
 
 Secrets must remain `env://` or `keychain://` references. Project roots must be absolute canonical paths.
 
+DWS `v1.0.59+` is required for the primary personal-IM Stream wake-up. Older DWS versions remain functional through filesystem wake-up and the bounded fallback, but must be reported as degraded. The recommended defaults are a 30-second fallback, an 8-second outbound stability window and a 20-second adaptive maximum; none of these settings expands the allowlist or enables sending.
+
 ## 3. Configure Foursday and sign in to its isolated Codex environment
 
 ```bash
@@ -50,6 +52,8 @@ npx --no-install foursday status
 ```
 
 Shadow mode can receive, route, reason, call tools, and record evidence, but the DWS bridge refuses real sends.
+
+Before activation, verify that the event consumer reached its explicit `[event] ready` state or that the fallback state is visible, then test three message fragments spaced 5–8 seconds apart. Exactly one final reply may become send-eligible; superseded generations must remain unsent.
 
 Operate from Codex/Claude through the packaged Control MCP, or inspect the same state from the CLI:
 

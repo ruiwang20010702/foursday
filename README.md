@@ -54,7 +54,7 @@ flowchart LR
 Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousResearch/hermes-agent) control plane internally; Codex is the only work-planning and reply-generating loop. Foursday ships:
 
 - an isolated `foursday` Profile;
-- DWS personal DingTalk and project-router plugins;
+- DWS personal DingTalk and project-router plugins, with Stream event wake-up, filesystem wake-up and bounded fallback;
 - an isolated Codex home with an App Server policy proxy, workspace sandboxing, forbidden command rules, automatic approval review, and a Foursday MCP;
 - a project-work Skill;
 - small host-side bridges for credentials and personal-memory promotion.
@@ -74,7 +74,7 @@ Inside an authorized project, reversible work runs autonomously. Business meanin
 
 ## Install
 
-Requirements: macOS, Git, Node.js 22+, a working DWS installation, and access to a personal gbrain endpoint.
+Requirements: macOS, Git, Node.js 22+, DWS `v1.0.59+` for Stream event wake-up (older versions degrade to filesystem wake-up and bounded fallback), and access to a personal gbrain endpoint.
 
 ```bash
 git clone https://github.com/ruiwang20010702/foursday.git

@@ -11,3 +11,4 @@ node_modules/
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite.key
+test/manual/防回流人工验收.md

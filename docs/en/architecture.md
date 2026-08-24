@@ -6,7 +6,7 @@ The current public version is `v0.8.0-rc.1`. Source validation, a GitHub release
 
 ```mermaid
 flowchart LR
-    M["DWS / messaging channels"] --> A["Foursday Gateway + session"]
+    M["DWS Stream wake<br/>filesystem / 30s fallback"] --> A["History read + Foursday Gateway + session"]
     A --> R["Foursday trust + project router"]
     G["Personal gbrain"] --> C["Private context"]
     R --> C
@@ -25,7 +25,7 @@ flowchart LR
 |---|---|
 | Work planning, project tools, and final reply | Codex app-server |
 | Gateway, session lifecycle, scheduling, future standard channels | embedded upstream Hermes runtime |
-| Personal DingTalk | `dws_personal` plugin and host sidecar |
+| Personal DingTalk | DWS `v1.0.59+` Stream wake, filesystem/30s degradation, `dws_personal` plugin and host sidecar |
 | Workspace selection | `project_router` plugin |
 | Personal-memory context | DWS platform context provider and read-only bridge |
 | Memory promotion | Foursday MCP with short-lived message-bound tokens |
@@ -52,7 +52,7 @@ The current source candidate implements this contract. Bound `thread/resume` and
 
 ## Version scope
 
-The source candidate covers personal DingTalk through DWS, allowlist enforcement, project routing, personal gbrain context, Codex Thread resume/same-task fork, subagents, web/image, scoped MCP, isolated Skills/Memory, attachments, read-back, five-state owner intervention, safety boundaries, and shadow verification. It also contains the local-only Hermes Cron/Monitor-to-Codex core. Feishu, Slack, Teams, cross-platform Session recovery, user-facing scheduled-work configuration and proactive-work recipes remain P1. Enterprise governance and ecosystem features remain P2.
+The source candidate covers personal DingTalk through DWS, Stream-event wake with explicit degradation, adaptive outbound stability for 5–8 second message fragments, allowlist enforcement, project routing, personal gbrain context, Codex Thread resume/same-task fork, subagents, web/image, scoped MCP, isolated Skills/Memory, attachments, read-back, five-state owner intervention, safety boundaries, and shadow verification. It also contains the local-only Hermes Cron/Monitor-to-Codex core. Feishu, Slack, Teams, cross-platform Session recovery, user-facing scheduled-work configuration and proactive-work recipes remain P1. Enterprise governance and ecosystem features remain P2.
 
 Installation verifies the locked upstream source still bypasses its foreground tool loop in `codex_app_server` mode. The Foursday Profile disables upstream built-in memory, memory/skill nudges, background-review forks, automatic title generation, and the curator so no post-turn auxiliary model or Agent Loop reappears behind Codex.
 
