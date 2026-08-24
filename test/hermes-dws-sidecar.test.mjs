@@ -400,6 +400,124 @@ test("DWS event wake source survives a check already in progress", async () => {
   }
 });
 
+test("delayed DWS history projection stays behind the checkpoint protection window", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-history-settle-"));
+  const frames = [];
+  const dws = new FakeDws();
+  let current = new Date("2026-08-24T10:00:00+08:00");
+  let visible = false;
+  const message = {
+    id: "delayed-history-message",
+    senderUserId: "trusted-user",
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "Trusted",
+    conversationId: "delayed-history-conversation",
+    content: "delayed history",
+    createTime: "2026-08-24T10:00:00+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  };
+  dws.fetchBySender = async ({ start, end }) => (
+    visible && start <= new Date(message.createTime) && new Date(message.createTime) <= end
+      ? [message]
+      : []
+  );
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 600_000,
+      fallbackMs: 300_000,
+      historySettleMs: 120_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => current,
+  });
+  try {
+    await runtime.start();
+    current = new Date("2026-08-24T10:00:01+08:00");
+    await runtime.check({ wakeSource: "dws_event" });
+    current = new Date("2026-08-24T10:00:31+08:00");
+    await runtime.check({ wakeSource: "fallback" });
+    current = new Date("2026-08-24T10:01:01+08:00");
+    visible = true;
+    await runtime.check({ wakeSource: "fallback" });
+    const frame = frames.find((item) => item.record?.id === message.id);
+    assert.equal(frame.record.wakeSource, "fallback");
+    assert.equal(frame.record.detectionLatencyMs, 61_000);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("startup reconciliation replays an unseen message behind a newer checkpoint", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-startup-reconcile-"));
+  const stateFile = join(root, "state.json");
+  await writeFile(stateFile, JSON.stringify({
+    lastUsers: { "trusted-user": "2026-08-24T10:05:00+08:00" },
+    recentMessageIds: [],
+  }));
+  const frames = [];
+  const dws = new FakeDws();
+  const message = {
+    id: "startup-replayed-message",
+    senderUserId: "trusted-user",
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "Trusted",
+    conversationId: "startup-replayed-conversation",
+    content: "startup replay",
+    createTime: "2026-08-24T10:04:00+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  };
+  dws.fetchBySender = async ({ start, end }) => (
+    start <= new Date(message.createTime) && new Date(message.createTime) <= end
+      ? [message]
+      : []
+  );
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile,
+      mediaRoot: null,
+      initialLookbackMs: 600_000,
+      fallbackMs: 300_000,
+      historySettleMs: 120_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-24T10:06:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    assert.equal(frames.some((frame) => frame.record?.id === message.id), true);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("unavailable DWS event wake is visible while history fallback remains usable", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-degraded-"));
   const frames = [];
@@ -591,7 +709,7 @@ test("Hermes DWS sidecar emits allowlisted records and persists a private checkp
   assert.equal(frames[1].record.senderUserId, "trusted-user");
   assert.equal(frames[1].record.chatType, "direct");
   const state = JSON.parse(await readFile(stateFile, "utf8"));
-  assert.equal(state.lastUsers["trusted-user"], "2026-08-18T06:01:00.000Z");
+  assert.equal(state.lastUsers["trusted-user"], "2026-08-18T05:59:00.000Z");
   assert.equal(state.lastFullSuccessAt, "2026-08-18T06:01:00.000Z");
   assert.equal(state.lastErrorCount, 0);
 });
@@ -683,8 +801,8 @@ test("Hermes DWS sidecar 并发抓取目标且部分失败不覆盖失败游标"
   );
   await runtime.stop();
   const second = JSON.parse(await readFile(stateFile, "utf8"));
-  assert.equal(second.lastUsers["good-user"], "2026-08-18T06:02:00.000Z");
-  assert.equal(second.lastUsers["bad-user"], "2026-08-18T06:01:00.000Z");
+  assert.equal(second.lastUsers["good-user"], "2026-08-18T06:00:00.000Z");
+  assert.equal(second.lastUsers["bad-user"], "2026-08-18T05:59:00.000Z");
   assert.equal(second.lastFullSuccessAt, "2026-08-18T06:01:00.000Z");
   assert.equal(second.lastErrorCount, 1);
 });

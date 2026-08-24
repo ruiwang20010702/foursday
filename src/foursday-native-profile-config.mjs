@@ -290,6 +290,9 @@ export async function buildFoursdayNativeProfileConfiguration({
     // A bounded overlap keeps restarts lossless without replaying old conversations.
     DWS_PERSONAL_INITIAL_LOOKBACK_MS: "600000",
     DWS_PERSONAL_FALLBACK_MS: scalar(production.value, "FOURSDAY_DINGTALK_FALLBACK_MS", 30_000),
+    DWS_PERSONAL_HISTORY_SETTLE_MS: scalar(
+      production.value, "FOURSDAY_DINGTALK_HISTORY_SETTLE_MS", 120_000,
+    ),
     DWS_PERSONAL_BUNDLE_QUIET_MS: scalar(production.value, "FOURSDAY_DINGTALK_QUIET_MS", 3_000),
     DWS_PERSONAL_BUNDLE_MAX_WAIT_MS: scalar(production.value, "FOURSDAY_DINGTALK_MAX_WAIT_MS", 8_000),
     DWS_PERSONAL_EVENT_WAKE_ENABLED: scalar(

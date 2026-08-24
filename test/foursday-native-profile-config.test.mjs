@@ -73,6 +73,7 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /DWS_PERSONAL_ALLOWED_USERS="trusted-user"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_EVENT_WAKE_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_FALLBACK_MS="30000"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_HISTORY_SETTLE_MS="120000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_QUIET_MS="8000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS="20000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEND_ENABLED="false"/u);

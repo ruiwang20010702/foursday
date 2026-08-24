@@ -91,6 +91,7 @@ test("public example contains only FOURSDAY fields and external secret reference
   }
   assert.equal(example.FOURSDAY_DINGTALK_EVENT_WAKE_ENABLED, true);
   assert.equal(example.FOURSDAY_DINGTALK_FALLBACK_MS, 30_000);
+  assert.equal(example.FOURSDAY_DINGTALK_HISTORY_SETTLE_MS, 120_000);
   assert.equal(example.FOURSDAY_DINGTALK_OUTBOUND_QUIET_MS, 8_000);
   assert.equal(example.FOURSDAY_DINGTALK_OUTBOUND_MAX_QUIET_MS, 20_000);
 });

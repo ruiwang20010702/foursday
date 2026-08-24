@@ -245,6 +245,12 @@ export function sidecarConfig(environment = process.env) {
       5_000,
       5 * 60 * 1_000,
     ),
+    historySettleMs: boundedInteger(
+      environment.DWS_PERSONAL_HISTORY_SETTLE_MS,
+      120_000,
+      0,
+      10 * 60 * 1_000,
+    ),
     eventWakeEnabled: String(
       environment.DWS_PERSONAL_EVENT_WAKE_ENABLED ?? "true",
     ).toLowerCase() === "true",
@@ -469,7 +475,11 @@ export async function createSidecarRuntime({
     });
   };
 
-  const check = async ({ deferEmit = false, wakeSource = "manual" } = {}) => {
+  const check = async ({
+    deferEmit = false,
+    wakeSource = "manual",
+    reconcileLookbackMs = null,
+  } = {}) => {
     if (running) {
       pending = true;
       pendingWakeSource = strongerWakeSource(pendingWakeSource, wakeSource);
@@ -490,9 +500,16 @@ export async function createSidecarRuntime({
       const results = await Promise.allSettled(targets.map(async (target) => {
         const checkpoints = target.kind === "user" ? state.lastUsers : state.lastGroups;
         const last = epoch(checkpoints[target.id]);
+        const historySettleMs = Number.isFinite(Number(config.historySettleMs))
+          ? Math.max(0, Number(config.historySettleMs))
+          : 120_000;
+        const requestedLookbackMs = Number.isFinite(Number(reconcileLookbackMs))
+          ? Math.max(historySettleMs, Number(reconcileLookbackMs))
+          : historySettleMs;
+        const safeHistoryBoundary = Math.max(0, end.getTime() - requestedLookbackMs);
         const start = new Date(last == null
           ? end.getTime() - config.initialLookbackMs
-          : Math.max(0, last - 5_000));
+          : Math.max(0, Math.min(last, safeHistoryBoundary) - 5_000));
         let messages;
         if (target.kind === "user" && target.id === config.selfUserId) {
           const lookbackMs = Math.min(
@@ -566,7 +583,14 @@ export async function createSidecarRuntime({
         }
         if (targetFailed) continue;
         const checkpoints = target.kind === "user" ? state.lastUsers : state.lastGroups;
-        checkpoints[target.id] = end.toISOString();
+        const last = epoch(checkpoints[target.id]) ?? 0;
+        const historySettleMs = Number.isFinite(Number(config.historySettleMs))
+          ? Math.max(0, Number(config.historySettleMs))
+          : 120_000;
+        checkpoints[target.id] = new Date(Math.max(
+          last,
+          end.getTime() - historySettleMs,
+        )).toISOString();
       }
       if (config.selfUserId && typeof dws.hasManualReply === "function") {
         for (const [conversationId, active] of activeConversations) {
@@ -703,7 +727,11 @@ export async function createSidecarRuntime({
 
   return {
     async start() {
-      const initialFrames = await check({ deferEmit: true, wakeSource: "startup" });
+      const initialFrames = await check({
+        deferEmit: true,
+        wakeSource: "startup",
+        reconcileLookbackMs: config.initialLookbackMs,
+      });
       emit({
         type: "ready",
         transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
