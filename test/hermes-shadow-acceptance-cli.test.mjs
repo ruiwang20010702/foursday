@@ -30,7 +30,7 @@ async function fixture(t) {
     { type: "inbound", conversationHash: "c", participantHash: "p", messageHashes: ["m1"], projectId: "p1", routeStatus: "matched", memoryStatus: "available" },
     { type: "reply_attempt", conversationHash: "c", contentHash: "c".repeat(64), contentBytes: 8, mode: "shadow", bridgeSuccess: false, outcomeUnknown: false },
     { type: "inbound", conversationHash: "c", participantHash: "p", messageHashes: ["m2"], projectId: "p1", routeStatus: "bound", memoryStatus: "available" },
-    { type: "human_takeover", conversationHash: "c", participantHash: "p" },
+    { type: "communication_takeover", conversationHash: "c", participantHash: "p" },
   ];
   await writeFile(ledger, `${events.map(JSON.stringify).join("\n")}\n`, { mode: 0o600 });
   for (const path of [restart, code]) {

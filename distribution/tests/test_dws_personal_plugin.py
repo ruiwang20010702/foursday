@@ -41,6 +41,7 @@ class FakeBridge:
         self.started = False
         self.stopped = False
         self.sent = []
+        self.acked = []
         self.send_result = {"success": True, "messageId": "sent-1"}
 
     async def start(self, callback):
@@ -56,6 +57,10 @@ class FakeBridge:
     async def send(self, payload):
         self.sent.append(payload)
         return self.send_result
+
+    async def ack_control(self, task_id, event_id):
+        self.acked.append((task_id, event_id))
+        return {"success": True}
 
 
 @dataclass
@@ -169,6 +174,40 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
 
+    async def test_image_attachment_reaches_hermes_event_and_private_work_context(self):
+        context_path = str((Path(self.temp.name) / "state-image" / "work-contexts.json").resolve())
+        image = Path(self.temp.name) / "downloaded.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        image.chmod(0o600)
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
+            await self.bridge.emit({
+                "id": "message-image",
+                "senderUserId": "trusted-user",
+                "senderName": "娜娜老师",
+                "senderOpenDingTalkId": "open-trusted",
+                "conversationId": "direct-image",
+                "content": "",
+                "attachments": [{
+                    "path": str(image.resolve()),
+                    "name": "question.png",
+                    "mimeType": "image/png",
+                }],
+                "createTime": "2026-08-18T14:00:00+08:00",
+                "chatType": "direct",
+                "mentionedSelf": False,
+                "isSelf": False,
+            })
+        await asyncio.sleep(0)
+        self.assertEqual(len(self.events), 1)
+        event = self.events[0]
+        self.assertEqual(event.message_type.value, "photo")
+        self.assertEqual(event.media_urls, [str(image.resolve())])
+        self.assertEqual(event.media_types, ["image/png"])
+        token = re.search(r"fctx_[a-f0-9]{64}", event.text).group(0)
+        context = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"][token]
+        self.assertEqual(context["attachments"][0]["path"], str(image.resolve()))
+        self.assertEqual(context["attachments"][0]["mimeType"], "image/png")
+
     async def test_unknown_user_and_unmentioned_group_are_dropped(self):
         base = {
             "senderName": "外部人员",
@@ -215,6 +254,10 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "trusted-group",
             "已经核对完成。",
             reply_to="message-4",
+            metadata={
+                "foursday_owner_revision": 0,
+                "foursday_send_generation": 1,
+            },
         )
         self.assertTrue(receipt.success)
         self.assertEqual(receipt.message_id, "sent-1")
@@ -349,7 +392,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.router.calls[1]["session_key"],
         )
 
-    async def test_human_takeover_interrupts_active_session_and_emits_audit_event(self):
+    async def test_task_takeover_interrupts_active_session_and_emits_audit_event(self):
         interrupted = []
         audited = []
 
@@ -362,7 +405,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.adapter.interrupt_session_activity = interrupt
         self.adapter.set_platform_event_handler(audit)
         await self.bridge.emit({
-            "control": "human_takeover",
+            "control": "task_takeover",
             "id": "takeover-1",
             "conversationId": "direct-1",
             "participantUserId": "trusted-user",
@@ -370,7 +413,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "createTime": "2026-08-18T14:00:02+08:00",
         })
         self.assertEqual(interrupted[0][:2], ("direct-1:trusted-user", "direct-1"))
-        self.assertEqual(audited[0][0]["type"], "human_takeover")
+        self.assertEqual(audited[0][0]["type"], "task_takeover")
         self.assertEqual(audited[0][0]["participant_id"], "trusted-user")
 
         await self.bridge.emit({
@@ -385,13 +428,87 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audited[-1][0]["type"], "message_withdrawn")
         self.assertEqual(audited[-1][0]["message_id"], "message-1")
 
+    async def test_owner_communication_takeover_does_not_cancel_work_but_correction_restarts_turn(self):
+        interrupted = []
+        audited = []
+
+        async def interrupt(session_key, chat_id, metadata=None):
+            interrupted.append((session_key, chat_id, metadata))
+
+        async def audit(event, source):
+            audited.append((event, source))
+
+        self.adapter.interrupt_session_activity = interrupt
+        self.adapter.set_platform_event_handler(audit)
+        base = {
+            "conversationId": "direct-1",
+            "participantUserId": "trusted-user",
+            "chatType": "direct",
+            "createTime": "2026-08-18T14:00:03+08:00",
+            "ownerRevision": 1,
+            "sendGeneration": 2,
+        }
+        await self.bridge.emit({
+            **base,
+            "control": "communication_takeover",
+            "id": "communication-1",
+            "ownerMessageId": "owner-1",
+            "ownerContent": "我已经回复对方了",
+        })
+        self.assertEqual(interrupted, [])
+        self.assertEqual(audited[-1][0]["type"], "communication_takeover")
+
+        await self.bridge.emit({
+            **base,
+            "control": "task_correction",
+            "id": "correction-1",
+            "ownerMessageId": "owner-2",
+            "ownerContent": "改成先核对全量口径",
+            "ownerRevision": 2,
+            "sendGeneration": 3,
+            "taskId": "a" * 64,
+            "controlEventId": "event-1",
+        })
+        await asyncio.sleep(0)
+        self.assertEqual(interrupted[-1][:2], ("direct-1:trusted-user", "direct-1"))
+        self.assertEqual(audited[-1][0]["type"], "task_correction")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].text, "改成先核对全量口径")
+        self.assertEqual(self.events[0].metadata["owner_revision"], 2)
+        self.assertEqual(self.events[0].metadata["send_generation"], 3)
+        self.assertEqual(self.bridge.acked, [("a" * 64, "event-1")])
+
     async def test_unknown_send_receipt_is_not_retryable(self):
         self.bridge.send_result = {
             "success": False,
             "outcomeUnknown": True,
             "error": "missing server message id",
         }
-        receipt = await self.adapter.send("direct-1", "测试")
+        receipt = await self.adapter.send(
+            "direct-1",
+            "测试",
+            metadata={
+                "foursday_owner_revision": 0,
+                "foursday_send_generation": 1,
+            },
+        )
+        self.assertFalse(receipt.success)
+        self.assertFalse(receipt.retryable)
+
+    async def test_stale_owner_revision_is_not_retryable(self):
+        self.bridge.send_result = {
+            "success": False,
+            "staleGeneration": True,
+            "error": "stale generation",
+        }
+        receipt = await self.adapter.send(
+            "direct-1",
+            "旧回复",
+            metadata={
+                "foursday_owner_revision": 0,
+                "foursday_send_generation": 1,
+            },
+        )
         self.assertFalse(receipt.success)
         self.assertFalse(receipt.retryable)
 
@@ -438,11 +555,19 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "private-conversation-id",
                 "private natural reply",
                 reply_to="private-message-id",
+                metadata={
+                    "foursday_owner_revision": 0,
+                    "foursday_send_generation": 1,
+                },
             )
             duplicate = await self.adapter.send(
                 "private-conversation-id",
                 "private natural reply",
                 reply_to="private-message-id",
+                metadata={
+                    "foursday_owner_revision": 0,
+                    "foursday_send_generation": 1,
+                },
             )
         self.assertTrue(reply.success)
         self.assertTrue(duplicate.success)

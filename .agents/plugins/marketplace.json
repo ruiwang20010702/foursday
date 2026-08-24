@@ -1,0 +1,20 @@
+{
+  "name": "foursday-local",
+  "interface": {
+    "displayName": "Foursday（本仓库）"
+  },
+  "plugins": [
+    {
+      "name": "foursday",
+      "source": {
+        "source": "local",
+        "path": "./plugins/foursday"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

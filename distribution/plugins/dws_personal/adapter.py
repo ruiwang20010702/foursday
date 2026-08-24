@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import contextvars
 from datetime import datetime
 import hashlib
 import json
@@ -75,6 +76,9 @@ def _digest(value: Any) -> str:
 
 _SHADOW_REPLY_KEYS: dict[str, set[str]] = {}
 _WORK_CONTEXT_LOCK = threading.Lock()
+_TURN_DELIVERY_VERSION: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "foursday_dws_delivery_version", default=None
+)
 
 
 def _work_context_token(
@@ -83,7 +87,21 @@ def _work_context_token(
     session_key: str,
     project_context: str,
     memory_context: str,
+    attachments: Optional[list[dict[str, Any]]] = None,
+    owner_revision: int = 0,
+    send_generation: int = 0,
+    owner_intervention: Optional[str] = None,
+    source_scope: str = "direct",
 ) -> str:
+    if owner_intervention not in {None, "task_correction", "resume_requested"}:
+        raise RuntimeError("Foursday owner intervention is invalid")
+    if (
+        not isinstance(owner_revision, int) or owner_revision < 0
+        or not isinstance(send_generation, int) or send_generation < 0
+    ):
+        raise RuntimeError("Foursday delivery revision is invalid")
+    if source_scope not in {"direct", "group"}:
+        raise RuntimeError("Foursday source scope is invalid")
     configured = str(os.getenv("FOURSDAY_WORK_CONTEXT_FILE", "")).strip()
     if not configured or project is None:
         return ""
@@ -124,6 +142,20 @@ def _work_context_token(
             contexts = dict(sorted(
                 contexts.items(), key=lambda item: int(item[1].get("expiresAt", 0)), reverse=True,
             )[:31])
+        safe_attachments = []
+        for item in list(attachments or [])[:8]:
+            candidate = Path(str(item.get("path") or "")).expanduser()
+            if not candidate.is_absolute() or not candidate.exists() or candidate.is_symlink():
+                raise RuntimeError("Foursday attachment path is unsafe")
+            canonical = candidate.resolve(strict=True)
+            metadata = canonical.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 1 or metadata.st_size > 128 * 1024 * 1024:
+                raise RuntimeError("Foursday attachment file is unsafe")
+            safe_attachments.append({
+                "path": str(canonical),
+                "mimeType": str(item.get("mimeType") or "")[:120],
+                "name": str(item.get("name") or canonical.name)[:255],
+            })
         contexts[token] = {
             "projectId": str(project.id),
             "workspace": str(project.root),
@@ -131,6 +163,11 @@ def _work_context_token(
             "memoryContext": str(memory_context or "")[:16_000],
             "sourcePrincipalHandle": secrets.token_hex(32),
             "sourceSessionHash": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
+            "ownerRevision": int(owner_revision),
+            "sendGeneration": int(send_generation),
+            "ownerIntervention": owner_intervention,
+            "sourceScope": source_scope,
+            "attachments": safe_attachments,
             "expiresAt": now + 15 * 60,
         }
         descriptor, temporary = tempfile.mkstemp(prefix=".work-context-", dir=path.parent)
@@ -266,6 +303,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._seen_order = deque(maxlen=5_000)
         self._pending: dict[str, list[dict]] = {}
         self._bundle_tasks: dict[str, asyncio.Task] = {}
+        self._control_ack_tasks: set[asyncio.Task] = set()
 
     @property
     def enforces_own_access_policy(self) -> bool:
@@ -292,6 +330,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._bundle_tasks.clear()
         for records in pending:
             await self._deliver_records(records)
+        if self._control_ack_tasks:
+            await asyncio.gather(*list(self._control_ack_tasks), return_exceptions=True)
+            self._control_ack_tasks.clear()
         if self._running:
             await self._bridge.stop()
         self._running = False
@@ -328,7 +369,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             message_id=str(record.get("id") or "control"),
         )
         control = str(record.get("control") or "").strip()
-        if control == "human_takeover":
+        if control in {"task_correction", "task_takeover", "resume_requested"}:
             await self.interrupt_session_activity(session_key, conversation_id)
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
@@ -338,14 +379,63 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "occurredAt": str(record.get("createTime") or "") or None,
         })
         handler = getattr(self, "_platform_event_handler", None)
-        if handler is not None and control in {"human_takeover", "message_withdrawn"}:
+        if handler is not None and control in {
+            "communication_takeover", "task_correction", "task_takeover",
+            "resume_requested", "unrelated_owner_message", "message_withdrawn",
+        }:
             await handler({
                 "type": control,
                 "conversation_id": conversation_id,
                 "participant_id": participant_id,
                 "message_id": str(record.get("messageId") or "") or None,
                 "occurred_at": str(record.get("createTime") or "") or None,
+                "owner_revision": record.get("ownerRevision"),
+                "send_generation": record.get("sendGeneration"),
             }, source)
+        if control in {"task_correction", "resume_requested"}:
+            owner_content = str(record.get("ownerContent") or "").strip()
+            if owner_content:
+                await self._deliver_records([{
+                    "id": str(record.get("ownerMessageId") or record.get("id") or "owner-control"),
+                    "senderUserId": participant_id,
+                    "senderName": "Foursday owner",
+                    "conversationId": conversation_id,
+                    "content": owner_content,
+                    "createTime": str(record.get("createTime") or ""),
+                    "chatType": chat_type,
+                    "mentionedSelf": chat_type == "group",
+                    "isSelf": False,
+                    "attachments": [],
+                    "ownerRevision": int(record.get("ownerRevision") or 0),
+                    "sendGeneration": int(record.get("sendGeneration") or 0),
+                    "ownerIntervention": control,
+                }])
+        task_id = str(record.get("taskId") or "").strip()
+        event_id = str(record.get("controlEventId") or "").strip()
+        acknowledge = getattr(self._bridge, "ack_control", None)
+        if task_id and event_id and callable(acknowledge):
+            async def acknowledge_after_callback() -> None:
+                receipt = await acknowledge(task_id, event_id)
+                if not isinstance(receipt, dict) or receipt.get("success") is not True:
+                    raise RuntimeError("Foursday control acknowledgement failed")
+
+            task = asyncio.create_task(acknowledge_after_callback())
+            self._control_ack_tasks.add(task)
+
+            def finish_ack(completed: asyncio.Task) -> None:
+                self._control_ack_tasks.discard(completed)
+                try:
+                    completed.result()
+                except Exception:
+                    _shadow_evidence({
+                        "schema": "foursday-shadow-event/v1",
+                        "type": "control_ack_failed",
+                        "conversationHash": _digest(conversation_id),
+                        "participantHash": _digest(participant_id),
+                        "occurredAt": str(record.get("createTime") or "") or None,
+                    })
+
+            task.add_done_callback(finish_ack)
 
     async def _bundle_after(self, key: str) -> None:
         try:
@@ -403,6 +493,11 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         latest = records[-1]
         message_ids = [str(item["id"]) for item in records]
         content = "\n".join(str(item["content"]).strip() for item in records).strip()
+        attachments = [
+            attachment
+            for record in records
+            for attachment in list(record.get("attachments") or [])[:8]
+        ][:8]
         conversation_id = str(latest["conversationId"])
         user_id = str(latest["senderUserId"])
         open_id = str(latest.get("senderOpenDingTalkId") or "").strip()
@@ -425,6 +520,15 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             session_key=session_key,
             project_context=route.context,
             memory_context=memory_context,
+            attachments=attachments,
+            owner_revision=int(latest.get("ownerRevision") or 0),
+            send_generation=int(latest.get("sendGeneration") or 0),
+            owner_intervention=(
+                str(latest.get("ownerIntervention"))
+                if latest.get("ownerIntervention") in {"task_correction", "resume_requested"}
+                else None
+            ),
+            source_scope=chat_type,
         )
         tool_context = (
             "Foursday work context token: " + context_token +
@@ -442,13 +546,17 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             user_name=str(latest.get("senderName") or "").strip() or user_id,
             message_id=message_ids[-1],
         )
+        visible_content = content or "Please inspect the attached file or image."
         agent_text = (
-            content + f"\n\n<!-- foursday-context:{context_token} -->"
-            if context_token else content
+            visible_content + f"\n\n<!-- foursday-context:{context_token} -->"
+            if context_token else visible_content
         )
+        media_urls = [str(item["path"]) for item in attachments if item.get("path")]
+        media_types = [str(item.get("mimeType") or "") for item in attachments if item.get("path")]
+        has_image = any(value.lower().startswith("image/") for value in media_types)
         event = MessageEvent(
             text=agent_text,
-            message_type=MessageType.TEXT,
+            message_type=MessageType.PHOTO if has_image else MessageType.DOCUMENT if media_urls else MessageType.TEXT,
             user_id=user_id,
             user_name=source.user_name,
             source=source,
@@ -456,12 +564,17 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             message_id=message_ids[-1],
             timestamp=timestamp,
             channel_prompt=channel_prompt,
+            media_urls=media_urls,
+            media_types=media_types,
             metadata={
                 "dws_identity_verified": True,
                 "project_route_status": getattr(route, "status", "unknown"),
                 "personal_memory_status": memory_status,
                 "source_message_ids": message_ids,
                 "bundle_size": len(records),
+                "owner_revision": int(latest.get("ownerRevision") or 0),
+                "send_generation": int(latest.get("sendGeneration") or 0),
+                "owner_intervention": latest.get("ownerIntervention"),
             },
         )
         _shadow_evidence({
@@ -478,8 +591,16 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         })
         from project_router.runtime_context import routed_project_scope
 
-        with routed_project_scope(route, principal_id=user_id):
-            await self.handle_message(event)
+        delivery_version = _TURN_DELIVERY_VERSION.set({
+            "conversationId": conversation_id,
+            "ownerRevision": int(latest.get("ownerRevision") or 0),
+            "sendGeneration": int(latest.get("sendGeneration") or 0),
+        })
+        try:
+            with routed_project_scope(route, principal_id=user_id):
+                await self.handle_message(event)
+        finally:
+            _TURN_DELIVERY_VERSION.reset(delivery_version)
 
     async def _on_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -494,12 +615,13 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         user_id = str(record.get("senderUserId") or "").strip()
         open_id = str(record.get("senderOpenDingTalkId") or "").strip()
         content = str(record.get("content") or "").strip()
+        attachments = list(record.get("attachments") or [])
         chat_type = str(record.get("chatType") or "").strip()
         if (
             not message_id
             or not conversation_id
             or not user_id
-            or not content
+            or (not content and not attachments)
             or chat_type not in {"direct", "group"}
             or not self._remember(message_id)
             or not self._user_allowed(user_id)
@@ -521,6 +643,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "senderUserId": user_id,
             "senderOpenDingTalkId": open_id or None,
             "content": content,
+            "attachments": attachments,
             "chatType": chat_type,
         })
 
@@ -543,6 +666,24 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "replyTo": str(reply_to) if reply_to else None,
             "metadata": dict(metadata or {}),
         }
+        version = _TURN_DELIVERY_VERSION.get()
+        if version is None and isinstance(metadata, dict):
+            owner_revision = metadata.get("foursday_owner_revision")
+            send_generation = metadata.get("foursday_send_generation")
+            if isinstance(owner_revision, int) and isinstance(send_generation, int):
+                version = {
+                    "conversationId": str(chat_id),
+                    "ownerRevision": owner_revision,
+                    "sendGeneration": send_generation,
+                }
+        if version is None or version.get("conversationId") != str(chat_id):
+            return SendResult(
+                success=False,
+                error="Foursday delivery generation is unavailable",
+                retryable=False,
+            )
+        payload["ownerRevision"] = int(version["ownerRevision"])
+        payload["sendGeneration"] = int(version["sendGeneration"])
         result = await self._bridge.send(payload)
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
@@ -577,9 +718,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error="DWS bridge did not return an explicit success receipt",
-                retryable=not bool(
-                    isinstance(result, dict) and result.get("outcomeUnknown") is True
-                ),
+                retryable=not bool(isinstance(result, dict) and (
+                    result.get("outcomeUnknown") is True or result.get("staleGeneration") is True
+                )),
             )
         message_id = str(result.get("messageId") or "").strip()
         if not message_id:

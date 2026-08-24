@@ -36,9 +36,13 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                 environment={"PATH": "/usr/bin:/bin"},
             )
             events = []
+            acknowledgements = []
 
             async def on_event(record):
                 events.append(record)
+                async def acknowledge():
+                    acknowledgements.append(await bridge.ack_control("a" * 64, "event-1"))
+                asyncio.create_task(acknowledge())
 
             await bridge.start(on_event)
             for _ in range(20):
@@ -48,6 +52,11 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events[0]["id"], "message-1")
             receipt = await bridge.send({"content": "done"})
             self.assertEqual(receipt["messageId"], "sent-1")
+            for _ in range(20):
+                if acknowledgements:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(acknowledgements, [{"success": True}])
             await bridge.stop()
 
     async def test_sidecar_stderr_is_bounded_and_cannot_block_readiness(self):
@@ -98,6 +107,7 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "DWS_PATH": "/absolute/dws",
                     "DWS_PERSONAL_ALLOWED_USERS": "trusted",
                     "FOURSDAY_DWS_HOME": root,
+                    "FOURSDAY_CONTROL_FILE": str(Path(root, "control.json")),
                     "DATABASE_URL": "must-not-cross",
                     "AI_EMPLOYEE_DATA_KEY": "must-not-cross",
                 })
@@ -107,6 +117,7 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                 os.environ.update(previous)
             self.assertEqual(bridge.environment["DWS_PATH"], "/absolute/dws")
             self.assertEqual(bridge.environment["HOME"], root)
+            self.assertEqual(bridge.environment["FOURSDAY_CONTROL_FILE"], str(Path(root, "control.json")))
             self.assertNotIn("FOURSDAY_DWS_HOME", bridge.environment)
             self.assertNotIn("DATABASE_URL", bridge.environment)
             self.assertNotIn("AI_EMPLOYEE_DATA_KEY", bridge.environment)

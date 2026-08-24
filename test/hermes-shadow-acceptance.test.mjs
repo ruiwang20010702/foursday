@@ -38,7 +38,7 @@ function completeEvents() {
       memoryStatus: "available",
     },
     {
-      type: "human_takeover",
+      type: "communication_takeover",
       conversationHash: "conversation-hash",
       participantHash: "participant-hash",
     },
@@ -73,7 +73,7 @@ test("Foursday shadow 缺追问、接管或代码证据时只返回缺口", () =
   assert.equal(result.valid, false);
   assert.equal(result.receipt, null);
   assert.ok(result.missing.includes("followup"));
-  assert.ok(result.missing.includes("humanTakeover"));
+  assert.ok(result.missing.includes("ownerIntervention"));
   assert.ok(result.missing.includes("codeWork"));
 });
 

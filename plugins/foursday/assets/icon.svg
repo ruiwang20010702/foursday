@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Foursday</title>
+  <desc id="desc">Three work blocks and a forward arrow in the Foursday green and warm-white palette.</desc>
+  <rect width="512" height="512" rx="116" fill="#10241c"/>
+  <rect x="76" y="76" width="360" height="360" rx="96" fill="#fffdf8"/>
+  <rect x="142" y="142" width="88" height="88" rx="24" fill="#1f765d"/>
+  <rect x="282" y="142" width="88" height="88" rx="24" fill="#1f765d"/>
+  <rect x="142" y="282" width="88" height="88" rx="24" fill="#1f765d"/>
+  <path d="M282 326h84m-38-38 40 38-40 38" fill="none" stroke="#1f765d" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

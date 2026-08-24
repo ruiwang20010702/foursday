@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { DwsAdapter, isAutomatedSelfMessage } from "./dws.mjs";
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
 import { isMainModule } from "./main-module.mjs";
+import { FoursdayControlStore } from "./foursday-control-store.mjs";
 
 function csv(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))];
@@ -23,16 +24,37 @@ function hash(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 16);
 }
 
+function taskId(conversationId, participantUserId) {
+  return createHash("sha256")
+    .update(`${String(conversationId)}:${String(participantUserId)}`)
+    .digest("hex");
+}
+
 function stableSendKey(payload) {
   return createHash("sha256").update(JSON.stringify({
     conversationId: String(payload?.conversationId ?? ""),
     content: String(payload?.content ?? ""),
     replyTo: String(payload?.replyTo ?? ""),
+    ownerRevision: payload?.ownerRevision,
+    sendGeneration: payload?.sendGeneration,
     metadata: payload?.metadata && typeof payload.metadata === "object"
       ? Object.fromEntries(Object.entries(payload.metadata).sort(([left], [right]) =>
         left.localeCompare(right)))
       : {},
   })).digest("hex");
+}
+
+export function classifyOwnerIntervention(text, { active = true } = {}) {
+  if (!active) return "unrelated_owner_message";
+  const value = String(text ?? "").trim();
+  if (/^(?:继续|恢复|接着做|resume)(?:\s|$|[，。！？,.!?])/iu.test(value)) return "resume_requested";
+  if (/(?:我来(?:处理|做|接管)|停止任务|别做了|不用做了|取消任务|task\s*takeover|stop\s+task)/iu.test(value)) {
+    return "task_takeover";
+  }
+  if (/(?:改成|调整为|纠正|修正|不要.{0,30}(?:而是|改为)|目标(?:改|调整)|task\s*correction)/iu.test(value)) {
+    return "task_correction";
+  }
+  return "communication_takeover";
 }
 
 function idempotencyUuid(key) {
@@ -97,7 +119,24 @@ function emptyState() {
   return {
     lastUsers: {}, lastGroups: {}, recentMessageIds: [],
     recipients: {}, activeConversations: {}, takeoverReported: [],
+    controlStates: {},
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
+  };
+}
+
+function normalizedControlState(value = {}) {
+  const ownerRevision = Number(value?.ownerRevision ?? 0);
+  const sendGeneration = Number(value?.sendGeneration ?? 0);
+  if (
+    !Number.isSafeInteger(ownerRevision) || ownerRevision < 0 ||
+    !Number.isSafeInteger(sendGeneration) || sendGeneration < 0
+  ) throw new Error("DWS sidecar control state is invalid");
+  return {
+    ownerRevision,
+    sendGeneration,
+    lastOwnerMessageId: typeof value?.lastOwnerMessageId === "string"
+      ? value.lastOwnerMessageId.slice(0, 500)
+      : null,
   };
 }
 
@@ -121,6 +160,9 @@ async function loadState(path) {
       takeoverReported: Array.isArray(parsed?.takeoverReported)
         ? parsed.takeoverReported.map(String).filter(Boolean)
         : [],
+      controlStates: parsed?.controlStates && typeof parsed.controlStates === "object"
+        ? parsed.controlStates
+        : {},
       sendLedger: parsed?.sendLedger && typeof parsed.sendLedger === "object"
         ? Object.fromEntries(Object.entries(parsed.sendLedger).slice(-1_000))
         : {},
@@ -153,6 +195,14 @@ export function sidecarConfig(environment = process.env) {
   if (stateFile && !isAbsolute(stateFile)) {
     throw new Error("DWS_PERSONAL_STATE_FILE must be absolute");
   }
+  const mediaRoot = String(environment.DWS_PERSONAL_MEDIA_ROOT ?? "").trim();
+  if (mediaRoot && !isAbsolute(mediaRoot)) {
+    throw new Error("DWS_PERSONAL_MEDIA_ROOT must be absolute");
+  }
+  const controlFile = String(environment.FOURSDAY_CONTROL_FILE ?? "").trim();
+  if (controlFile && !isAbsolute(controlFile)) {
+    throw new Error("FOURSDAY_CONTROL_FILE must be absolute");
+  }
   return {
     dwsPath: resolve(dwsPath),
     dingtalkRoot: String(
@@ -165,6 +215,8 @@ export function sidecarConfig(environment = process.env) {
     groupIds: csv(environment.DWS_PERSONAL_ALLOWED_GROUPS),
     selfUserId: String(environment.DINGTALK_SELF_USER_ID ?? "").trim() || null,
     stateFile: stateFile ? resolve(stateFile) : null,
+    mediaRoot: mediaRoot ? resolve(mediaRoot) : null,
+    controlFile: controlFile ? resolve(controlFile) : null,
     initialLookbackMs: boundedInteger(
       environment.DWS_PERSONAL_INITIAL_LOOKBACK_MS,
       120_000,
@@ -187,13 +239,24 @@ export async function createSidecarRuntime({
   emit = (frame) => process.stdout.write(`${JSON.stringify(frame)}\n`),
   diagnose = (value) => process.stderr.write(`${value}\n`),
   now = () => new Date(),
+  controlStore = config.controlFile
+    ? new FoursdayControlStore({ path: config.controlFile })
+    : null,
 } = {}) {
   await access(config.dwsPath);
+  if (config.mediaRoot) {
+    await mkdir(config.mediaRoot, { recursive: true, mode: 0o700 });
+    await chmod(config.mediaRoot, 0o700);
+  }
   const state = await loadState(config.stateFile);
   const seen = new Set(state.recentMessageIds);
   const recipients = new Map(Object.entries(state.recipients));
   const activeConversations = new Map(Object.entries(state.activeConversations));
   const takeoverReported = new Set(state.takeoverReported);
+  const controlStates = new Map(Object.entries(state.controlStates).map(([key, value]) => [
+    key,
+    normalizedControlState(value),
+  ]));
   const sendLedger = new Map(Object.entries(state.sendLedger));
   const automatedSendEvidence = [...sendLedger.values()]
     .filter((entry) => entry?.status === "completed" && entry.messageId)
@@ -207,6 +270,13 @@ export async function createSidecarRuntime({
   let debounceTimer = null;
   let running = false;
   let pending = false;
+  let stateWrite = Promise.resolve();
+  const persistState = () => {
+    const snapshot = structuredClone(state);
+    const current = stateWrite.catch(() => {}).then(() => saveState(config.stateFile, snapshot));
+    stateWrite = current;
+    return current;
+  };
 
   const remember = (id) => {
     if (seen.has(id)) return false;
@@ -216,14 +286,15 @@ export async function createSidecarRuntime({
     return true;
   };
 
-  const emitMessage = (message, chatType, mentionedSelf, emitFrame = emit) => {
+  const emitMessage = async (message, chatType, mentionedSelf, emitFrame = emit) => {
     const id = String(message.id ?? "").trim();
     const conversationId = String(message.conversationId ?? "").trim();
     const senderUserId = String(message.senderUserId ?? "").trim();
     const senderOpenDingTalkId = String(message.senderOpenDingTalkId ?? "").trim();
     const createTime = new Date(message.createTime).toISOString();
-    if (!id || !conversationId || !senderUserId || !remember(id)) return;
+    if (!id || !conversationId || !senderUserId || seen.has(id)) return;
     if (message.isWithdrawn === true) {
+      if (!remember(id)) return;
       emitFrame({
         type: "event",
         record: {
@@ -240,6 +311,54 @@ export async function createSidecarRuntime({
       });
       return;
     }
+    const stableTaskId = taskId(conversationId, senderUserId);
+    const externalControl = controlStore ? await controlStore.snapshot() : null;
+    const externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
+    if (
+      externalControl?.global?.state === "paused" ||
+      ["paused", "taken_over"].includes(externalTask?.state)
+    ) {
+      const error = new Error("Foursday control paused this task");
+      error.code = "FOURSDAY_CONTROL_PAUSED";
+      throw error;
+    }
+    const attachments = [];
+    if (config.mediaRoot && Array.isArray(message.media)) {
+      for (const item of message.media.slice(0, 8)) {
+        const outputDirectory = join(config.mediaRoot, hash(`${id}:${item.resourceId}`));
+        const downloaded = await dws.downloadMedia({
+          resourceId: item.resourceId,
+          messageId: id,
+          conversationId,
+          outputDirectory,
+        });
+        attachments.push({
+          path: downloaded.path,
+          name: item.name ?? null,
+          mimeType: item.mimeType ?? null,
+        });
+      }
+    }
+    const localControl = normalizedControlState(controlStates.get(conversationId));
+    const priorControl = {
+      ownerRevision: Math.max(localControl.ownerRevision, externalTask?.ownerRevision ?? 0),
+      sendGeneration: Math.max(localControl.sendGeneration, externalTask?.sendGeneration ?? 0),
+      lastOwnerMessageId: localControl.lastOwnerMessageId,
+    };
+    const control = {
+      ...priorControl,
+      sendGeneration: Number(priorControl.sendGeneration ?? 0) + 1,
+    };
+    if (controlStore) {
+      await controlStore.observeTask({
+        taskId: stableTaskId,
+        projectId: null,
+        ownerRevision: control.ownerRevision,
+        sendGeneration: control.sendGeneration,
+        lastInboundAt: createTime,
+      });
+    }
+    if (!remember(id)) return;
     recipients.set(conversationId, {
       chatType,
       recipientId: senderOpenDingTalkId || senderUserId,
@@ -250,7 +369,14 @@ export async function createSidecarRuntime({
       participantUserId: senderUserId,
       chatType,
       after: createTime,
+      sourceMessageId: id,
+      ownerRevision: control.ownerRevision,
+      sendGeneration: control.sendGeneration,
     });
+    controlStates.set(conversationId, control);
+    state.controlStates = Object.fromEntries(controlStates);
+    takeoverReported.delete(conversationId);
+    state.takeoverReported = [...takeoverReported];
     state.activeConversations = Object.fromEntries(activeConversations);
     emitFrame({
       type: "event",
@@ -265,6 +391,9 @@ export async function createSidecarRuntime({
         chatType,
         mentionedSelf,
         isSelf: message.isSelf === true,
+        attachments,
+        ownerRevision: control.ownerRevision,
+        sendGeneration: control.sendGeneration,
       },
     });
   };
@@ -312,14 +441,25 @@ export async function createSidecarRuntime({
         const orderedMessages = [...result.value.messages].sort((left, right) =>
           (epoch(left.createTime) ?? 0) - (epoch(right.createTime) ?? 0)
         );
+        let targetFailed = false;
         for (const message of orderedMessages) {
-          emitMessage(
-            message,
-            target.kind === "user" ? "direct" : "group",
-            target.kind === "group",
-            dispatch,
-          );
+          try {
+            await emitMessage(
+              message,
+              target.kind === "user" ? "direct" : "group",
+              target.kind === "group",
+              dispatch,
+            );
+          } catch (error) {
+            errors.push(error);
+            targetFailed = true;
+            diagnose(
+              `dws_sidecar_target_failed:${target.kind}:${index}:${hash(target.id)}:message_processing_failed`,
+            );
+            break;
+          }
         }
+        if (targetFailed) continue;
         const checkpoints = target.kind === "user" ? state.lastUsers : state.lastGroups;
         checkpoints[target.id] = end.toISOString();
       }
@@ -340,26 +480,82 @@ export async function createSidecarRuntime({
             continue;
           }
           if (manual?.known === true && manual.replied === true) {
+            const ownerMessageId = String(manual.message?.id ?? "").trim() ||
+              `owner:${hash(`${conversationId}:${manual.message?.createTime ?? end.toISOString()}`)}`;
+            const priorControl = normalizedControlState(controlStates.get(conversationId));
+            if (priorControl.lastOwnerMessageId === ownerMessageId) continue;
+            const control = {
+              ...priorControl,
+              ownerRevision: Number(priorControl.ownerRevision ?? 0) + 1,
+              sendGeneration: Number(priorControl.sendGeneration ?? 0) + 1,
+              lastOwnerMessageId: ownerMessageId,
+            };
+            controlStates.set(conversationId, control);
+            state.controlStates = Object.fromEntries(controlStates);
             takeoverReported.add(conversationId);
             state.takeoverReported = [...takeoverReported];
+            const intervention = classifyOwnerIntervention(manual.message?.content, { active: true });
             dispatch({
               type: "event",
               record: {
-                control: "human_takeover",
+                control: intervention,
                 id: `takeover:${hash(conversationId)}:${end.getTime()}`,
                 conversationId,
                 participantUserId: active.participantUserId,
                 chatType: active.chatType,
-                createTime: end.toISOString(),
+                sourceMessageId: active.sourceMessageId ?? null,
+                ownerMessageId,
+                ownerContent: String(manual.message?.content ?? "").slice(0, 20_000),
+                ownerRevision: control.ownerRevision,
+                sendGeneration: control.sendGeneration,
+                createTime: manual.message?.createTime
+                  ? new Date(manual.message.createTime).toISOString()
+                  : end.toISOString(),
               },
             });
+            if (controlStore) {
+              await controlStore.recordIntervention({
+                taskId: taskId(conversationId, active.participantUserId),
+                type: intervention,
+                ownerRevision: control.ownerRevision,
+                sendGeneration: control.sendGeneration,
+                occurredAt: manual.message?.createTime ?? end.toISOString(),
+              });
+            }
           }
+        }
+      }
+      if (controlStore) {
+        const controls = await controlStore.snapshot();
+        for (const [conversationId, active] of activeConversations) {
+          const stableTaskId = taskId(conversationId, active.participantUserId);
+          const task = controls.tasks?.[stableTaskId];
+          const event = task?.pendingEvent;
+          if (!event || event.consumed) continue;
+          dispatch({
+            type: "event",
+            record: {
+              control: event.type,
+              id: `control:${event.id}`,
+              conversationId,
+              participantUserId: active.participantUserId,
+              chatType: active.chatType,
+              sourceMessageId: active.sourceMessageId ?? null,
+              ownerMessageId: event.id,
+              ownerContent: event.note,
+              taskId: stableTaskId,
+              controlEventId: event.id,
+              ownerRevision: task.ownerRevision,
+              sendGeneration: task.sendGeneration,
+              createTime: event.createdAt,
+            },
+          });
         }
       }
       state.lastCheckAt = end.toISOString();
       state.lastErrorCount = errors.length;
       if (errors.length === 0) state.lastFullSuccessAt = end.toISOString();
-      if (!deferEmit) await saveState(config.stateFile, state);
+      if (!deferEmit) await persistState();
       if (errors.length > 0) {
         const error = new Error("One or more DWS shadow targets are unavailable");
         error.code = "DWS_SIDECAR_TARGETS_UNAVAILABLE";
@@ -403,7 +599,7 @@ export async function createSidecarRuntime({
         groups: config.groupIds.length,
       });
       for (const frame of initialFrames) emit(frame);
-      await saveState(config.stateFile, state);
+      await persistState();
     },
     async send(payload) {
       if (!config.sendEnabled) {
@@ -412,6 +608,33 @@ export async function createSidecarRuntime({
       const conversationId = String(payload?.conversationId ?? "").trim();
       const route = recipients.get(conversationId);
       if (!route) return { success: false, error: "DWS conversation recipient is unknown" };
+      const ownerRevision = Number(payload?.ownerRevision);
+      const sendGeneration = Number(payload?.sendGeneration);
+      const currentControl = controlStates.get(conversationId);
+      const active = activeConversations.get(conversationId);
+      const externalControl = controlStore && active
+        ? await controlStore.snapshot()
+        : null;
+      const externalTask = active
+        ? externalControl?.tasks?.[taskId(conversationId, active.participantUserId)]
+        : null;
+      if (
+        !Number.isSafeInteger(ownerRevision) || !Number.isSafeInteger(sendGeneration) ||
+        !currentControl || currentControl.ownerRevision !== ownerRevision ||
+        currentControl.sendGeneration !== sendGeneration ||
+        externalControl?.global?.state === "paused" ||
+        ["paused", "taken_over"].includes(externalTask?.state) ||
+        (externalTask && (
+          externalTask.ownerRevision !== ownerRevision ||
+          externalTask.sendGeneration !== sendGeneration
+        ))
+      ) {
+        return {
+          success: false,
+          staleGeneration: true,
+          error: "DWS reply lost its owner revision or send generation",
+        };
+      }
       const sendKey = stableSendKey(payload);
       const existing = sendLedger.get(sendKey);
       if (existing?.status === "completed" && existing.messageId) {
@@ -434,7 +657,33 @@ export async function createSidecarRuntime({
       sendLedger.set(sendKey, intent);
       while (sendLedger.size > 1_000) sendLedger.delete(sendLedger.keys().next().value);
       state.sendLedger = Object.fromEntries(sendLedger);
-      await saveState(config.stateFile, state);
+      await persistState();
+      const beforeSend = controlStates.get(conversationId);
+      const externalBeforeSend = controlStore && active
+        ? await controlStore.snapshot()
+        : null;
+      const externalTaskBeforeSend = active
+        ? externalBeforeSend?.tasks?.[taskId(conversationId, active.participantUserId)]
+        : null;
+      if (
+        !beforeSend || beforeSend.ownerRevision !== ownerRevision ||
+        beforeSend.sendGeneration !== sendGeneration ||
+        externalBeforeSend?.global?.state === "paused" ||
+        ["paused", "taken_over"].includes(externalTaskBeforeSend?.state) ||
+        (externalTaskBeforeSend && (
+          externalTaskBeforeSend.ownerRevision !== ownerRevision ||
+          externalTaskBeforeSend.sendGeneration !== sendGeneration
+        ))
+      ) {
+        sendLedger.set(sendKey, { ...intent, status: "cancelled_stale" });
+        state.sendLedger = Object.fromEntries(sendLedger);
+        await persistState();
+        return {
+          success: false,
+          staleGeneration: true,
+          error: "DWS reply became stale before transport",
+        };
+      }
       let receipt;
       try {
         receipt = await dws.sendMessage({
@@ -449,7 +698,7 @@ export async function createSidecarRuntime({
       } catch {
         sendLedger.set(sendKey, { ...intent, status: "unknown" });
         state.sendLedger = Object.fromEntries(sendLedger);
-        await saveState(config.stateFile, state);
+        await persistState();
         return {
           success: false,
           outcomeUnknown: true,
@@ -469,7 +718,7 @@ export async function createSidecarRuntime({
       if (!serverMessageId) {
         sendLedger.set(sendKey, { ...intent, status: "unknown" });
         state.sendLedger = Object.fromEntries(sendLedger);
-        await saveState(config.stateFile, state);
+        await persistState();
         return {
           success: false,
           outcomeUnknown: true,
@@ -482,7 +731,7 @@ export async function createSidecarRuntime({
         messageId: serverMessageId,
       });
       state.sendLedger = Object.fromEntries(sendLedger);
-      await saveState(config.stateFile, state);
+      await persistState();
       automatedSendEvidence.push(evidence);
       if (automatedSendEvidence.length > 1_000) automatedSendEvidence.shift();
       return {
@@ -491,11 +740,21 @@ export async function createSidecarRuntime({
         receiptKind: "server",
       };
     },
+    async ackControl(payload) {
+      if (!controlStore) return { success: false, error: "Foursday control store is disabled" };
+      const task = String(payload?.taskId ?? "");
+      const eventId = String(payload?.eventId ?? "");
+      if (!/^[a-f0-9]{64}$/u.test(task) || !/^[A-Za-z0-9-]{1,100}$/u.test(eventId)) {
+        return { success: false, error: "Foursday control acknowledgement is invalid" };
+      }
+      const result = await controlStore.consumeEvent(task, eventId);
+      return { success: result.result.consumed === true };
+    },
     async stop() {
       clearInterval(fallbackTimer);
       clearTimeout(debounceTimer);
       for (const watcher of watchers) watcher.close();
-      await saveState(config.stateFile, state);
+      await persistState();
     },
     check,
   };
@@ -516,6 +775,8 @@ async function runProtocol() {
     try {
       const result = frame.action === "send"
         ? await runtime.send(frame.payload)
+        : frame.action === "ack-control"
+          ? await runtime.ackControl(frame.payload)
         : frame.action === "shutdown"
           ? { success: true }
           : { success: false, error: "Unsupported DWS sidecar action" };

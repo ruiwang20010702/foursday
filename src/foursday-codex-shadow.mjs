@@ -19,6 +19,15 @@ import { fileURLToPath } from "node:url";
 
 const proxyPath = fileURLToPath(new URL("./foursday-codex-proxy.mjs", import.meta.url));
 
+function safeShadowDiagnostic(value) {
+  return String(value ?? "")
+    .replaceAll(/fctx_[a-f0-9]{64}/gu, "[context-token]")
+    .replaceAll(/(token|secret|password|authorization)\s*[:=]\s*\S+/giu, "$1=[redacted]")
+    .replaceAll(/\s+/gu, " ")
+    .trim()
+    .slice(-1_000);
+}
+
 async function privateJson(path, label) {
   const absolute = resolve(path);
   const metadata = await lstat(absolute);
@@ -104,7 +113,29 @@ export function shadowServerDecision(message) {
   return null;
 }
 
-function appServerSession({ environment, workspace, expectedFact, timeoutMs = 180_000 }) {
+export function shadowNotificationBelongsToTurn(message, { threadId, turnId } = {}) {
+  const params = message?.params && typeof message.params === "object" ? message.params : {};
+  const nestedTurn = params.turn && typeof params.turn === "object" ? params.turn : {};
+  const nestedItem = params.item && typeof params.item === "object" ? params.item : {};
+  const observedThreadId = params.threadId ?? params.thread_id ??
+    nestedTurn.threadId ?? nestedTurn.thread_id ??
+    nestedItem.threadId ?? nestedItem.thread_id ?? null;
+  const observedTurnId = params.turnId ?? params.turn_id ??
+    nestedTurn.id ?? nestedTurn.turnId ??
+    nestedItem.turnId ?? nestedItem.turn_id ?? null;
+  return !(
+    (observedThreadId != null && threadId != null && String(observedThreadId) !== String(threadId)) ||
+    (observedTurnId != null && turnId != null && String(observedTurnId) !== String(turnId))
+  );
+}
+
+export function appServerSession({
+  environment,
+  workspace,
+  expectedFact,
+  prompt = null,
+  timeoutMs = 180_000,
+}) {
   return new Promise((accept, reject) => {
     const child = spawn(process.execPath, [proxyPath, "app-server"], {
       cwd: workspace,
@@ -115,6 +146,8 @@ function appServerSession({ environment, workspace, expectedFact, timeoutMs = 18
     const completedItems = [];
     let finalText = "";
     let turnStatus = null;
+    let activeThreadId = null;
+    let activeTurnId = null;
     let stderr = "";
     let settled = false;
     let requestId = 0;
@@ -130,16 +163,22 @@ function appServerSession({ environment, workspace, expectedFact, timeoutMs = 18
     };
     const request = (method, params = {}) => new Promise((resolveRequest, rejectRequest) => {
       const id = ++requestId;
-      pending.set(id, { resolveRequest, rejectRequest });
+      pending.set(id, { resolveRequest, rejectRequest, method });
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
     timer = setTimeout(() => finish(new Error("Foursday Codex shadow timed out")), timeoutMs);
     timer.unref();
     child.once("error", (error) => finish(error));
     child.once("close", (code, signal) => {
-      if (!settled) finish(new Error(signal
-        ? `Foursday Codex shadow stopped by ${signal}`
-        : `Foursday Codex shadow stopped before completion (${code})`));
+      if (!settled) {
+        const diagnostic = safeShadowDiagnostic(stderr);
+        finish(new Error([
+          signal
+            ? `Foursday Codex shadow stopped by ${signal}`
+            : `Foursday Codex shadow stopped before completion (${code})`,
+          diagnostic,
+        ].filter(Boolean).join(": ")));
+      }
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_192); });
@@ -150,7 +189,9 @@ function appServerSession({ environment, workspace, expectedFact, timeoutMs = 18
       if (message.id != null && pending.has(message.id)) {
         const callback = pending.get(message.id);
         pending.delete(message.id);
-        if (message.error) callback.rejectRequest(new Error("Foursday Codex request failed"));
+        if (message.error) callback.rejectRequest(new Error(
+          `Foursday Codex ${callback.method} request failed: ${String(message.error?.message ?? "protocol error").slice(0, 300)}`,
+        ));
         else callback.resolveRequest(message.result);
         return;
       }
@@ -160,6 +201,19 @@ function appServerSession({ environment, workspace, expectedFact, timeoutMs = 18
           child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: decision })}\n`);
           return;
         }
+      }
+      const params = message.params && typeof message.params === "object" ? message.params : {};
+      const nestedTurn = params.turn && typeof params.turn === "object" ? params.turn : {};
+      const nestedItem = params.item && typeof params.item === "object" ? params.item : {};
+      const observedTurnId = params.turnId ?? params.turn_id ??
+        nestedTurn.id ?? nestedTurn.turnId ??
+        nestedItem.turnId ?? nestedItem.turn_id ?? null;
+      if (!shadowNotificationBelongsToTurn(message, {
+        threadId: activeThreadId,
+        turnId: activeTurnId,
+      })) return;
+      if (message.method === "turn/started" && observedTurnId != null && activeTurnId == null) {
+        activeTurnId = String(observedTurnId);
       }
       if (message.method === "item/completed") {
         const item = message.params?.item;
@@ -185,11 +239,12 @@ function appServerSession({ environment, workspace, expectedFact, timeoutMs = 18
         const thread = await request("thread/start", { cwd: workspace });
         const threadId = thread?.thread?.id ?? thread?.id;
         if (!threadId) throw new Error("Foursday Codex shadow did not create a thread");
-        await request("turn/start", {
+        activeThreadId = String(threadId);
+        const startedTurn = await request("turn/start", {
           threadId,
           input: [{
             type: "text",
-            text: [
+            text: prompt ?? [
               "This is a read-only Foursday system verification.",
               "Read FACT.txt in the current project, verify its contents using project tools,",
               `and answer naturally with the exact evidence token ${expectedFact}.`,
@@ -197,6 +252,7 @@ function appServerSession({ environment, workspace, expectedFact, timeoutMs = 18
             ].join(" "),
           }],
         });
+        activeTurnId = String(startedTurn?.turn?.id ?? startedTurn?.id ?? activeTurnId ?? "") || null;
       } catch (error) {
         finish(error);
       }

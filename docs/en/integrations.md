@@ -14,4 +14,20 @@ Do not add a capability manifest, business-specific JSON pointer, fixed reply te
 
 An integration is acceptable only when it preserves identity binding, workspace isolation, secret isolation, human takeover, idempotency, unknown-outcome handling, and exact read-back. Add positive, denial, mismatch, retry, restart, and duplicate tests with the implementation.
 
+Agent-host integrations are thin clients of `foursday control-mcp`. They must read the current revision before a control write and must not parse private runtime files or reuse the legacy 9465 API.
+
+The repository is an installable marketplace for both supported hosts:
+
+```bash
+npm install --global --ignore-scripts .
+
+codex plugin marketplace add .
+codex plugin add foursday@foursday-local
+
+claude plugin marketplace add . --scope user
+claude plugin install foursday@foursday-local --scope user
+```
+
+The Codex marketplace entry lives at `.agents/plugins/marketplace.json`; the Claude entry lives at `.claude-plugin/marketplace.json`. Both resolve to thin host plugins and require the same installed `foursday` CLI.
+
 Current examples live in `distribution/plugins/` and `distribution/skills/`.

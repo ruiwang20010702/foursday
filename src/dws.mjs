@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { chmod, lstat, mkdir, readdir, realpath } from "node:fs/promises";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { adapterContractVersion, assertNormalizedMessage } from "./adapter-contracts.mjs";
 import { safeCodexEnvironment } from "./codex-environment.mjs";
@@ -27,6 +29,41 @@ function isoWithOffset(date) {
 export function normalizeDwsIdentity(value) {
   const normalized = String(value ?? "").trim();
   return normalized === "" ? null : normalized;
+}
+
+export function extractDwsMediaDescriptors(raw) {
+  const output = [];
+  const seen = new Set();
+  const queue = [{ value: raw, depth: 0 }];
+  while (queue.length > 0 && output.length < 8) {
+    const { value, depth } = queue.shift();
+    if (depth > 5 || value == null) continue;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length <= 256 * 1024) {
+        try { queue.push({ value: JSON.parse(trimmed), depth: depth + 1 }); } catch {}
+      }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 50)) queue.push({ value: item, depth: depth + 1 });
+      continue;
+    }
+    if (typeof value !== "object") continue;
+    const resourceId = normalizeDwsIdentity(value.mediaId ?? value.media_id);
+    if (resourceId && resourceId.length <= 500 && !seen.has(resourceId)) {
+      seen.add(resourceId);
+      output.push({
+        resourceId,
+        name: String(value.fileName ?? value.filename ?? value.name ?? "").trim().slice(0, 255) || null,
+        mimeType: String(value.mimeType ?? value.contentType ?? value.type ?? "").trim().slice(0, 120) || null,
+      });
+    }
+    for (const child of Object.values(value).slice(0, 100)) {
+      queue.push({ value: child, depth: depth + 1 });
+    }
+  }
+  return output;
 }
 
 export function collectMessages(payload, senderUserId) {
@@ -91,6 +128,7 @@ export function collectMessages(payload, senderUserId) {
           /^(?:RECALLED|REVOKED|WITHDRAWN)$/iu.test(String(message.status ?? "")),
         withdrawnAt:
           message.withdrawnAt ?? message.recalledAt ?? message.revokedAt ?? null,
+        media: extractDwsMediaDescriptors(message),
         raw: message,
       };
     })
@@ -325,6 +363,57 @@ export class DwsAdapter {
       },
     );
     return JSON.parse(stdout);
+  }
+
+  async downloadMedia({ resourceId, messageId, conversationId, outputDirectory }) {
+    for (const [label, value] of Object.entries({ resourceId, messageId, conversationId })) {
+      if (typeof value !== "string" || !value.trim() || value.length > 500 || /[\u0000-\u001f\u007f]/u.test(value)) {
+        throw new Error(`DWS media ${label} is invalid`);
+      }
+    }
+    if (!isAbsolute(outputDirectory)) throw new Error("DWS media output directory must be absolute");
+    const target = resolve(outputDirectory);
+    await mkdir(target, { recursive: true, mode: 0o700 });
+    const metadata = await lstat(target);
+    if (
+      !metadata.isDirectory() || metadata.isSymbolicLink() ||
+      (metadata.mode & 0o077) !== 0 || await realpath(target) !== target
+    ) throw new Error("DWS media output directory is unsafe");
+    const before = new Set(await readdir(target));
+    const receipt = await this.run([
+      "chat", "message", "download-media",
+      "--type", "mediaId",
+      "--resource-id", resourceId,
+      "--message-id", messageId,
+      "--open-conversation-id", conversationId,
+      "--output", target,
+      "-y",
+    ]);
+    const candidates = [];
+    const visit = (value, depth = 0) => {
+      if (depth > 5 || value == null) return;
+      if (Array.isArray(value)) return value.slice(0, 50).forEach((item) => visit(item, depth + 1));
+      if (typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (typeof child === "string" && /(?:path|file)$/iu.test(key) && isAbsolute(child)) candidates.push(child);
+        else visit(child, depth + 1);
+      }
+    };
+    visit(receipt);
+    const after = await readdir(target);
+    for (const name of after) if (!before.has(name)) candidates.push(join(target, name));
+    const valid = [];
+    for (const candidate of [...new Set(candidates)]) {
+      const canonical = await realpath(candidate).catch(() => null);
+      if (!canonical || !(canonical === target || canonical.startsWith(`${target}${sep}`))) continue;
+      const file = await lstat(canonical);
+      if (file.isFile() && !file.isSymbolicLink() && file.size > 0 && file.size <= 128 * 1024 * 1024) {
+        await chmod(canonical, 0o600);
+        valid.push(canonical);
+      }
+    }
+    if (valid.length !== 1) throw new Error("DWS media download did not produce one safe file");
+    return { path: valid[0], receipt };
   }
 
   async fetchBySenderAll({ senderUserId, start, end }) {
@@ -579,7 +668,7 @@ export class DwsAdapter {
       start: new Date(afterTime),
       end: now,
     });
-    const replied = messages.some((message) => {
+    const replies = messages.filter((message) => {
       const messageTime = epoch(message.createTime);
       return (
         message.conversationId === conversationId &&
@@ -588,7 +677,19 @@ export class DwsAdapter {
         !isAutomatedSelfMessage(message, automatedSendEvidence)
       );
     });
-    return { known: true, replied };
+    const latest = replies.sort((left, right) =>
+      String(left.createTime).localeCompare(String(right.createTime))).at(-1);
+    return latest
+      ? {
+          known: true,
+          replied: true,
+          message: {
+            id: String(latest.id ?? "").slice(0, 500) || null,
+            content: String(latest.content ?? "").slice(0, 20_000),
+            createTime: String(latest.createTime ?? "") || null,
+          },
+        }
+      : { known: true, replied: false, message: null };
   }
 
   async sendText({ userId, identityKind = null, text, idempotencyKey }) {

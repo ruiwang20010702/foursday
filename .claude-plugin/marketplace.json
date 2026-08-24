@@ -1,0 +1,30 @@
+{
+  "name": "foursday-local",
+  "owner": {
+    "name": "Foursday"
+  },
+  "metadata": {
+    "description": "Foursday work-twin control integration for Codex and Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "foursday",
+      "source": "./distribution/claude-plugins/foursday",
+      "description": "Operate the local Foursday work twin through the shared Control MCP.",
+      "version": "0.8.0-rc.1",
+      "author": {
+        "name": "Foursday"
+      },
+      "repository": "https://github.com/ruiwang20010702/foursday",
+      "license": "MIT",
+      "keywords": [
+        "foursday",
+        "work-twin",
+        "codex",
+        "control"
+      ],
+      "category": "productivity",
+      "strict": false
+    }
+  ]
+}

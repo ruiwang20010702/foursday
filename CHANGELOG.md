@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+## 0.8.0-rc.1 - 2026-08-24
+
+- Added one revision-fenced Foursday Control service for privacy-safe status, tasks, schedules, project-memory scope, evidence, pause, takeover, correction, and resume.
+- Added thin Codex and Claude plugin packages that launch the same Control MCP instead of depending on the legacy 9465 administration API.
+- Restored standard Codex and Claude marketplace manifests so both agent-host plugins can be installed from the repository without reviving the legacy plugin implementation.
+- Added a square Foursday brand icon and declared it for the Codex composer, light logo and dark logo surfaces.
+- Added an optional `foursday dashboard` loopback-only, GET-only status page with no independent state or write endpoint.
+- Wired global/task controls into DWS message intake, owner intervention, pre-send generation checks, and explicit post-processing acknowledgements.
+
 ## 0.7.0-rc.1 - 2026-08-21
 
 > **Breaking preview:** this release intentionally removes the legacy custom Runtime, configuration keys, migration history, admin UI, plan/capability workflow, and compatibility release tooling. Existing `0.6.x` installations should remain pinned until they are reconfigured as a fresh Foursday Profile; rollback means restoring the previous release rather than applying this candidate's minimal PostgreSQL schema in place.

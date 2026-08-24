@@ -1,0 +1,30 @@
+{
+  "name": "foursday",
+  "version": "0.8.0-rc.1",
+  "description": "Operate the local Foursday work twin from Codex without a second dashboard state machine.",
+  "author": {
+    "name": "Foursday"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Foursday",
+    "shortDescription": "\u67e5\u770b\u3001\u6682\u505c\u3001\u63a5\u7ba1\u548c\u6062\u590d\u672c\u673aFoursday",
+    "longDescription": "\u901a\u8fc7\u672c\u673aFoursday Control MCP\u8bfb\u53d6\u72b6\u6001\u3001\u4efb\u52a1\u3001\u5b9a\u65f6\u5de5\u4f5c\u3001\u8bb0\u5fc6\u4e0e\u8bc1\u636e\uff0c\u5e76\u7528\u7cbe\u786erevision\u6267\u884c\u53ef\u6062\u590d\u7684\u6682\u505c\u3001\u63a5\u7ba1\u3001\u7ea0\u6b63\u548c\u6062\u590d\u3002\u63d2\u4ef6\u4e0d\u53d1\u9001\u6d88\u606f\u3001\u4e0d\u90e8\u7f72\u3001\u4e0d\u6269\u5927\u6743\u9650\u3002",
+    "developerName": "Foursday",
+    "category": "Productivity",
+    "brandColor": "#1F765D",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "logoDark": "./assets/icon.png",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "\u67e5\u770bFoursday\u5f53\u524d\u72b6\u6001\u548c\u9700\u8981\u6211\u5904\u7406\u7684\u4efb\u52a1\u3002",
+      "\u6682\u505cFoursday\uff0c\u5e76\u8bf4\u660e\u5f53\u524drevision\u3002",
+      "\u67e5\u770b\u5b9a\u65f6\u4efb\u52a1\u3001\u9879\u76ee\u8bb0\u5fc6\u8fb9\u754c\u548c\u6700\u8fd1\u8bc1\u636e\u3002"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

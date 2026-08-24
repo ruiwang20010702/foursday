@@ -6,11 +6,16 @@ import { createInterface } from "node:readline";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { isMainModule } from "./main-module.mjs";
 import { loadFoursdayWorkContext } from "./foursday-work-context.mjs";
+import {
+  FoursdayThreadBindingStore,
+  foursdayPermissionVersion,
+} from "./foursday-thread-bindings.mjs";
 
 const contextMarker = /\n\n<!-- foursday-context:(fctx_[a-f0-9]{64}) -->\s*$/u;
 
 const highRiskPatterns = Object.freeze([
   /(?:^|[\s/])git\s+(?:[^\n]*\s)?push(?:\s|$)/iu,
+  /(?:^|[\s/])git\s+add\s+(?:-A|--all|\.|[^\n]*\.foursday-inbox(?:\/\S*)?)(?:\s|$)/iu,
   /(?:^|[\s/])git\s+reset\s+--hard(?:\s|$)/iu,
   /(?:^|[\s/])git\s+(?:restore|clean)(?:\s|$)/iu,
   /(?:^|[\s/])git\s+checkout\s+--(?:\s|$)/iu,
@@ -39,11 +44,15 @@ export function classifyCodexServerRequest(message) {
 
 export function rewriteCodexClientRequest(message, {
   allowedRoots = null,
+  boundThreadIds = null,
   developerInstructions = null,
 } = {}) {
   if (!message || typeof message !== "object" || Array.isArray(message)) return message;
   if (["thread/resume", "thread/fork"].includes(message.method)) {
-    throw new Error("foursday_unbound_thread_denied");
+    const threadId = String(message.params?.threadId ?? "");
+    if (!(boundThreadIds instanceof Set) || !boundThreadIds.has(threadId)) {
+      throw new Error("foursday_unbound_thread_denied");
+    }
   }
   if (message.method === "initialize") {
     return {
@@ -57,7 +66,7 @@ export function rewriteCodexClientRequest(message, {
       },
     };
   }
-  if (["thread/start", "turn/start"].includes(message.method)) {
+  if (["thread/start", "thread/resume", "thread/fork", "turn/start"].includes(message.method)) {
     const {
       sandbox: _sandbox,
       sandboxPolicy: _sandboxPolicy,
@@ -71,6 +80,12 @@ export function rewriteCodexClientRequest(message, {
       developerInstructions: _developerInstructions,
       baseInstructions: _baseInstructions,
       collaborationMode: _collaborationMode,
+      multiAgentMode: _multiAgentMode,
+      model: _model,
+      modelProvider: _modelProvider,
+      serviceTier: _serviceTier,
+      approvalsReviewer: _approvalsReviewer,
+      path: _path,
       ...safeParams
     } = message.params ?? {};
     if (message.method === "thread/start" && typeof safeParams.cwd !== "string") {
@@ -87,7 +102,7 @@ export function rewriteCodexClientRequest(message, {
       permissions: "foursday-workspace",
       serviceName: "foursday",
     };
-    if (message.method === "thread/start") {
+    if (["thread/start", "thread/resume", "thread/fork"].includes(message.method)) {
       if (typeof developerInstructions !== "string" || !developerInstructions.trim()) {
         throw new Error("foursday_instructions_required");
       }
@@ -132,7 +147,15 @@ export async function injectFoursdayTurnContext(message, {
   cwd = message?.params?.cwd,
   now = Date.now(),
 } = {}) {
-  if (message?.method !== "turn/start") return message;
+  return (await prepareFoursdayTurnContext(message, { environment, cwd, now })).message;
+}
+
+export async function prepareFoursdayTurnContext(message, {
+  environment,
+  cwd = message?.params?.cwd,
+  now = Date.now(),
+} = {}) {
+  if (message?.method !== "turn/start") return { message, context: null, token: null };
   const input = Array.isArray(message.params?.input)
     ? message.params.input.map((item) => ({ ...item }))
     : [];
@@ -140,7 +163,7 @@ export async function injectFoursdayTurnContext(message, {
   const required = String(environment.FOURSDAY_REQUIRE_WORK_CONTEXT ?? "").toLowerCase() === "true";
   if (index < 0) {
     if (required) throw new Error("foursday_work_context_required");
-    return { ...message, params: { ...message.params, input } };
+    return { message: { ...message, params: { ...message.params, input } }, context: null, token: null };
   }
   const original = String(input[index].text ?? "");
   const match = original.match(contextMarker);
@@ -153,6 +176,9 @@ export async function injectFoursdayTurnContext(message, {
     now,
   });
   input[index].text = [
+    "<foursday_task_authority trust=\"connector-verified\" scope=\"project-reversible\">",
+    "Autonomously complete reversible work inside the routed project. Ask the requester only for irreducible business meaning, priority, content, or acceptance. Stop at the owner gate for push, merge, release, production, cross-project access, personal high-authority connectors, login-state browser actions, arbitrary shell network, secrets, payments, contracts, HR, irreversible deletion, or permission expansion.",
+    "</foursday_task_authority>",
     "<foursday_project_context trust=\"owner-configured\">",
     context.projectContext.trim(),
     "</foursday_project_context>",
@@ -161,12 +187,33 @@ export async function injectFoursdayTurnContext(message, {
       context.memoryContext.trim(),
       "</personal_gbrain_context>",
     ] : []),
+    ...(context.attachments?.length ? [
+      "<foursday_attachments trust=\"owner-configured-metadata\">",
+      JSON.stringify(context.attachments.map((item, attachmentIndex) => ({
+        attachmentIndex,
+        name: item.name,
+        mimeType: item.mimeType,
+        size: item.size,
+        access: item.isImage
+          ? "provided-as-localImage"
+          : "use-foursday_stage_attachment-mcp",
+      }))),
+      "</foursday_attachments>",
+    ] : []),
+    ...(context.ownerIntervention ? [
+      `<foursday_owner_intervention trust="connector-verified" type="${context.ownerIntervention}" />`,
+    ] : []),
     `Foursday MCP context token: ${token}. Use it only for Foursday MCP tools and never quote it.`,
     "<current_user_request>",
     cleanText,
     "</current_user_request>",
   ].join("\n");
-  return { ...message, params: { ...message.params, input } };
+  for (const attachment of context.attachments ?? []) {
+    if (attachment.isImage) {
+      input.push({ type: "localImage", path: attachment.path });
+    }
+  }
+  return { message: { ...message, params: { ...message.params, input } }, context, token };
 }
 
 async function loadAllowedRoots(environment) {
@@ -219,6 +266,27 @@ function denial(id, reason, method) {
       : { jsonrpc: "2.0", id, result: { decision: "decline" } };
 }
 
+function responseThreadId(message) {
+  const value = message?.result?.thread?.id ?? message?.result?.threadId ?? message?.result?.id;
+  return typeof value === "string" ? value : null;
+}
+
+function rewriteThreadIdentifiers(value, from, to, parentKey = null) {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => rewriteThreadIdentifiers(item, from, to, parentKey));
+  }
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    const isThreadField = key === "threadId" || key === "thread_id" ||
+      (key === "id" && parentKey === "thread");
+    output[key] = isThreadField && item === from
+      ? to
+      : rewriteThreadIdentifiers(item, from, to, key);
+  }
+  return output;
+}
+
 export function codexProcessEnvironment(source, realCodex, configuredCodex = realCodex) {
   const allowed = [
     "HOME", "CODEX_HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
@@ -233,6 +301,9 @@ export function codexProcessEnvironment(source, realCodex, configuredCodex = rea
     "FOURSDAY_WORK_CONTEXT_FILE",
   ]) {
     if (typeof source[name] === "string" && source[name] !== "") environment[name] = source[name];
+  }
+  if (typeof source.FOURSDAY_PYTHON_PATH === "string" && source.FOURSDAY_PYTHON_PATH !== "") {
+    environment.PYTHON = source.FOURSDAY_PYTHON_PATH;
   }
   environment.PATH = [dirname(configuredCodex), dirname(realCodex), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
     .filter((value, index, values) => values.indexOf(value) === index)
@@ -258,13 +329,43 @@ export async function runFoursdayCodexProxy({
     loadAllowedRoots(environment),
     loadDeveloperInstructions(environment),
   ]);
+  const pythonPath = String(environment.FOURSDAY_PYTHON_PATH ?? "").trim();
+  const permissionVersion = foursdayPermissionVersion({
+    allowedRoots,
+    developerInstructions,
+    runtimeRoots: pythonPath ? [dirname(dirname(await realpath(pythonPath)))] : [],
+  });
+  const bindingRoot = String(environment.FOURSDAY_THREAD_BINDINGS_ROOT ?? "").trim();
+  const bindingStore = bindingRoot
+    ? await new FoursdayThreadBindingStore({ root: bindingRoot }).open()
+    : null;
   const child = spawnProcess(realCodex, args, {
     env: codexProcessEnvironment(environment, realCodex, resolve(realPath)),
     stdio: ["pipe", "pipe", "pipe"],
   });
   child.stderr.pipe(process.stderr);
   const pendingThreadStarts = new Map();
+  const pendingThreadForks = new Map();
   const threadWorkspaces = new Map();
+  const threadContexts = new Map();
+  const threadAliases = new Map();
+  const reverseThreadAliases = new Map();
+  const boundThreadIds = new Set();
+  const internalRequests = new Map();
+  let internalCounter = 0;
+  const sendInternalRequest = (method, params, timeoutMs = 15_000) => new Promise((accept, reject) => {
+    internalCounter += 1;
+    const id = `foursday-internal-${process.pid}-${internalCounter}`;
+    const timer = setTimeout(() => {
+      if (internalRequests.delete(id)) reject(new Error(`Foursday internal ${method} timed out`));
+    }, timeoutMs);
+    timer.unref?.();
+    internalRequests.set(id, {
+      accept: (value) => { clearTimeout(timer); accept(value); },
+      reject: (error) => { clearTimeout(timer); reject(error); },
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+  });
   const clientLines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const serverLines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const clientTask = (async () => {
@@ -274,14 +375,81 @@ export async function runFoursdayCodexProxy({
       try { raw = JSON.parse(line); } catch { continue; }
       let message;
       try {
-        message = rewriteCodexClientRequest(raw, { allowedRoots, developerInstructions });
+        if (typeof raw?.id === "string" && raw.id.startsWith("foursday-internal-")) {
+          throw new Error("foursday_reserved_request_id");
+        }
+        const clientThreadId = String(raw?.params?.threadId ?? "");
+        const mappedThreadId = threadAliases.get(clientThreadId);
+        const mappedRaw = mappedThreadId
+          ? rewriteThreadIdentifiers(raw, clientThreadId, mappedThreadId)
+          : raw;
+        const workspace = mappedRaw.params?.cwd ??
+          threadWorkspaces.get(mappedRaw.params?.threadId) ??
+          threadWorkspaces.get(clientThreadId);
+        const prepared = await prepareFoursdayTurnContext(mappedRaw, {
+          environment,
+          cwd: workspace,
+        });
+        message = rewriteCodexClientRequest(prepared.message, {
+          allowedRoots,
+          boundThreadIds,
+          developerInstructions,
+        });
         if (message.method === "thread/start" && message.id != null) {
           pendingThreadStarts.set(message.id, message.params.cwd);
         }
-        message = await injectFoursdayTurnContext(message, {
-          environment,
-          cwd: message.params?.cwd ?? threadWorkspaces.get(message.params?.threadId),
-        });
+        if (message.method === "thread/fork" && message.id != null) {
+          const parentThreadId = String(message.params?.threadId ?? "");
+          const context = threadContexts.get(parentThreadId);
+          if (!context || !bindingStore) throw new Error("foursday_fork_context_required");
+          pendingThreadForks.set(message.id, { parentThreadId, context });
+        }
+        if (message.method === "turn/start" && bindingStore && prepared.context) {
+          const aliasThreadId = clientThreadId || String(message.params?.threadId ?? "");
+          const binding = await bindingStore.get(prepared.context, permissionVersion);
+          if (!binding) {
+            await bindingStore.bind(prepared.context, permissionVersion, aliasThreadId);
+            boundThreadIds.add(aliasThreadId);
+            threadContexts.set(aliasThreadId, prepared.context);
+          } else {
+            const boundThreadId = binding.codexThreadId;
+            boundThreadIds.add(boundThreadId);
+            for (const forkThreadId of binding.forkThreadIds ?? []) {
+              boundThreadIds.add(forkThreadId);
+              threadWorkspaces.set(forkThreadId, prepared.context.workspace);
+              threadContexts.set(forkThreadId, prepared.context);
+            }
+            threadContexts.set(boundThreadId, prepared.context);
+            if (boundThreadId !== aliasThreadId && threadAliases.get(aliasThreadId) !== boundThreadId) {
+              threadAliases.set(aliasThreadId, boundThreadId);
+              reverseThreadAliases.set(boundThreadId, aliasThreadId);
+              let resumed;
+              try {
+                resumed = await sendInternalRequest("thread/resume", {
+                  threadId: boundThreadId,
+                  cwd: prepared.context.workspace,
+                  approvalPolicy: "untrusted",
+                  permissions: "foursday-workspace",
+                  serviceName: "foursday",
+                  developerInstructions,
+                  excludeTurns: true,
+                });
+              } catch (error) {
+                threadAliases.delete(aliasThreadId);
+                reverseThreadAliases.delete(boundThreadId);
+                throw error;
+              }
+              if (resumed?.error || responseThreadId(resumed) !== boundThreadId) {
+                threadAliases.delete(aliasThreadId);
+                reverseThreadAliases.delete(boundThreadId);
+                throw new Error("foursday_thread_resume_failed");
+              }
+              threadWorkspaces.set(boundThreadId, prepared.context.workspace);
+              message = rewriteThreadIdentifiers(message, aliasThreadId, boundThreadId);
+            }
+            await bindingStore.bind(prepared.context, permissionVersion, boundThreadId);
+          }
+        }
       } catch {
         if (raw?.id != null) {
           process.stdout.write(`${JSON.stringify({
@@ -300,11 +468,44 @@ export async function runFoursdayCodexProxy({
       if (!line.trim()) continue;
       let message;
       try { message = JSON.parse(line); } catch { continue; }
+      if (message.id != null && internalRequests.has(message.id)) {
+        const pending = internalRequests.get(message.id);
+        internalRequests.delete(message.id);
+        if (message.error) pending.reject(new Error("Foursday internal Codex request failed"));
+        else pending.accept(message);
+        continue;
+      }
       if (message.id != null && pendingThreadStarts.has(message.id)) {
         const workspace = pendingThreadStarts.get(message.id);
         pendingThreadStarts.delete(message.id);
         const threadId = message.result?.thread?.id ?? message.result?.id;
         if (typeof threadId === "string" && workspace) threadWorkspaces.set(threadId, workspace);
+      }
+      if (message.id != null && pendingThreadForks.has(message.id)) {
+        const pending = pendingThreadForks.get(message.id);
+        pendingThreadForks.delete(message.id);
+        const forkThreadId = responseThreadId(message);
+        if (message.error || !forkThreadId) {
+          process.stderr.write("Foursday Codex fork failed\n");
+        } else {
+          try {
+            await bindingStore.addFork(
+              pending.context,
+              permissionVersion,
+              pending.parentThreadId,
+              forkThreadId,
+            );
+            boundThreadIds.add(forkThreadId);
+            threadWorkspaces.set(forkThreadId, pending.context.workspace);
+            threadContexts.set(forkThreadId, pending.context);
+          } catch {
+            message = {
+              jsonrpc: "2.0",
+              id: message.id,
+              error: { code: -32603, message: "Foursday rejected the fork binding" },
+            };
+          }
+        }
       }
       const blocked = classifyCodexServerRequest(message);
       if (blocked) {
@@ -312,14 +513,21 @@ export async function runFoursdayCodexProxy({
         process.stderr.write(`Foursday blocked Codex request: ${blocked}\n`);
         continue;
       }
+      for (const [boundThreadId, aliasThreadId] of reverseThreadAliases) {
+        message = rewriteThreadIdentifiers(message, boundThreadId, aliasThreadId);
+      }
       process.stdout.write(`${JSON.stringify(message)}\n`);
     }
   })();
   const exit = new Promise((accept, reject) => {
     child.once("error", reject);
-    child.once("close", (code, signal) => code === 0
-      ? accept()
-      : reject(new Error(signal ? `Codex app-server stopped by ${signal}` : "Codex app-server failed")));
+    child.once("close", (code, signal) => {
+      const error = new Error(signal ? `Codex app-server stopped by ${signal}` : "Codex app-server failed");
+      for (const pending of internalRequests.values()) pending.reject(error);
+      internalRequests.clear();
+      if (code === 0) accept();
+      else reject(error);
+    });
   });
   await Promise.all([clientTask, serverTask, exit]);
 }

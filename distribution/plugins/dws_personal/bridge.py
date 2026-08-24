@@ -70,6 +70,8 @@ class JsonLineDwsBridge:
                 "DWS_PERSONAL_ALLOWED_USERS", "DWS_PERSONAL_ALLOWED_GROUPS",
                 "DWS_PERSONAL_FETCH_USERS",
                 "DWS_PERSONAL_STATE_FILE", "DWS_PERSONAL_FALLBACK_MS",
+                "DWS_PERSONAL_MEDIA_ROOT",
+                "FOURSDAY_CONTROL_FILE",
                 "DWS_PERSONAL_INITIAL_LOOKBACK_MS", "DWS_PERSONAL_SEND_ENABLED",
             }
         }
@@ -180,6 +182,13 @@ class JsonLineDwsBridge:
 
     async def send(self, payload: dict) -> dict:
         result = await self._request("send", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def ack_control(self, task_id: str, event_id: str) -> dict:
+        result = await self._request("ack-control", {
+            "taskId": str(task_id),
+            "eventId": str(event_id),
+        })
         return result if isinstance(result, dict) else {"success": False}
 
     async def stop(self) -> None:

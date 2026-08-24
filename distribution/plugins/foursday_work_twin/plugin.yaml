@@ -7,6 +7,8 @@ description: >
   platform and project router
   from one profile-scoped trust boundary without patching Hermes core.
 author: Foursday
+provides_hooks:
+  - pre_llm_call
 optional_env:
   - name: FOURSDAY_PROJECT_REGISTRY
     description: "Absolute private project registry"

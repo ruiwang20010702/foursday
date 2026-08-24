@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   runFoursdayCodexShadow,
+  shadowNotificationBelongsToTurn,
   shadowServerDecision,
 } from "../src/foursday-codex-shadow.mjs";
 
@@ -35,6 +36,17 @@ test("shadow verification previews without a model call", async (t) => {
   assert.equal(result.productionWrite, false);
   assert.equal(result.messageSent, false);
   assert.equal(called, false);
+});
+
+test("shadow collector ignores child-thread completion while waiting for the parent", () => {
+  assert.equal(shadowNotificationBelongsToTurn({
+    method: "turn/completed",
+    params: { threadId: "child", turn: { id: "child-turn" } },
+  }, { threadId: "parent", turnId: "parent-turn" }), false);
+  assert.equal(shadowNotificationBelongsToTurn({
+    method: "item/completed",
+    params: { threadId: "parent", turnId: "parent-turn", item: { type: "agentMessage" } },
+  }, { threadId: "parent", turnId: "parent-turn" }), true);
 });
 
 test("shadow client approves terminal reads but refuses all file changes", () => {

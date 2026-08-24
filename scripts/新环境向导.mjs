@@ -11,6 +11,8 @@ import {
 import { validateHermesUpstreamLock } from "../src/hermes-upstream.mjs";
 import { runFoursdayCodexLogin } from "../src/foursday-codex-auth.mjs";
 import { runFoursdayCodexShadow } from "../src/foursday-codex-shadow.mjs";
+import { runFoursdayControlMcp } from "../src/foursday-control-mcp.mjs";
+import { runFoursdayControlSite } from "../src/foursday-control-site.mjs";
 import { defaultProductionConfigPath } from "../src/production-config-file.mjs";
 import { isMainModule } from "../src/main-module.mjs";
 
@@ -26,6 +28,9 @@ export const foursdayHelp = Object.freeze({
     "foursday accept --release-sha SHA --ledger FILE --restart-evidence FILE --code-evidence FILE --output FILE [--apply]",
     "foursday gateway <status|install-shadow|start-shadow|activate|stop|restart|uninstall|remove-profile> [options]",
     "foursday status",
+    "foursday control <status|tasks|schedules|memory|evidence|ACTION> [options]",
+    "foursday control-mcp",
+    "foursday dashboard [--port PORT]",
   ],
   architecture: "Foursday Gateway + Codex work loop + personal memory",
   defaultSafety: "install and configure preview changes; Gateway starts send-disabled; activation requires exact shadow evidence",
@@ -114,6 +119,8 @@ async function runBundledScript(script, args, { transform = (value) => value } =
 export async function runFoursdayCli(args = process.argv.slice(2), {
   codexLogin = runFoursdayCodexLogin,
   codexShadow = runFoursdayCodexShadow,
+  controlMcp = runFoursdayControlMcp,
+  controlSite = runFoursdayControlSite,
 } = {}) {
   const [command = "help", ...rest] = args;
   if (["help", "--help", "-h"].includes(command)) return foursdayHelp;
@@ -149,6 +156,24 @@ export async function runFoursdayCli(args = process.argv.slice(2), {
   if (command === "accept") {
     return runBundledScript("./生成Foursday影子验收.mjs", rest);
   }
+  if (command === "control") {
+    return runBundledScript("./控制Foursday.mjs", rest);
+  }
+  if (command === "control-mcp") {
+    if (rest.length > 0) throw new Error("Usage: foursday control-mcp");
+    await controlMcp({ projectRoot: packageRoot });
+    return null;
+  }
+  if (command === "dashboard") {
+    if (rest.length > 2 || (rest.length > 0 && rest[0] !== "--port")) {
+      throw new Error("Usage: foursday dashboard [--port PORT]");
+    }
+    const port = rest.length === 2 ? Number(rest[1]) : 9466;
+    if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+      throw new Error("Dashboard port is invalid");
+    }
+    return controlSite({ projectRoot: packageRoot, port });
+  }
   if (command === "gateway") {
     return runBundledScript("./管理FoursdayGateway.mjs", rest, {
       transform: rest[0] === "status" ? publicFoursdayStatus : undefined,
@@ -165,7 +190,8 @@ export async function runFoursdayCli(args = process.argv.slice(2), {
 
 if (isMainModule(import.meta.url)) {
   try {
-    console.log(JSON.stringify(await runFoursdayCli(), null, 2));
+    const result = await runFoursdayCli();
+    if (result != null) console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     if (error?.stdout) {
       const output = String(error.stdout).trim();

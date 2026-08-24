@@ -2,7 +2,7 @@
 
 Foursday is a work-twin product with one Codex Agent Loop. A pinned, minimally installed Hermes runtime supplies the internal Gateway, session lifecycle, scheduling, and future channel adapters; it does not plan work or write the final reply.
 
-The current public version is the `v0.7.0-rc.1` release candidate. This document describes the target architecture; it is not evidence that a production instance has been deployed or activated. The detailed product contract lives in the [PRD](../产品需求文档.md).
+The current public version is `v0.8.0-rc.1`. Source validation, a GitHub release, technical deployment and production activation are separate states. The detailed product contract lives in the [PRD](../产品需求文档.md).
 
 ```mermaid
 flowchart LR
@@ -36,9 +36,23 @@ flowchart LR
 
 Foursday has no Hermes fork, core patch, second Agent Loop, capability-manifest workflow, or second business-memory repository.
 
+## Operator surface
+
+Codex and Claude are the primary operator hosts. Their thin plugins call one local Foursday Control MCP for privacy-safe status, tasks, schedules, project-memory scope, evidence, and revision-fenced pause/takeover/correction/resume actions. The control file contains no task body or identity and is checked by DWS before message processing and again before transport.
+
+`foursday dashboard` is an optional loopback-only, GET-only projection of the same service. It stores no state and exposes no control endpoint. The legacy service on port 9465 is not part of the current architecture.
+
+## Codex-first capability boundary
+
+The target split is deliberately asymmetric. Hermes owns channel ingress, platform sessions, cron/event triggers, and delivery. Codex owns task threads and safe resume/fork, same-project subagents, shell/Python, controlled web and image tools, approved MCP servers, Skills, working memory, project execution, verification, and the final answer. Foursday owns stable identity, project/CWD binding, the task authority envelope, owner intervention, high-risk exits, delivery receipts, and evidence-gated promotion into personal gbrain.
+
+An authorized request grants the reversible work needed to finish its goal; Foursday does not ask for approval before every tool call. Business meaning, priority, content, and acceptance questions return to the requester. Production, cross-project access, personal high-authority MCPs, secrets, privilege expansion, and irreversible actions return to the owner. Owner messages freeze stale outbound generations before being classified as communication takeover, task correction, task takeover, resume, or unrelated conversation.
+
+The current source candidate implements this contract. Bound `thread/resume` and same-task `thread/fork` survive Gateway restarts; Codex web/image, isolated Skills/Memory and native multi-agent support are enabled; the Foursday MCP exposes only evidence-gated memory and current-message attachment tools. Untrusted dynamic tools, model overrides, arbitrary shell network and high-risk exits remain blocked.
+
 ## Version scope
 
-P0 covers personal DingTalk through DWS, allowlist enforcement, project routing, personal gbrain context, the Codex work loop, read-back, owner takeover, safety boundaries, and shadow verification. Feishu, Slack, Teams, cross-platform Session recovery, scheduled work, and proactive work are P1. Enterprise governance and ecosystem features are P2. P1 and P2 are roadmap scope, not current release claims.
+The source candidate covers personal DingTalk through DWS, allowlist enforcement, project routing, personal gbrain context, Codex Thread resume/same-task fork, subagents, web/image, scoped MCP, isolated Skills/Memory, attachments, read-back, five-state owner intervention, safety boundaries, and shadow verification. It also contains the local-only Hermes Cron/Monitor-to-Codex core. Feishu, Slack, Teams, cross-platform Session recovery, user-facing scheduled-work configuration and proactive-work recipes remain P1. Enterprise governance and ecosystem features remain P2.
 
 Installation verifies the locked upstream source still bypasses its foreground tool loop in `codex_app_server` mode. The Foursday Profile disables upstream built-in memory, memory/skill nudges, background-review forks, automatic title generation, and the curator so no post-turn auxiliary model or Agent Loop reappears behind Codex.
 

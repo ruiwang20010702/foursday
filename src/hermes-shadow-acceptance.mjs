@@ -32,7 +32,13 @@ export function evaluateHermesShadowAcceptance({
   }
   const inbound = events.filter((event) => event?.type === "inbound");
   const replies = events.filter((event) => event?.type === "reply_attempt");
-  const takeovers = events.filter((event) => event?.type === "human_takeover");
+  const interventions = events.filter((event) => [
+    "communication_takeover",
+    "task_correction",
+    "task_takeover",
+    "resume_requested",
+    "unrelated_owner_message",
+  ].includes(event?.type));
   const messageHashes = inbound.flatMap((event) =>
     Array.isArray(event.messageHashes) ? event.messageHashes : []
   );
@@ -67,7 +73,7 @@ export function evaluateHermesShadowAcceptance({
       digest.test(String(codeWorkEvidence?.evidenceDigest ?? "")) &&
       codeWorkEvidence?.releaseSha === releaseSha
     ),
-    humanTakeover: takeovers.some((event) =>
+    ownerIntervention: interventions.some((event) =>
       Boolean(event.conversationHash) && Boolean(event.participantHash)
     ),
     restartRecovery: Boolean(
@@ -94,7 +100,7 @@ export function evaluateHermesShadowAcceptance({
       inbound: inbound.length,
       replyAttempts: replies.length,
       conversations: inboundConversations.size,
-      takeovers: takeovers.length,
+      ownerInterventions: interventions.length,
       uniqueMessages: new Set(messageHashes).size,
     },
     scenarios,

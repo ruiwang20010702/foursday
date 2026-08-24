@@ -1,6 +1,6 @@
 {
   "name": "foursday",
-  "version": "0.7.0-rc.1",
+  "version": "0.8.0-rc.1",
   "description": "A personal-memory-driven open-source work twin for real projects.",
   "bin": {
     "foursday": "scripts/新环境向导.mjs"
@@ -19,6 +19,10 @@
     "distribution/host/",
     "distribution/profile/",
     "distribution/skills/",
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",
+    "plugins/foursday/",
+    "distribution/claude-plugins/",
     "scripts/",
     "src/*.mjs",
     "CHANGELOG.md",

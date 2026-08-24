@@ -1,6 +1,6 @@
 # Install and run
 
-> Current release: `v0.7.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
+> Current release: `v0.8.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
 
 ## 1. Install Foursday
 
@@ -50,6 +50,16 @@ npx --no-install foursday status
 ```
 
 Shadow mode can receive, route, reason, call tools, and record evidence, but the DWS bridge refuses real sends.
+
+Operate from Codex/Claude through the packaged Control MCP, or inspect the same state from the CLI:
+
+```bash
+npx --no-install foursday control status
+npx --no-install foursday control tasks
+npx --no-install foursday dashboard
+```
+
+The optional dashboard binds only to `127.0.0.1:9466` by default and is read-only. It does not depend on the removed legacy 9465 administration service.
 
 ## 5. Activate
 

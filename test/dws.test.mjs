@@ -1,11 +1,51 @@
 import assert from "node:assert/strict";
+import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   assertSuccessfulSendReceipt,
   collectMessages,
   DwsAdapter,
+  extractDwsMediaDescriptors,
   isAutomatedSelfMessage,
 } from "../src/dws.mjs";
+
+test("DWS extracts bounded media IDs without treating arbitrary text as a file", () => {
+  assert.deepEqual(extractDwsMediaDescriptors({
+    content: JSON.stringify({ mediaId: "$media-1", fileName: "image.png", mimeType: "image/png" }),
+    nested: { attachments: [{ media_id: "$media-1" }, { mediaId: "$media-2", type: "application/pdf" }] },
+    note: "mediaId=$not-structured",
+  }), [
+    { resourceId: "$media-1", name: "image.png", mimeType: "image/png" },
+    { resourceId: "$media-2", name: null, mimeType: "application/pdf" },
+  ]);
+});
+
+test("DWS media download writes one private canonical file", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dws-media-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let invoked;
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args) => {
+      invoked = args;
+      const output = args[args.indexOf("--output") + 1];
+      const path = join(output, "image.png");
+      await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      return { stdout: JSON.stringify({ result: { path } }) };
+    },
+  });
+  const downloaded = await dws.downloadMedia({
+    resourceId: "$media-1",
+    messageId: "message-1",
+    conversationId: "conversation-1",
+    outputDirectory: join(root, "download"),
+  });
+  assert.equal(downloaded.path, join(root, "download", "image.png"));
+  assert.equal((await lstat(downloaded.path)).mode & 0o077, 0);
+  assert.deepEqual(invoked.slice(0, 4), ["chat", "message", "download-media", "--type"]);
+});
 
 test("DWS 解析会话嵌套消息结构", () => {
   const messages = collectMessages(
@@ -148,6 +188,11 @@ test("人工回复按当前账号发送记录和会话匹配", async () => {
     {
       known: true,
       replied: true,
+      message: {
+        id: null,
+        content: "",
+        createTime: "2026-07-31T10:01:00Z",
+      },
     },
   );
 });
@@ -166,7 +211,7 @@ test("人工回复不会跨会话误取消", async () => {
       selfUserId: "self",
       after: "2026-07-31T10:00:00Z",
     }),
-    { known: true, replied: false },
+    { known: true, replied: false, message: null },
   );
 });
 

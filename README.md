@@ -28,7 +28,7 @@ For an allowlisted contact, Foursday can:
 - use Codex inside the real workspace;
 - search, calculate, edit files, run tests, and recover from failures;
 - reply naturally with read-back evidence;
-- stop when the owner takes over.
+- freeze stale outbound text when the owner intervenes, while preserving or stopping background work according to the owner's intent.
 
 Push, merge, deployment, production writes, irreversible deletion, payment, contracts, HR decisions, and secret disclosure remain hard boundaries.
 
@@ -58,12 +58,19 @@ Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousRese
 - an isolated Codex home with an App Server policy proxy, workspace sandboxing, forbidden command rules, automatic approval review, and a Foursday MCP;
 - a project-work Skill;
 - small host-side bridges for credentials and personal-memory promotion.
+- one host-neutral Foursday Control MCP, with thin Codex and Claude plugins plus an optional read-only local status page.
 
 The installation gate verifies that the pinned runtime bypasses its own foreground tool loop in `codex_app_server` mode. Foursday also disables upstream built-in memory, memory/skill nudges, background review, automatic title generation, and the curator; durable learning goes only through the Foursday MCP and personal-gbrain promotion path.
 
 Profile behavior, routed project details, and personal-memory context are explicitly bridged into Codex rather than assumed to flow through the embedded runtime. A private 15-minute token binds each turn to one workspace and Session; the proxy removes the internal marker before reasoning, labels gbrain text as data rather than instructions, and prevents the token from leaving in a reply.
 
 The previous custom Agent Runtime, capability manifests, approval UI, managed Gateway, compatibility installer, and duplicated documentation were removed. Git history remains the recovery path.
+
+## Next capability boundary
+
+Foursday uses a Codex-first capability model: Hermes owns message ingress, sessions, cron/event triggers, and delivery; Codex owns thread resume/fork, subagents, shell/Python, web, images, approved MCPs, isolated skills/working memory, project execution, and the final answer. Foursday binds identity, project, workspace, authority, human intervention, receipts, and stable-fact promotion without adding a second work graph or agent loop.
+
+Inside an authorized project, reversible work runs autonomously. Business meaning and acceptance questions go to the requester; production, cross-project access, personal high-authority connectors, secrets, and irreversible actions go to the owner. An owner reply first advances `ownerRevision/sendGeneration`, invalidates stale outbound text, and is then classified as communication takeover, task correction, task takeover, resume, or an unrelated message. The current source candidate implements this contract; real sending and production activation remain separate release gates.
 
 ## Install
 
@@ -98,6 +105,46 @@ Activation is deliberately separate and requires a current shadow-acceptance rec
 
 `foursday verify` runs one real Codex turn against an ephemeral fixture. It requires tool evidence, checks an unpredictable fact token, proves the workspace digest is unchanged, and performs no DingTalk send, production write, or deployment.
 
+## Operate from Codex or Claude
+
+Foursday is operated from an installed agent host, not from a separate administration product. Both plugin packages call the same local Control MCP:
+
+- [`plugins/foursday`](./plugins/foursday)
+- [`distribution/claude-plugins/foursday`](./distribution/claude-plugins/foursday)
+
+Install either or both agent-host entries from the cloned repository:
+
+```bash
+npm install --global --ignore-scripts .
+
+codex plugin marketplace add .
+codex plugin add foursday@foursday-local
+
+claude plugin marketplace add . --scope user
+claude plugin install foursday@foursday-local --scope user
+```
+
+Start a new Codex task or Claude Code session after installation so the new Skill and MCP are discovered. Both hosts use the installed `foursday` CLI; they do not bundle a second runtime.
+
+The Control MCP exposes privacy-safe status, tasks, schedules, project-memory scope and evidence. Pause, takeover, correction and resume require the exact current `revision`; they cannot enable sending, deploy, delete data or expand permissions.
+
+The same surface is available from the CLI:
+
+```bash
+npx --no-install foursday control status
+npx --no-install foursday control tasks
+npx --no-install foursday control schedules
+```
+
+For occasional visualization, start a read-only loopback page on demand:
+
+```bash
+npx --no-install foursday dashboard
+# http://127.0.0.1:9466/
+```
+
+The page stores no independent state and exposes no write endpoint. Port `9465` belongs to the removed legacy administration runtime and is not a current source of truth. Upgrades may stop and archive the old service, but never remove PostgreSQL, Keychain entries or gbrain data as part of that cleanup.
+
 ## Memory ownership
 
 | Store | Responsibility |
@@ -111,9 +158,9 @@ Foursday does not create a second knowledge repository or copy personal pages in
 
 ## Status
 
-The current public preview is `v0.7.0-rc.1`. It establishes the one-Codex-loop architecture and the install, routing, memory, safety, and shadow-verification contracts. It is a release candidate, not evidence that a production instance has been deployed or activated.
+The current public preview is `v0.8.0-rc.1`. It adds the shared Control MCP, Codex/Claude plugins, owner intervention fencing, Thread continuity and an optional read-only status page to the one-Codex-loop architecture. It is a release candidate, not evidence that a production instance has been activated.
 
-The local production instance is intentionally stopped. Installing this repository does not inherit its authority, credentials, allowlist, send permission, or production state.
+Installing this repository does not inherit any existing instance's authority, credentials, allowlist, send permission, or production state.
 
 Run the verified checks locally:
 
