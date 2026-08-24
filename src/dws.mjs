@@ -361,6 +361,7 @@ export class DwsAdapter {
     this.processSpawner = processSpawner;
     this.environment = environment;
     this.userIdentityCache = new Map();
+    this.commandQueue = Promise.resolve();
   }
 
   createPersonalEventWake({
@@ -468,18 +469,23 @@ export class DwsAdapter {
   }
 
   async run(args, options = {}) {
-    const { env: ignoredEnvironment, ...commandOptions } = options;
-    const { stdout } = await this.commandRunner(
-      this.dwsPath,
-      [...args, ...(this.dwsMock ? ["--mock"] : []), "--format", "json"],
-      {
-        maxBuffer: 8 * 1024 * 1024,
-        timeout: 60_000,
-        ...commandOptions,
-        env: safeCodexEnvironment(this.dwsPath, this.environment),
-      },
-    );
-    return JSON.parse(stdout);
+    const execute = async () => {
+      const { env: ignoredEnvironment, ...commandOptions } = options;
+      const { stdout } = await this.commandRunner(
+        this.dwsPath,
+        [...args, ...(this.dwsMock ? ["--mock"] : []), "--format", "json"],
+        {
+          maxBuffer: 8 * 1024 * 1024,
+          timeout: 60_000,
+          ...commandOptions,
+          env: safeCodexEnvironment(this.dwsPath, this.environment),
+        },
+      );
+      return JSON.parse(stdout);
+    };
+    const request = this.commandQueue.catch(() => {}).then(execute);
+    this.commandQueue = request.then(() => undefined, () => undefined);
+    return request;
   }
 
   async downloadMedia({ resourceId, messageId, conversationId, outputDirectory }) {

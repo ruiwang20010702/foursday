@@ -171,6 +171,44 @@ test("DWS 子进程只接收工具运行白名单环境", async () => {
   }
 });
 
+test("DWS CLI calls are serialized so the local data lock cannot race", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const order = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      order.push(args[0]);
+      await new Promise((accept) => setTimeout(accept, 10));
+      active -= 1;
+      return { stdout: "{}" };
+    },
+  });
+  await Promise.all([
+    dws.run(["first"]),
+    dws.run(["second"]),
+    dws.run(["third"]),
+  ]);
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(order, ["first", "second", "third"]);
+});
+
+test("a failed DWS CLI call does not block the following queued call", async () => {
+  let calls = 0;
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("data lock busy");
+      return { stdout: JSON.stringify({ success: true }) };
+    },
+  });
+  await assert.rejects(dws.run(["first"]), /data lock busy/u);
+  assert.deepEqual(await dws.run(["second"]), { success: true });
+});
+
 test("DWS personal event wake waits for ready and forwards only valid event signals", async () => {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
