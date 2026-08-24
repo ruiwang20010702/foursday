@@ -158,6 +158,13 @@ export class FoursdayControlService {
         running: gateway.running === true,
         checkpointHealthy: gateway.checkpointHealthy === true,
         modeConsistent: gateway.modeConsistent === true,
+        eventWakeEnabled: gateway.eventWakeEnabled === true,
+        eventWakeReady: gateway.eventWakeReady === true,
+        eventWakeDegraded: gateway.eventWakeDegraded === true,
+        lastWakeSource: gateway.lastWakeSource ?? null,
+        lastDetectionLatencyMs: Number.isFinite(gateway.lastDetectionLatencyMs)
+          ? gateway.lastDetectionLatencyMs
+          : null,
       },
       control: { revision: control.revision, state: control.global.state },
       taskCounts: tasks.items.reduce((counts, item) => {

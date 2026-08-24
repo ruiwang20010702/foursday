@@ -18,6 +18,9 @@ async function fixture(t) {
   await writeFile(checkpoint, JSON.stringify({
     lastFullSuccessAt: new Date(now).toISOString(),
     lastErrorCount: 0,
+    eventWake: { enabled: true, ready: true, errorCode: null },
+    lastWakeSource: "dws_event",
+    lastDetection: { latencyMs: 250 },
   }), { mode: 0o600 });
   await writeFile(join(profileDirectory, ".env"), [
     'DWS_PERSONAL_SEND_ENABLED="false"',
@@ -94,6 +97,10 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.serviceEnabled, true);
   assert.equal(status.mode, "shadow");
   assert.equal(status.sendEnabled, false);
+  assert.equal(status.eventWakeReady, true);
+  assert.equal(status.eventWakeDegraded, false);
+  assert.equal(status.lastWakeSource, "dws_event");
+  assert.equal(status.lastDetectionLatencyMs, 250);
   const stopped = await inspectFoursdayNativeGateway({
     layout: value.layout,
     run: async () => ({ stdout: "Gateway is not running\n" }),

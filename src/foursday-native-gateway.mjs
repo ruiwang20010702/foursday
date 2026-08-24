@@ -192,6 +192,11 @@ export async function inspectFoursdayNativeGateway({
   const checkpointPath = envDocument.values.get("DWS_PERSONAL_STATE_FILE") ?? "";
   const fallbackMs = Number(envDocument.values.get("DWS_PERSONAL_FALLBACK_MS") ?? 300_000);
   let checkpointHealthy = false;
+  let eventWakeEnabled = false;
+  let eventWakeReady = false;
+  let eventWakeDegraded = false;
+  let lastWakeSource = null;
+  let lastDetectionLatencyMs = null;
   if (checkpointPath) {
     try {
       const metadata = await lstat(checkpointPath);
@@ -199,6 +204,15 @@ export async function inspectFoursdayNativeGateway({
         throw new Error("unsafe checkpoint");
       }
       const state = JSON.parse(await readFile(checkpointPath, "utf8"));
+      eventWakeEnabled = state.eventWake?.enabled === true;
+      eventWakeReady = state.eventWake?.ready === true;
+      eventWakeDegraded = eventWakeEnabled && !eventWakeReady;
+      lastWakeSource = typeof state.lastWakeSource === "string"
+        ? state.lastWakeSource.slice(0, 40)
+        : null;
+      lastDetectionLatencyMs = Number.isFinite(Number(state.lastDetection?.latencyMs))
+        ? Math.max(0, Number(state.lastDetection.latencyMs))
+        : null;
       const fullSuccess = new Date(state.lastFullSuccessAt ?? "").getTime();
       const maxAge = Math.max(60_000, fallbackMs * 2);
       checkpointHealthy =
@@ -221,6 +235,11 @@ export async function inspectFoursdayNativeGateway({
     running,
     serviceEnabled,
     checkpointHealthy,
+    eventWakeEnabled,
+    eventWakeReady,
+    eventWakeDegraded,
+    lastWakeSource,
+    lastDetectionLatencyMs,
     modeConsistent,
     safeStopped,
     ready: running && modeConsistent && checkpointHealthy,

@@ -89,4 +89,8 @@ test("public example contains only FOURSDAY fields and external secret reference
   for (const key of ["FOURSDAY_DATABASE_URL", "FOURSDAY_DATA_KEY", "FOURSDAY_GBRAIN_CLIENT_SECRET"]) {
     assert.match(example[key], /^(?:env|keychain):\/\//u);
   }
+  assert.equal(example.FOURSDAY_DINGTALK_EVENT_WAKE_ENABLED, true);
+  assert.equal(example.FOURSDAY_DINGTALK_FALLBACK_MS, 30_000);
+  assert.equal(example.FOURSDAY_DINGTALK_OUTBOUND_QUIET_MS, 8_000);
+  assert.equal(example.FOURSDAY_DINGTALK_OUTBOUND_MAX_QUIET_MS, 20_000);
 });

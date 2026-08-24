@@ -60,6 +60,8 @@ async function fixture(t) {
     gatewayInspector: async () => ({
       ready: true, installed: true, mode: "shadow", sendEnabled: false,
       running: true, checkpointHealthy: true, modeConsistent: true,
+      eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
+      lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
   });
   return { service };
@@ -67,6 +69,10 @@ async function fixture(t) {
 
 test("control service projects tasks, schedules, memory and evidence without private bodies", async (t) => {
   const { service } = await fixture(t);
+  const status = await service.status();
+  assert.equal(status.gateway.eventWakeDegraded, true);
+  assert.equal(status.gateway.lastWakeSource, "filesystem");
+  assert.equal(status.gateway.lastDetectionLatencyMs, 1250);
   const tasks = await service.tasks();
   assert.equal(tasks.revision, 0);
   assert.deepEqual(tasks.items[0], {

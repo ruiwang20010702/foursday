@@ -71,6 +71,10 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.equal(plan.sendEnabled, false);
   assert.equal(plan.secretsCopied, false);
   assert.match(plan.envContent, /DWS_PERSONAL_ALLOWED_USERS="trusted-user"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_EVENT_WAKE_ENABLED="true"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_FALLBACK_MS="30000"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_QUIET_MS="8000"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS="20000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEND_ENABLED="false"/u);
   assert.match(plan.envContent, /CODEX_HOME=/u);
   assert.match(plan.envContent, /FOURSDAY_PYTHON_PATH=.*python-runtime/u);

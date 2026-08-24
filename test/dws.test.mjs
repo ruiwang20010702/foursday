@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   assertSuccessfulSendReceipt,
@@ -167,6 +169,48 @@ test("DWS 子进程只接收工具运行白名单环境", async () => {
   ]) {
     assert.equal(childValues.has(secret), false);
   }
+});
+
+test("DWS personal event wake waits for ready and forwards only valid event signals", async () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = (signal) => {
+    child.signalCode = signal;
+    queueMicrotask(() => child.emit("close", 0, signal));
+    return true;
+  };
+  let invocation;
+  const events = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    environment: { HOME: "/safe/home", FOURSDAY_DATA_KEY: "secret" },
+    processSpawner: (...args) => { invocation = args; return child; },
+  });
+  const wake = dws.createPersonalEventWake({
+    onEvent: (event) => events.push(event),
+    readyTimeoutMs: 1_000,
+  });
+  child.stdout.write(`${JSON.stringify({ event_id: "too-early" })}\n`);
+  child.stderr.write("[event] ready event_key=user_im_message_receive_o2o_all bus_pid=1 subscribe_id=test\n");
+  await wake.ready;
+  child.stdout.write("not-json\n");
+  child.stdout.write(`${JSON.stringify({ event_id: "event-1", type: "message" })}\n`);
+  child.stdout.write(`${JSON.stringify({ event_type: "message", data: { event_id: "event-2" } })}\n`);
+  await new Promise((accept) => setImmediate(accept));
+  assert.deepEqual(events, [
+    { eventId: "event-1", type: "message" },
+    { eventId: "event-2", type: "message" },
+  ]);
+  assert.deepEqual(invocation[1], [
+    "event", "+listen-im", "--kind", "all-direct",
+    "--events", "message", "--format", "ndjson",
+  ]);
+  assert.equal(Object.hasOwn(invocation[2].env, "FOURSDAY_DATA_KEY"), false);
+  await wake.stop();
 });
 
 test("人工回复按当前账号发送记录和会话匹配", async () => {

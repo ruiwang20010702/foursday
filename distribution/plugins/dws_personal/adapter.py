@@ -497,6 +497,14 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             return
         records = sorted(records, key=lambda item: str(item.get("createTime") or ""))
         latest = records[-1]
+        bundle_wait_ms = max(0, int(
+            time.monotonic() * 1_000 -
+            float(records[0].get("_received_monotonic_ms") or time.monotonic() * 1_000)
+        ))
+        detection_latency_ms = latest.get("detectionLatencyMs")
+        if not isinstance(detection_latency_ms, (int, float)) or detection_latency_ms < 0:
+            detection_latency_ms = None
+        wake_source = str(latest.get("wakeSource") or "unknown")[:40]
         message_ids = [str(item["id"]) for item in records]
         content = "\n".join(str(item["content"]).strip() for item in records).strip()
         attachments = [
@@ -581,6 +589,10 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "owner_revision": int(latest.get("ownerRevision") or 0),
                 "send_generation": int(latest.get("sendGeneration") or 0),
                 "owner_intervention": latest.get("ownerIntervention"),
+                "detected_at": str(latest.get("detectedAt") or "") or None,
+                "detection_latency_ms": detection_latency_ms,
+                "bundle_wait_ms": bundle_wait_ms,
+                "wake_source": wake_source,
             },
         )
         _shadow_evidence({
@@ -594,6 +606,10 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "memoryStatus": memory_status,
             "bundleSize": len(records),
             "occurredAt": timestamp.isoformat(),
+            "detectedAt": str(latest.get("detectedAt") or "") or None,
+            "detectionLatencyMs": detection_latency_ms,
+            "bundleWaitMs": bundle_wait_ms,
+            "wakeSource": wake_source,
         })
         from project_router.runtime_context import routed_project_scope
 
@@ -601,6 +617,10 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "conversationId": conversation_id,
             "ownerRevision": int(latest.get("ownerRevision") or 0),
             "sendGeneration": int(latest.get("sendGeneration") or 0),
+            "turnStartedMonotonic": time.monotonic(),
+            "detectionLatencyMs": detection_latency_ms,
+            "bundleWaitMs": bundle_wait_ms,
+            "wakeSource": wake_source,
         })
         try:
             with routed_project_scope(route, principal_id=user_id):
@@ -696,6 +716,11 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             )
         payload["ownerRevision"] = int(version["ownerRevision"])
         payload["sendGeneration"] = int(version["sendGeneration"])
+        agent_duration_ms = None
+        if isinstance(version.get("turnStartedMonotonic"), (int, float)):
+            agent_duration_ms = max(0, int(
+                (time.monotonic() - float(version["turnStartedMonotonic"])) * 1_000
+            ))
         result = await self._bridge.send(payload)
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
@@ -714,6 +739,12 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "outcomeUnknown": bool(
                 isinstance(result, dict) and result.get("outcomeUnknown") is True
             ),
+            "receiptKind": str(result.get("receiptKind") or "")[:40]
+            if isinstance(result, dict) else None,
+            "detectionLatencyMs": version.get("detectionLatencyMs"),
+            "bundleWaitMs": version.get("bundleWaitMs"),
+            "agentDurationMs": agent_duration_ms,
+            "wakeSource": version.get("wakeSource"),
         })
         if not isinstance(result, dict) or result.get("success") is not True:
             shadow_mode = str(

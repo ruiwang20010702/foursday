@@ -129,6 +129,16 @@ export function shadowNotificationBelongsToTurn(message, { threadId, turnId } = 
   );
 }
 
+export function shadowVerificationPrompt() {
+  return [
+    "This is a read-only Foursday system verification.",
+    "Use project tools to read FACT.txt in the current project.",
+    "Return the exact evidence token found inside that file and identify the file as the source.",
+    "The token is not provided in this request; do not guess it.",
+    "Do not edit files, access the network, or call memory tools.",
+  ].join(" ");
+}
+
 export function appServerSession({
   environment,
   workspace,
@@ -244,12 +254,7 @@ export function appServerSession({
           threadId,
           input: [{
             type: "text",
-            text: prompt ?? [
-              "This is a read-only Foursday system verification.",
-              "Read FACT.txt in the current project, verify its contents using project tools,",
-              `and answer naturally with the exact evidence token ${expectedFact}.`,
-              "Do not edit files, access the network, or call memory tools.",
-            ].join(" "),
+            text: prompt ?? shadowVerificationPrompt(),
           }],
         });
         activeTurnId = String(startedTurn?.turn?.id ?? startedTurn?.id ?? activeTurnId ?? "") || null;

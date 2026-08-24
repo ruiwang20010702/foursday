@@ -124,6 +124,15 @@ class FakeDws {
     this.readBackMessage = null;
     this.media = false;
     this.downloadFailures = 0;
+    this.eventWakeStopped = false;
+  }
+
+  createPersonalEventWake({ onEvent }) {
+    this.eventOnEvent = onEvent;
+    return {
+      ready: Promise.resolve({ ready: true }),
+      stop: async () => { this.eventWakeStopped = true; },
+    };
   }
 
   async fetchBySender({ senderUserId }) {
@@ -262,6 +271,104 @@ test("self allowlist reads only the dedicated direct conversation", async () => 
     const retry = await runtime.check({ deferEmit: true });
     assert.equal(retry.some((frame) =>
       frame.record?.id === "automated-self-message"), false);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("DWS event wake triggers the same allowlisted history read with event latency evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-wake-"));
+  const frames = [];
+  const dws = new FakeDws();
+  let available = false;
+  dws.fetchBySender = async ({ senderUserId }) => available ? [{
+    id: "event-message-1",
+    senderUserId,
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "Trusted",
+    conversationId: "event-conversation",
+    content: "event wake",
+    createTime: "2026-08-24T10:00:00+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  }] : [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: true,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-24T10:00:01+08:00"),
+  });
+  try {
+    await runtime.start();
+    await Promise.resolve();
+    available = true;
+    dws.eventOnEvent();
+    await new Promise((accept) => setTimeout(accept, 350));
+    const frame = frames.find((item) => item.record?.id === "event-message-1");
+    assert.equal(frame.record.wakeSource, "dws_event");
+    assert.equal(frame.record.detectionLatencyMs, 1_000);
+  } finally {
+    await runtime.stop();
+  }
+  assert.equal(dws.eventWakeStopped, true);
+});
+
+test("unavailable DWS event wake is visible while history fallback remains usable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-degraded-"));
+  const frames = [];
+  const dws = new FakeDws();
+  const unavailable = new Error("event command unavailable");
+  unavailable.code = "dws_event_unavailable";
+  dws.createPersonalEventWake = () => ({
+    ready: Promise.reject(unavailable),
+    stop: async () => {},
+  });
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: true,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-18T14:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    await new Promise((accept) => setImmediate(accept));
+    await runtime.check({ wakeSource: "fallback" });
+    const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.equal(persisted.eventWake.enabled, true);
+    assert.equal(persisted.eventWake.ready, false);
+    assert.equal(persisted.eventWake.errorCode, "dws_event_unavailable");
+    assert.equal(frames.some((frame) => frame.record?.id === "dws-1"), true);
   } finally {
     await runtime.stop();
   }
@@ -566,6 +673,84 @@ test("Hermes DWS sidecar keeps real sending disabled unless explicitly enabled",
   assert.equal(receipt.messageId, "server-message-1");
   assert.equal(dws.sent.at(-1).recipientId, "open-trusted");
   assert.equal(dws.sent.at(-1).recipientKind, "open_dingtalk_id");
+});
+
+test("outbound quiet window lets a six-second follow-up invalidate the old reply", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-outbound-quiet-"));
+  const dws = new FakeDws();
+  let includeFollowup = false;
+  let current = new Date("2026-08-24T10:00:07+08:00");
+  dws.fetchBySender = async ({ senderUserId }) => [{
+    id: "burst-1",
+    senderUserId,
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "Trusted",
+    conversationId: "burst-conversation",
+    content: "first fragment",
+    createTime: "2026-08-24T10:00:00+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  }, ...(includeFollowup ? [{
+    id: "burst-2",
+    senderUserId,
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "Trusted",
+    conversationId: "burst-conversation",
+    content: "second fragment",
+    createTime: "2026-08-24T10:00:06+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  }] : [])];
+  let runtime;
+  let waited = 0;
+  runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    now: () => current,
+    clock: () => current.getTime(),
+    wait: async (milliseconds) => {
+      waited = milliseconds;
+      includeFollowup = true;
+      current = new Date("2026-08-24T10:00:19+08:00");
+      await runtime.check({ wakeSource: "filesystem" });
+      current = new Date("2026-08-24T10:00:22+08:00");
+    },
+  });
+  try {
+    await runtime.start();
+    current = new Date("2026-08-24T10:00:13+08:00");
+    const result = await runtime.send({
+      conversationId: "burst-conversation",
+      content: "old answer",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(waited, 9_000);
+    assert.equal(result.staleGeneration, true);
+    assert.equal(dws.sent.length, 0);
+    const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.deepEqual(persisted.sendLedger, {});
+  } finally {
+    await runtime.stop();
+  }
 });
 
 test("Hermes DWS sidecar converts a verified owner reply into one communication takeover event", async () => {

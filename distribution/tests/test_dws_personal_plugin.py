@@ -146,6 +146,9 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "chatType": "direct",
                 "mentionedSelf": False,
                 "isSelf": False,
+                "detectedAt": "2026-08-18T14:00:01.200+08:00",
+                "detectionLatencyMs": 1200,
+                "wakeSource": "dws_event",
             })
         await asyncio.sleep(0)
         self.assertEqual(len(self.events), 1)
@@ -562,6 +565,9 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "chatType": "direct",
                 "mentionedSelf": False,
                 "isSelf": False,
+                "detectedAt": "2026-08-18T14:00:01.200+08:00",
+                "detectionLatencyMs": 1200,
+                "wakeSource": "dws_event",
             })
             await asyncio.sleep(0)
             reply = await self.adapter.send(
@@ -600,6 +606,13 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(private, serialized)
         self.assertEqual(rows[-1]["mode"], "shadow")
         self.assertFalse(rows[-1]["bridgeSuccess"])
+        self.assertEqual(rows[0]["detectionLatencyMs"], 1200)
+        self.assertEqual(rows[0]["wakeSource"], "dws_event")
+        self.assertGreaterEqual(rows[0]["bundleWaitMs"], 0)
+        self.assertIn("detectionLatencyMs", rows[-1])
+        self.assertIn("bundleWaitMs", rows[-1])
+        self.assertIn("agentDurationMs", rows[-1])
+        self.assertIn("wakeSource", rows[-1])
         self.assertEqual(evidence.stat().st_mode & 0o077, 0)
 
     def test_shadow_evidence_rejects_symbolic_link_target(self):

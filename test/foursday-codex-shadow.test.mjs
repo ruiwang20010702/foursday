@@ -7,6 +7,7 @@ import {
   runFoursdayCodexShadow,
   shadowNotificationBelongsToTurn,
   shadowServerDecision,
+  shadowVerificationPrompt,
 } from "../src/foursday-codex-shadow.mjs";
 
 async function fixture(t) {
@@ -36,6 +37,13 @@ test("shadow verification previews without a model call", async (t) => {
   assert.equal(result.productionWrite, false);
   assert.equal(result.messageSent, false);
   assert.equal(called, false);
+});
+
+test("shadow prompt requires a real file read and never leaks the random token", () => {
+  const prompt = shadowVerificationPrompt();
+  assert.match(prompt, /read FACT\.txt/u);
+  assert.match(prompt, /not provided/u);
+  assert.doesNotMatch(prompt, /FOURSDAY-SHADOW-[A-F0-9]+/u);
 });
 
 test("shadow collector ignores child-thread completion while waiting for the parent", () => {

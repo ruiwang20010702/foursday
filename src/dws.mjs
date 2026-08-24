@@ -1,8 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { createInterface } from "node:readline";
 import { adapterContractVersion, assertNormalizedMessage } from "./adapter-contracts.mjs";
 import { safeCodexEnvironment } from "./codex-environment.mjs";
 
@@ -347,6 +348,7 @@ export class DwsAdapter {
     dwsPath,
     dwsMock = false,
     commandRunner = execFileAsync,
+    processSpawner = spawn,
     environment = process.env,
   }) {
     this.id = "dingtalk-dws";
@@ -356,8 +358,113 @@ export class DwsAdapter {
     this.dwsPath = dwsPath;
     this.dwsMock = dwsMock;
     this.commandRunner = commandRunner;
+    this.processSpawner = processSpawner;
     this.environment = environment;
     this.userIdentityCache = new Map();
+  }
+
+  createPersonalEventWake({
+    onEvent,
+    onDiagnostic = () => {},
+    readyTimeoutMs = 30_000,
+  } = {}) {
+    if (typeof onEvent !== "function") {
+      throw new Error("DWS personal event wake requires an event callback");
+    }
+    const child = this.processSpawner(this.dwsPath, [
+      "event", "+listen-im",
+      "--kind", "all-direct",
+      "--events", "message",
+      "--format", "ndjson",
+    ], {
+      env: safeCodexEnvironment(this.dwsPath, this.environment),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let settled = false;
+    let ready = false;
+    let acceptReady;
+    let rejectReady;
+    const readyPromise = new Promise((accept, reject) => {
+      acceptReady = accept;
+      rejectReady = reject;
+    });
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const error = new Error("DWS personal event wake did not become ready");
+      error.code = "dws_event_ready_timeout";
+      rejectReady(error);
+      child.kill("SIGTERM");
+    }, readyTimeoutMs);
+    const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
+    stderr.on("line", (line) => {
+      if (/\[event\]\s+ready\b/u.test(line) && !settled) {
+        settled = true;
+        ready = true;
+        clearTimeout(timeout);
+        acceptReady({ ready: true });
+      } else if (/\b(?:error|failed|timeout)\b/iu.test(line)) {
+        onDiagnostic("dws_event_stderr");
+      }
+    });
+    const stdout = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    stdout.on("line", (line) => {
+      if (!ready) return;
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      if (!event || Array.isArray(event) || typeof event !== "object") return;
+      const data = event.data && !Array.isArray(event.data) && typeof event.data === "object"
+        ? event.data
+        : {};
+      const eventId = String(
+        event.event_id ?? event.eventId ?? event.message_id ?? event.messageId ??
+        data.event_id ?? data.eventId ?? data.message_id ?? data.messageId ?? "",
+      ).trim();
+      if (!eventId || eventId.length > 500) return;
+      onEvent({
+        eventId,
+        type: String(event.event_type ?? data.event_type ?? data.type ?? event.type ?? "message"),
+      });
+    });
+    child.once("error", (failure) => {
+      clearTimeout(timeout);
+      if (!settled) {
+        settled = true;
+        failure.code = failure.code ?? "dws_event_process_error";
+        rejectReady(failure);
+      }
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timeout);
+      if (!settled) {
+        settled = true;
+        const error = new Error("DWS personal event wake exited before ready");
+        error.code = "dws_event_unavailable";
+        rejectReady(error);
+      } else if (ready) {
+        ready = false;
+        onDiagnostic(`dws_event_closed:${String(code ?? signal ?? "unknown")}`);
+      }
+    });
+    return {
+      ready: readyPromise,
+      async stop() {
+        clearTimeout(timeout);
+        if (!settled) {
+          settled = true;
+          const error = new Error("DWS personal event wake stopped before ready");
+          error.code = "dws_event_stopped";
+          rejectReady(error);
+        }
+        if (child.exitCode != null || child.signalCode != null) return;
+        const closed = new Promise((accept) => child.once("close", accept));
+        child.kill("SIGTERM");
+        await Promise.race([
+          closed,
+          new Promise((accept) => setTimeout(accept, 5_000)),
+        ]);
+      },
+    };
   }
 
   async run(args, options = {}) {

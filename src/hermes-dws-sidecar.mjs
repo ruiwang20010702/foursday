@@ -125,6 +125,9 @@ function emptyState() {
     recipients: {}, activeConversations: {}, takeoverReported: [],
     controlStates: {},
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
+    lastWakeSource: null,
+    lastDetection: null,
+    eventWake: { enabled: false, ready: false, errorCode: null, updatedAt: null },
   };
 }
 
@@ -176,6 +179,15 @@ async function loadState(path) {
       lastErrorCount: Number.isSafeInteger(parsed?.lastErrorCount)
         ? parsed.lastErrorCount
         : 0,
+      lastWakeSource: typeof parsed?.lastWakeSource === "string"
+        ? parsed.lastWakeSource.slice(0, 40)
+        : null,
+      lastDetection: parsed?.lastDetection && typeof parsed.lastDetection === "object"
+        ? parsed.lastDetection
+        : null,
+      eventWake: parsed?.eventWake && typeof parsed.eventWake === "object"
+        ? parsed.eventWake
+        : { enabled: false, ready: false, errorCode: null, updatedAt: null },
     };
   } catch (error) {
     if (error?.code === "ENOENT") return emptyState();
@@ -233,6 +245,21 @@ export function sidecarConfig(environment = process.env) {
       5_000,
       5 * 60 * 1_000,
     ),
+    eventWakeEnabled: String(
+      environment.DWS_PERSONAL_EVENT_WAKE_ENABLED ?? "true",
+    ).toLowerCase() === "true",
+    outboundQuietMs: boundedInteger(
+      environment.DWS_PERSONAL_OUTBOUND_QUIET_MS,
+      8_000,
+      0,
+      30_000,
+    ),
+    outboundMaxQuietMs: boundedInteger(
+      environment.DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS,
+      20_000,
+      0,
+      60_000,
+    ),
     sendEnabled: String(environment.DWS_PERSONAL_SEND_ENABLED ?? "false").toLowerCase() === "true",
   };
 }
@@ -243,10 +270,15 @@ export async function createSidecarRuntime({
   emit = (frame) => process.stdout.write(`${JSON.stringify(frame)}\n`),
   diagnose = (value) => process.stderr.write(`${value}\n`),
   now = () => new Date(),
+  clock = () => Date.now(),
+  wait = sleep,
   controlStore = config.controlFile
     ? new FoursdayControlStore({ path: config.controlFile })
     : null,
 } = {}) {
+  if (config.outboundQuietMs > config.outboundMaxQuietMs) {
+    throw new Error("DWS outbound quiet window exceeds its maximum");
+  }
   await access(config.dwsPath);
   if (config.mediaRoot) {
     await mkdir(config.mediaRoot, { recursive: true, mode: 0o700 });
@@ -280,6 +312,7 @@ export async function createSidecarRuntime({
     if (automatedSendEvidence.length > 1_000) automatedSendEvidence.shift();
   };
   const watchers = [];
+  let eventWakeController = null;
   let fallbackTimer = null;
   let debounceTimer = null;
   let running = false;
@@ -386,6 +419,11 @@ export async function createSidecarRuntime({
       sourceMessageId: id,
       ownerRevision: control.ownerRevision,
       sendGeneration: control.sendGeneration,
+      observedAt: String(message.detectedAt ?? now().toISOString()),
+      detectionLatencyMs: Number.isFinite(Number(message.detectionLatencyMs))
+        ? Math.max(0, Number(message.detectionLatencyMs))
+        : null,
+      wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
     });
     controlStates.set(conversationId, control);
     state.controlStates = Object.fromEntries(controlStates);
@@ -408,11 +446,16 @@ export async function createSidecarRuntime({
         attachments,
         ownerRevision: control.ownerRevision,
         sendGeneration: control.sendGeneration,
+        detectedAt: String(message.detectedAt ?? "") || null,
+        detectionLatencyMs: Number.isFinite(Number(message.detectionLatencyMs))
+          ? Math.max(0, Number(message.detectionLatencyMs))
+          : null,
+        wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
       },
     });
   };
 
-  const check = async ({ deferEmit = false } = {}) => {
+  const check = async ({ deferEmit = false, wakeSource = "manual" } = {}) => {
     if (running) {
       pending = true;
       return;
@@ -420,6 +463,7 @@ export async function createSidecarRuntime({
     running = true;
     try {
       const end = now();
+      state.lastWakeSource = wakeSource;
       const deferredFrames = [];
       const dispatch = deferEmit
         ? (frame) => deferredFrames.push(frame)
@@ -476,8 +520,22 @@ export async function createSidecarRuntime({
         let targetFailed = false;
         for (const message of orderedMessages) {
           try {
+            const createdAt = epoch(message.createTime);
+            const detectionLatencyMs = createdAt == null
+              ? null
+              : Math.max(0, end.getTime() - createdAt);
+            state.lastDetection = {
+              detectedAt: end.toISOString(),
+              latencyMs: detectionLatencyMs,
+              wakeSource,
+            };
             await emitMessage(
-              message,
+              {
+                ...message,
+                detectedAt: end.toISOString(),
+                detectionLatencyMs,
+                wakeSource,
+              },
               target.kind === "user" ? "direct" : "group",
               target.kind === "group",
               dispatch,
@@ -605,25 +663,31 @@ export async function createSidecarRuntime({
     }
   };
 
-  const trigger = () => {
+  let pendingWakeSource = "filesystem";
+  const trigger = (wakeSource = "filesystem") => {
+    pendingWakeSource = wakeSource;
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => check().catch((error) => {
+    debounceTimer = setTimeout(() => {
+      const source = pendingWakeSource;
+      pendingWakeSource = "filesystem";
+      check({ wakeSource: source }).catch((error) => {
       diagnose(`dws_sidecar_check_failed:${String(error?.code ?? error?.name ?? "error")}`);
-    }), 250);
+      });
+    }, 250);
   };
 
   if (config.dingtalkRoot && isAbsolute(config.dingtalkRoot)) {
     for (const directory of await discoverWatchDirectories(config.dingtalkRoot)) {
-      const watcher = watch(directory, { persistent: true }, trigger);
+      const watcher = watch(directory, { persistent: true }, () => trigger("filesystem"));
       watcher.on("error", () => {});
       watchers.push(watcher);
     }
   }
-  fallbackTimer = setInterval(trigger, config.fallbackMs);
+  fallbackTimer = setInterval(() => trigger("fallback"), config.fallbackMs);
 
   return {
     async start() {
-      const initialFrames = await check({ deferEmit: true });
+      const initialFrames = await check({ deferEmit: true, wakeSource: "startup" });
       emit({
         type: "ready",
         transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
@@ -632,6 +696,71 @@ export async function createSidecarRuntime({
       });
       for (const frame of initialFrames) emit(frame);
       await persistState();
+      if (
+        config.eventWakeEnabled &&
+        typeof dws.createPersonalEventWake === "function"
+      ) {
+        state.eventWake = {
+          enabled: true,
+          ready: false,
+          errorCode: null,
+          updatedAt: now().toISOString(),
+        };
+        await persistState();
+        try {
+          eventWakeController = dws.createPersonalEventWake({
+            onEvent: () => trigger("dws_event"),
+            onDiagnostic: (value) => {
+              diagnose(value);
+              if (String(value).startsWith("dws_event_closed:")) {
+                state.eventWake = {
+                  enabled: true,
+                  ready: false,
+                  errorCode: "dws_event_closed",
+                  updatedAt: now().toISOString(),
+                };
+                persistState().catch(() => {});
+              }
+            },
+          });
+        } catch (error) {
+          state.eventWake = {
+            enabled: true,
+            ready: false,
+            errorCode: String(error?.code ?? "dws_event_unavailable").slice(0, 80),
+            updatedAt: now().toISOString(),
+          };
+          diagnose(`dws_event_wake_unavailable:${state.eventWake.errorCode}`);
+          await persistState();
+        }
+        if (!eventWakeController) return;
+        eventWakeController.ready.then(async () => {
+          state.eventWake = {
+            enabled: true,
+            ready: true,
+            errorCode: null,
+            updatedAt: now().toISOString(),
+          };
+          await persistState();
+        }).catch(async (error) => {
+          state.eventWake = {
+            enabled: true,
+            ready: false,
+            errorCode: String(error?.code ?? "dws_event_unavailable").slice(0, 80),
+            updatedAt: now().toISOString(),
+          };
+          diagnose(`dws_event_wake_unavailable:${state.eventWake.errorCode}`);
+          await persistState();
+        });
+      } else {
+        state.eventWake = {
+          enabled: false,
+          ready: false,
+          errorCode: null,
+          updatedAt: now().toISOString(),
+        };
+        await persistState();
+      }
     },
     async send(payload) {
       if (!config.sendEnabled) {
@@ -665,6 +794,30 @@ export async function createSidecarRuntime({
           success: false,
           staleGeneration: true,
           error: "DWS reply lost its owner revision or send generation",
+        };
+      }
+      const observedAt = epoch(active?.observedAt);
+      const detectionLatencyMs = Number(active?.detectionLatencyMs);
+      const adaptiveQuietMs = Math.min(
+        config.outboundMaxQuietMs,
+        config.outboundQuietMs + (
+          Number.isFinite(detectionLatencyMs) ? Math.max(0, detectionLatencyMs) : 0
+        ),
+      );
+      if (observedAt != null && adaptiveQuietMs > 0) {
+        const remaining = observedAt + adaptiveQuietMs - clock();
+        if (remaining > 0) await wait(remaining);
+      }
+      const stableControl = controlStates.get(conversationId);
+      if (
+        !stableControl ||
+        stableControl.ownerRevision !== ownerRevision ||
+        stableControl.sendGeneration !== sendGeneration
+      ) {
+        return {
+          success: false,
+          staleGeneration: true,
+          error: "DWS reply was replaced during the outbound quiet window",
         };
       }
       const sendKey = stableSendKey(payload);
@@ -810,6 +963,7 @@ export async function createSidecarRuntime({
       clearInterval(fallbackTimer);
       clearTimeout(debounceTimer);
       for (const watcher of watchers) watcher.close();
+      if (eventWakeController) await eventWakeController.stop();
       await persistState();
     },
     check,
