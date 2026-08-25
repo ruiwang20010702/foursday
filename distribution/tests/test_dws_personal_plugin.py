@@ -628,11 +628,22 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         release_first = asyncio.Event()
         handled = []
         handled_metadata = []
+        handled_markers = []
+        context_path = str((
+            Path(self.temp.name) / "state-generation" / "work-contexts.json"
+        ).resolve())
 
         async def generation_handler(event):
-            handled.append(event.text)
+            markers = re.findall(r"fctx_[a-f0-9]{64}", event.text)
+            visible = re.sub(
+                r"\n*<!--\s*foursday-context:fctx_[a-f0-9]{64}\s*-->\s*",
+                "",
+                event.text,
+            ).strip()
+            handled.append(visible)
             handled_metadata.append(dict(event.metadata))
-            if event.text == "第一句":
+            handled_markers.append(markers)
+            if visible == "第一句":
                 first_started.set()
                 await release_first.wait()
                 return "旧回复"
@@ -650,40 +661,44 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "isSelf": False,
             "ownerRevision": 0,
         }
-        await self.bridge.emit({
-            **base,
-            "id": "generation-1",
-            "content": "第一句",
-            "createTime": "2026-08-25T18:59:39+08:00",
-            "sendGeneration": 1,
-        })
-        await asyncio.wait_for(first_started.wait(), timeout=1)
-        try:
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
             await self.bridge.emit({
                 **base,
-                "id": "generation-2",
-                "content": "第二句",
-                "createTime": "2026-08-25T18:59:42+08:00",
-                "sendGeneration": 2,
+                "id": "generation-1",
+                "content": "第一句",
+                "createTime": "2026-08-25T18:59:39+08:00",
+                "sendGeneration": 1,
             })
-            await self.bridge.emit({
-                **base,
-                "id": "generation-3",
-                "content": "第三句",
-                "createTime": "2026-08-25T18:59:46+08:00",
-                "sendGeneration": 3,
-            })
-            self.bridge.current_generation = 3
-            await asyncio.sleep(0.03)
-            release_first.set()
-            await asyncio.wait_for(self.bridge.final_delivery.wait(), timeout=1)
-        finally:
-            release_first.set()
-            await asyncio.sleep(0)
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+            try:
+                await self.bridge.emit({
+                    **base,
+                    "id": "generation-2",
+                    "content": "第二句",
+                    "createTime": "2026-08-25T18:59:42+08:00",
+                    "sendGeneration": 2,
+                })
+                await self.bridge.emit({
+                    **base,
+                    "id": "generation-3",
+                    "content": "第三句",
+                    "createTime": "2026-08-25T18:59:46+08:00",
+                    "sendGeneration": 3,
+                })
+                self.bridge.current_generation = 3
+                await asyncio.sleep(0.03)
+                release_first.set()
+                await asyncio.wait_for(self.bridge.final_delivery.wait(), timeout=1)
+            finally:
+                release_first.set()
+                await asyncio.sleep(0)
 
-        self.assertEqual(handled, ["第一句", "第二句\n第三句"])
+        self.assertEqual(handled, ["第一句", "第二句\n\n第三句"])
         self.assertEqual(handled_metadata[1]["send_generation"], 3)
         self.assertEqual(handled_metadata[1]["bundle_size"], 2)
+        self.assertEqual(len(handled_markers[1]), 1)
+        contexts = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"]
+        self.assertEqual(contexts[handled_markers[1][0]]["sendGeneration"], 3)
         self.assertEqual(
             handled_metadata[1]["source_message_ids"],
             ["generation-2", "generation-3"],

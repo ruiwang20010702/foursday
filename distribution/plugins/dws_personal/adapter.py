@@ -74,6 +74,10 @@ _INTERNAL_GATEWAY_NOTICE = re.compile(
     r"|⏩ Steered into current run)(?:\s|\(|[.—-])",
     re.IGNORECASE,
 )
+_FOURSDAY_CONTEXT_MARKER = re.compile(
+    r"<!--\s*foursday-context:(fctx_[a-f0-9]{64})\s*-->",
+    re.IGNORECASE,
+)
 _CURRENT_RUNTIME_STATUS = re.compile(
     r"(?:Foursday.{0,32}(?:当前|现在|最新|运行|版本|模式|状态|发送|send|active|shadow|ready)"
     r"|(?:当前|现在|最新|运行状态|版本|模式|真实发送).{0,32}Foursday)",
@@ -454,6 +458,15 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             target_metadata["source_message_ids"] = source_message_ids
             target_metadata["bundle_size"] = len(source_message_ids)
         target.metadata = target_metadata
+        latest_markers = _FOURSDAY_CONTEXT_MARKER.findall(str(latest.text or ""))
+        target_markers = _FOURSDAY_CONTEXT_MARKER.findall(str(target.text or ""))
+        marker = (latest_markers or target_markers)[-1] if (latest_markers or target_markers) else None
+        if marker:
+            visible_text = _FOURSDAY_CONTEXT_MARKER.sub("", str(target.text or ""))
+            visible_text = re.sub(r"\n{3,}", "\n\n", visible_text).strip()
+            target.text = f"{visible_text}\n\n<!-- foursday-context:{marker} -->"
+        if getattr(latest, "channel_prompt", None):
+            target.channel_prompt = latest.channel_prompt
 
     async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
         await super()._queue_text_debounce(session_key, event)
