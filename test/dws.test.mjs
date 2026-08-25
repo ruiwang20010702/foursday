@@ -780,6 +780,48 @@ test("私聊上下文从过去向现在读取并只保留截止时间前最后�
   assert.deepEqual(messages.map((message) => message.id), ["m2", "m3"]);
 });
 
+test("本人私聊文件通过消息详情富化为fileId附件", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
+  dws.run = async (input) => {
+    calls.push(input);
+    if (input.includes("list-direct")) {
+      return {
+        result: {
+          conversationMessagesList: [{
+            singleChat: true,
+            openConversationId: "self-conversation",
+            messages: [{
+              openMessageId: "self-file",
+              createTime: "2026-08-25T14:45:35+08:00",
+              content: "[文件] report.txt fileId: opaque 注意：如需下载使用dws drive download命令下载",
+            }],
+          }],
+        },
+      };
+    }
+    assert.equal(input.includes("+messages-mget"), true);
+    return {
+      complete: true,
+      failures: [],
+      messages: [{
+        messageId: "self-file",
+        resourceRefs: [{ resourceId: "file-1", type: "fileId", name: "report.txt" }],
+      }],
+    };
+  };
+  const messages = await dws.fetchDirect({
+    userId: "owner-user",
+    identityKind: "user_id",
+    before: new Date("2026-08-25T14:46:00+08:00"),
+    lookbackMs: 60_000,
+    limit: 10,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(messages[0].media[0].resourceType, "fileId");
+  assert.equal(messages[0].media[0].name, "report.txt");
+});
+
 test("已有开放账号任务使用开放账号参数发送私聊", async () => {
   const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
   let args;

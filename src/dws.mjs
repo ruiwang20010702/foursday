@@ -848,13 +848,14 @@ export class DwsAdapter {
       "--limit",
       String(queryLimit),
     ]);
-    return collectMessages(payload, userId)
+    const messages = collectMessages(payload, userId)
       .filter((message) => {
         const createdAt = epoch(message.createTime);
         return createdAt != null && createdAt <= beforeTime + 999;
       })
       .sort((a, b) => String(a.createTime).localeCompare(String(b.createTime)))
       .slice(-limit);
+    return this.enrichMessageResources(messages);
   }
 
   async hasManualReply({
