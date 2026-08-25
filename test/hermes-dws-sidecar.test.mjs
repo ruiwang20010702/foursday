@@ -10,6 +10,15 @@ import {
 } from "../src/hermes-dws-sidecar.mjs";
 import { FoursdayControlStore } from "../src/foursday-control-store.mjs";
 
+async function waitFor(predicate, { timeoutMs = 2_000, intervalMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((accept) => setTimeout(accept, intervalMs));
+  }
+  return true;
+}
+
 test("owner intervention classifier keeps communication, task and unrelated ownership distinct", () => {
   assert.equal(classifyOwnerIntervention("我已经回复对方了"), "communication_takeover");
   assert.equal(classifyOwnerIntervention("改成先核对全量口径"), "task_correction");
@@ -346,7 +355,10 @@ test("DWS event wake triggers the same allowlisted history read with event laten
     await Promise.resolve();
     available = true;
     dws.eventOnEvent();
-    await new Promise((accept) => setTimeout(accept, 350));
+    assert.equal(
+      await waitFor(() => frames.some((item) => item.record?.id === "event-message-1")),
+      true,
+    );
     const frame = frames.find((item) => item.record?.id === "event-message-1");
     assert.equal(frame.record.wakeSource, "dws_event");
     assert.equal(frame.record.detectionLatencyMs, 1_000);

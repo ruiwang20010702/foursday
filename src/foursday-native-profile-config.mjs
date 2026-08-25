@@ -182,7 +182,9 @@ export function foursdayCodexRules() {
   ).join("\n")}\n`;
 }
 
-async function atomicWrite(path, content, { replace = false } = {}) {
+const atomicWriteOperations = new Map();
+
+async function atomicWriteUnlocked(path, content, { replace = false } = {}) {
   const current = await lstat(path).catch((error) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -214,6 +216,21 @@ async function atomicWrite(path, content, { replace = false } = {}) {
     await handle.close().catch(() => {});
     await unlink(temporary).catch(() => {});
     throw error;
+  }
+}
+
+async function atomicWrite(path, content, options = {}) {
+  const previous = atomicWriteOperations.get(path) ?? Promise.resolve();
+  const operation = previous
+    .catch(() => {})
+    .then(() => atomicWriteUnlocked(path, content, options));
+  atomicWriteOperations.set(path, operation);
+  try {
+    return await operation;
+  } finally {
+    if (atomicWriteOperations.get(path) === operation) {
+      atomicWriteOperations.delete(path);
+    }
   }
 }
 
@@ -383,6 +400,11 @@ export async function configureFoursdayNativeProfile(options = {}) {
     chmod(plan.environment.FOURSDAY_THREAD_BINDINGS_ROOT, 0o700),
   ]);
   const codexSkillContent = await readFile(plan.codexProjectSkillSource, "utf8");
+  const sourceRegistryContent = `${JSON.stringify(
+    JSON.parse(await readFile(plan.sourceRegistry, "utf8")),
+    null,
+    2,
+  )}\n`;
   const writeResults = await Promise.allSettled([
     atomicWrite(
       plan.targetConfig,
@@ -391,7 +413,7 @@ export async function configureFoursdayNativeProfile(options = {}) {
     ),
     atomicWrite(
       plan.targetRegistry,
-      `${JSON.stringify(JSON.parse(await readFile(plan.sourceRegistry, "utf8")), null, 2)}\n`,
+      sourceRegistryContent,
       { replace: options.replace },
     ),
     atomicWrite(join(options.layout.profileDirectory, ".env"), plan.envContent, {

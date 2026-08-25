@@ -159,6 +159,31 @@ test("native profile config writes private user-owned files idempotently and req
   assert.equal(replaced.backupsCreated > 0, true);
 });
 
+test("concurrent native profile configuration serializes identical target writes", async (t) => {
+  const value = await fixture(t);
+  await mkdir(value.layout.profileDirectory, { recursive: true });
+  const options = {
+    layout: value.layout,
+    productionConfigPath: value.production,
+    projectRegistryPath: value.registry,
+    nodePath: value.node,
+    dwsPath: value.dws,
+    codexPath: value.codex,
+    pythonPath: value.python,
+    releaseSha: "a".repeat(40),
+    apply: true,
+  };
+  const results = await Promise.all([
+    configureFoursdayNativeProfile(options),
+    configureFoursdayNativeProfile(options),
+  ]);
+  assert.deepEqual(results.map((result) => result.changed).sort(), [false, true]);
+  assert.equal(
+    JSON.parse(await readFile(results[0].targetConfig, "utf8")).FOURSDAY_DINGTALK_USERS,
+    "trusted-user",
+  );
+});
+
 test("native profile config rejects inline production secrets", async (t) => {
   const value = await fixture(t);
   await writeFile(value.production, JSON.stringify({ FOURSDAY_DATABASE_URL: "postgresql://inline" }), { mode: 0o600 });
