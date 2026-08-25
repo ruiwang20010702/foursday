@@ -81,7 +81,10 @@ function stableSendKey(payload) {
   })).digest("hex");
 }
 
-export function classifyOwnerIntervention(text, { active = true } = {}) {
+export function classifyOwnerIntervention(text, {
+  active = true,
+  explicitOnly = false,
+} = {}) {
   if (!active) return "unrelated_owner_message";
   const value = String(text ?? "").trim();
   if (/^(?:继续|恢复|接着做|resume)(?:\s|$|[，。！？,.!?])/iu.test(value)) return "resume_requested";
@@ -90,6 +93,12 @@ export function classifyOwnerIntervention(text, { active = true } = {}) {
   }
   if (/(?:改成|调整为|纠正|修正|不要.{0,30}(?:而是|改为)|目标(?:改|调整)|task\s*correction)/iu.test(value)) {
     return "task_correction";
+  }
+  if (
+    explicitOnly &&
+    !/(?:我|已经|刚刚|刚才).{0,12}(?:回复|回了|发送|发给).{0,16}(?:对方|他|她|客户|同事|群里)|communication\s*takeover/iu.test(value)
+  ) {
+    return "unrelated_owner_message";
   }
   return "communication_takeover";
 }
@@ -795,6 +804,11 @@ export async function createSidecarRuntime({
             continue;
           }
           if (manual?.known === true && manual.replied === true) {
+            const intervention = classifyOwnerIntervention(manual.message?.content, {
+              active: true,
+              explicitOnly: active.participantUserId === config.selfUserId,
+            });
+            if (intervention === "unrelated_owner_message") continue;
             const ownerMessageId = String(manual.message?.id ?? "").trim() ||
               `owner:${hash(`${conversationId}:${manual.message?.createTime ?? end.toISOString()}`)}`;
             const priorControl = normalizedControlState(controlStates.get(conversationId));
@@ -809,7 +823,6 @@ export async function createSidecarRuntime({
             state.controlStates = Object.fromEntries(controlStates);
             takeoverReported.add(conversationId);
             state.takeoverReported = [...takeoverReported];
-            const intervention = classifyOwnerIntervention(manual.message?.content, { active: true });
             dispatch({
               type: "event",
               record: {

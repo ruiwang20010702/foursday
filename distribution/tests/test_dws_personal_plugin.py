@@ -14,6 +14,7 @@ from gateway.platform_registry import PlatformEntry, platform_registry
 from dws_personal import register
 from dws_personal.adapter import (
     DwsPersonalAdapter,
+    _TURN_CONSUMED_DELIVERY_VERSION,
     _TURN_DELIVERY_VERSION,
     _shadow_evidence,
 )
@@ -720,11 +721,11 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             ["最终回复"],
         )
 
-    async def test_only_exact_latest_reply_anchor_can_adopt_newer_delivery_generation(self):
+    async def test_only_consumed_latest_or_processing_root_can_adopt_newer_generation(self):
         bridge = GenerationFenceBridge()
         bridge.current_generation = 3
         self.adapter._bridge = bridge
-        self.adapter._latest_delivery_versions["direct-anchor"] = {
+        latest = {
             "conversationId": "direct-anchor",
             "messageId": "message-3",
             "ownerRevision": 0,
@@ -734,11 +735,15 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "bundleWaitMs": 20,
             "wakeSource": "test",
         }
-        token = _TURN_DELIVERY_VERSION.set({
+        self.adapter._latest_delivery_versions["direct-anchor"] = dict(latest)
+        consumed = dict(latest)
+        delivery_token = _TURN_DELIVERY_VERSION.set({
             "conversationId": "direct-anchor",
+            "messageId": "message-1",
             "ownerRevision": 0,
             "sendGeneration": 1,
         })
+        consumed_token = _TURN_CONSUMED_DELIVERY_VERSION.set(consumed)
         try:
             exact = await self.adapter.send(
                 "direct-anchor", "最终回复", reply_to="message-3"
@@ -747,12 +752,13 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.sent[-1]["sendGeneration"], 3)
 
             bridge.current_generation = 4
-            self.adapter._latest_delivery_versions["direct-anchor"] = {
+            latest = {
                 "conversationId": "direct-anchor",
                 "messageId": "message-4",
                 "ownerRevision": 0,
                 "sendGeneration": 4,
             }
+            self.adapter._latest_delivery_versions["direct-anchor"] = dict(latest)
             old_anchor = await self.adapter.send(
                 "direct-anchor", "旧锚点回复", reply_to="message-3"
             )
@@ -768,25 +774,61 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(empty_anchor.message_id.startswith("suppressed-stale-"))
             self.assertFalse(wrong_conversation.success)
 
+            consumed.clear()
+            consumed.update(latest)
+            processing_root = await self.adapter.send(
+                "direct-anchor",
+                "队列最终回复",
+                reply_to="message-1",
+                metadata={"notify": True},
+            )
+            self.assertTrue(processing_root.success)
+            self.assertEqual(bridge.sent[-1]["sendGeneration"], 4)
+
+            latest = {
+                "conversationId": "direct-anchor",
+                "messageId": "message-5",
+                "ownerRevision": 0,
+                "sendGeneration": 5,
+            }
+            self.adapter._latest_delivery_versions["direct-anchor"] = dict(latest)
+            bridge.current_generation = 5
+            after_return_race = await self.adapter.send(
+                "direct-anchor",
+                "处理返回后的旧回复",
+                reply_to="message-1",
+                metadata={"notify": True},
+            )
+            self.assertTrue(after_return_race.success)
+            self.assertTrue(
+                after_return_race.message_id.startswith("suppressed-stale-")
+            )
+
+            consumed.clear()
+            consumed.update(latest)
             bridge.current_owner_revision = 1
             takeover = await self.adapter.send(
-                "direct-anchor", "接管后的旧回复", reply_to="message-4"
+                "direct-anchor",
+                "接管后的旧回复",
+                reply_to="message-1",
+                metadata={"notify": True},
             )
             self.assertTrue(takeover.success)
             self.assertTrue(takeover.message_id.startswith("suppressed-stale-"))
         finally:
-            _TURN_DELIVERY_VERSION.reset(token)
+            _TURN_CONSUMED_DELIVERY_VERSION.reset(consumed_token)
+            _TURN_DELIVERY_VERSION.reset(delivery_token)
 
         self.assertEqual(
             [
                 (payload["ownerRevision"], payload["sendGeneration"])
                 for payload in bridge.sent
             ],
-            [(0, 3), (0, 1), (0, 1), (0, 4)],
+            [(0, 3), (0, 1), (0, 1), (0, 4), (0, 1), (0, 5)],
         )
         self.assertEqual(
             [payload["content"] for payload in bridge.delivered],
-            ["最终回复"],
+            ["最终回复", "队列最终回复"],
         )
 
     async def test_messages_beyond_source_max_wait_become_sequential_session_turns(self):

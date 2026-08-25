@@ -16,6 +16,14 @@ test("owner intervention classifier keeps communication, task and unrelated owne
   assert.equal(classifyOwnerIntervention("这个任务我来处理"), "task_takeover");
   assert.equal(classifyOwnerIntervention("继续"), "resume_requested");
   assert.equal(classifyOwnerIntervention("今天天气不错", { active: false }), "unrelated_owner_message");
+  assert.equal(
+    classifyOwnerIntervention("重点看人工回复探针失败时", { explicitOnly: true }),
+    "unrelated_owner_message",
+  );
+  assert.equal(
+    classifyOwnerIntervention("我已经回复对方了", { explicitOnly: true }),
+    "communication_takeover",
+  );
 });
 
 test("external global pause preserves the unread message until exact resume", async () => {
@@ -1070,6 +1078,75 @@ test("outbound quiet window lets a six-second follow-up invalidate the old reply
     assert.equal(dws.sent.length, 0);
     const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
     assert.deepEqual(persisted.sendLedger, {});
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("self-chat fragments stay as input while explicit intervention still takes over", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-self-fragment-"));
+  const frames = [];
+  const dws = new FakeDws();
+  let manualMessage = {
+    id: "self-fragment-2",
+    content: "重点看人工回复探针失败时",
+    createTime: "2026-08-24T10:00:30+08:00",
+  };
+  dws.fetchDirect = async () => [{
+    id: "self-fragment-1",
+    senderUserId: "owner-user",
+    senderName: "Owner",
+    conversationId: "self-conversation",
+    content: "请帮我核对Foursday项目",
+    createTime: "2026-08-24T10:00:00+08:00",
+    isSelf: true,
+    isWithdrawn: false,
+    media: [],
+  }];
+  dws.hasManualReply = async () => ({
+    known: true,
+    replied: true,
+    message: manualMessage,
+  });
+  const stateFile = join(root, "state.json");
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["owner-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-24T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    assert.equal(frames.some((frame) => frame.record?.control), false);
+    let state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(state.controlStates["self-conversation"].ownerRevision, 0);
+    assert.equal(state.controlStates["self-conversation"].sendGeneration, 1);
+
+    manualMessage = {
+      id: "self-takeover-1",
+      content: "这个任务我来处理",
+      createTime: "2026-08-24T10:00:40+08:00",
+    };
+    await runtime.check();
+    const interventions = frames.filter((frame) => frame.record?.control);
+    assert.equal(interventions.length, 1);
+    assert.equal(interventions[0].record.control, "task_takeover");
+    assert.equal(interventions[0].record.ownerRevision, 1);
+    assert.equal(interventions[0].record.sendGeneration, 2);
+    state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(state.controlStates["self-conversation"].lastOwnerMessageId, "self-takeover-1");
   } finally {
     await runtime.stop();
   }

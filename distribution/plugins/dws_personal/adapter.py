@@ -165,6 +165,9 @@ _WORK_CONTEXT_LOCK = threading.Lock()
 _TURN_DELIVERY_VERSION: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
     "foursday_dws_delivery_version", default=None
 )
+_TURN_CONSUMED_DELIVERY_VERSION: contextvars.ContextVar[
+    Optional[dict[str, Any]]
+] = contextvars.ContextVar("foursday_dws_consumed_delivery_version", default=None)
 
 
 def _work_context_token(
@@ -406,6 +409,31 @@ class DwsPersonalAdapter(BasePlatformAdapter):
     def toolsets_for_source(self, _source) -> Optional[list[str]]:
         return list(self._toolsets)
 
+    def set_message_handler(self, handler) -> None:
+        owner = getattr(handler, "__self__", None)
+        drains_gateway_queue = bool(
+            owner is not None
+            and owner.__class__.__module__ == "gateway.run"
+            and owner.__class__.__name__ == "GatewayRunner"
+            and getattr(handler, "__name__", "") == "_handle_message"
+        )
+
+        async def tracked_handler(event: MessageEvent):
+            _TURN_CONSUMED_DELIVERY_VERSION.set(None)
+            event_version = _TURN_DELIVERY_VERSION.get()
+            result = await handler(event)
+            consumed = event_version
+            if drains_gateway_queue:
+                conversation_id = str(
+                    getattr(event.source, "chat_id", "") or ""
+                ).strip()
+                consumed = self._latest_delivery_versions.get(conversation_id)
+            if consumed is not None:
+                _TURN_CONSUMED_DELIVERY_VERSION.set(dict(consumed))
+            return result
+
+        super().set_message_handler(tracked_handler)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Bind delivery to the exact event that owns this processing turn.
 
@@ -414,6 +442,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         turn's ContextVar and its otherwise-current answer is rejected by the
         DWS send-generation fence.
         """
+        _TURN_CONSUMED_DELIVERY_VERSION.set(None)
         metadata = event.metadata if isinstance(event.metadata, dict) else {}
         owner_revision = metadata.get("owner_revision")
         send_generation = metadata.get("send_generation")
@@ -427,6 +456,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         ):
             _TURN_DELIVERY_VERSION.set({
                 "conversationId": conversation_id,
+                "messageId": str(getattr(event, "message_id", "") or ""),
                 "ownerRevision": owner_revision,
                 "sendGeneration": send_generation,
                 "turnStartedMonotonic": time.monotonic(),
@@ -919,6 +949,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 }
         anchor_rebound = False
         latest_version = self._latest_delivery_versions.get(str(chat_id))
+        consumed_version = _TURN_CONSUMED_DELIVERY_VERSION.get()
         latest_reply_anchor = bool(
             reply_to
             and latest_version is not None
@@ -927,24 +958,49 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 str(reply_to), str(latest_version.get("messageId") or "")
             )
         )
+        processing_root_reply_anchor = bool(
+            version is not None
+            and version.get("conversationId") == str(chat_id)
+            and reply_to
+            and isinstance(metadata, dict)
+            and metadata.get("notify") is True
+            and secrets.compare_digest(
+                str(reply_to), str(version.get("messageId") or "")
+            )
+        )
+        consumed_is_latest = bool(
+            consumed_version is not None
+            and latest_version is not None
+            and consumed_version.get("conversationId") == str(chat_id)
+            and latest_version.get("conversationId") == str(chat_id)
+            and secrets.compare_digest(
+                str(consumed_version.get("messageId") or ""),
+                str(latest_version.get("messageId") or ""),
+            )
+            and int(consumed_version.get("ownerRevision") or 0)
+            == int(latest_version.get("ownerRevision") or 0)
+            and int(consumed_version.get("sendGeneration") or 0)
+            == int(latest_version.get("sendGeneration") or 0)
+        )
         if (
             version is not None
             and version.get("conversationId") == str(chat_id)
-            and latest_reply_anchor
-            and int(latest_version.get("ownerRevision") or 0) >= int(
+            and (latest_reply_anchor or processing_root_reply_anchor)
+            and consumed_is_latest
+            and int(consumed_version.get("ownerRevision") or 0) >= int(
                 version.get("ownerRevision") or 0
             )
-            and int(latest_version.get("sendGeneration") or 0) >= int(
+            and int(consumed_version.get("sendGeneration") or 0) >= int(
                 version.get("sendGeneration") or 0
             )
             and (
-                int(latest_version.get("ownerRevision") or 0)
+                int(consumed_version.get("ownerRevision") or 0)
                 > int(version.get("ownerRevision") or 0)
-                or int(latest_version.get("sendGeneration") or 0)
+                or int(consumed_version.get("sendGeneration") or 0)
                 > int(version.get("sendGeneration") or 0)
             )
         ):
-            version = latest_version
+            version = consumed_version
             anchor_rebound = True
         if version is None or version.get("conversationId") != str(chat_id):
             return SendResult(
@@ -986,6 +1042,8 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "ownerRevision": int(version.get("ownerRevision") or 0),
             "sendGeneration": int(version.get("sendGeneration") or 0),
             "latestReplyAnchor": latest_reply_anchor,
+            "processingRootReplyAnchor": processing_root_reply_anchor,
+            "consumedLatestVersion": consumed_is_latest,
             "generationRebound": anchor_rebound,
         })
         if not isinstance(result, dict) or result.get("success") is not True:
