@@ -63,6 +63,29 @@ class FakeBridge:
         return {"success": True}
 
 
+class GenerationFenceBridge(FakeBridge):
+    def __init__(self):
+        super().__init__()
+        self.current_generation = 0
+        self.delivered = []
+        self.final_delivery = asyncio.Event()
+
+    async def send(self, payload):
+        self.sent.append(payload)
+        if payload.get("sendGeneration") != self.current_generation:
+            return {
+                "success": False,
+                "staleGeneration": True,
+                "error": "stale generation",
+            }
+        self.delivered.append(payload)
+        self.final_delivery.set()
+        return {
+            "success": True,
+            "messageId": f"sent-{len(self.delivered)}",
+        }
+
+
 class BufferedFakeBridge(FakeBridge):
     def __init__(self, record):
         super().__init__()
@@ -585,6 +608,94 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "第二句\n第三句",
         ])
         self.assertEqual(self.events[1].metadata["bundle_size"], 2)
+
+    async def test_queue_mode_rebinds_followup_turn_to_latest_send_generation(self):
+        await self.adapter.disconnect()
+        self.bridge = GenerationFenceBridge()
+        self.bridge.current_generation = 1
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 0,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        self.adapter._busy_text_mode = "queue"
+        self.adapter._busy_text_debounce_seconds = 0.01
+        self.adapter._busy_text_hard_cap_seconds = 0.02
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        handled = []
+        handled_metadata = []
+
+        async def generation_handler(event):
+            handled.append(event.text)
+            handled_metadata.append(dict(event.metadata))
+            if event.text == "第一句":
+                first_started.set()
+                await release_first.wait()
+                return "旧回复"
+            return "最终回复"
+
+        self.adapter.set_message_handler(generation_handler)
+        self.assertTrue(await self.adapter.connect())
+        base = {
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "direct-generation-queue",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+            "ownerRevision": 0,
+        }
+        await self.bridge.emit({
+            **base,
+            "id": "generation-1",
+            "content": "第一句",
+            "createTime": "2026-08-25T18:59:39+08:00",
+            "sendGeneration": 1,
+        })
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        try:
+            await self.bridge.emit({
+                **base,
+                "id": "generation-2",
+                "content": "第二句",
+                "createTime": "2026-08-25T18:59:42+08:00",
+                "sendGeneration": 2,
+            })
+            await self.bridge.emit({
+                **base,
+                "id": "generation-3",
+                "content": "第三句",
+                "createTime": "2026-08-25T18:59:46+08:00",
+                "sendGeneration": 3,
+            })
+            self.bridge.current_generation = 3
+            await asyncio.sleep(0.03)
+            release_first.set()
+            await asyncio.wait_for(self.bridge.final_delivery.wait(), timeout=1)
+        finally:
+            release_first.set()
+            await asyncio.sleep(0)
+
+        self.assertEqual(handled, ["第一句", "第二句\n第三句"])
+        self.assertEqual(handled_metadata[1]["send_generation"], 3)
+        self.assertEqual(handled_metadata[1]["bundle_size"], 2)
+        self.assertEqual(
+            handled_metadata[1]["source_message_ids"],
+            ["generation-2", "generation-3"],
+        )
+        self.assertEqual(
+            [payload["sendGeneration"] for payload in self.bridge.sent],
+            [1, 3],
+        )
+        self.assertEqual(
+            [payload["content"] for payload in self.bridge.delivered],
+            ["最终回复"],
+        )
 
     async def test_messages_beyond_source_max_wait_become_sequential_session_turns(self):
         await self.adapter.disconnect()

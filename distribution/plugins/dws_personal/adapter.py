@@ -401,6 +401,75 @@ class DwsPersonalAdapter(BasePlatformAdapter):
     def toolsets_for_source(self, _source) -> Optional[list[str]]:
         return list(self._toolsets)
 
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Bind delivery to the exact event that owns this processing turn.
+
+        Hermes creates a queued follow-up task from the active task's asyncio
+        context. Without rebinding here, that new task inherits the previous
+        turn's ContextVar and its otherwise-current answer is rejected by the
+        DWS send-generation fence.
+        """
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        owner_revision = metadata.get("owner_revision")
+        send_generation = metadata.get("send_generation")
+        conversation_id = str(getattr(event.source, "chat_id", "") or "").strip()
+        if (
+            conversation_id
+            and isinstance(owner_revision, int)
+            and owner_revision >= 0
+            and isinstance(send_generation, int)
+            and send_generation >= 0
+        ):
+            _TURN_DELIVERY_VERSION.set({
+                "conversationId": conversation_id,
+                "ownerRevision": owner_revision,
+                "sendGeneration": send_generation,
+                "turnStartedMonotonic": time.monotonic(),
+                "detectionLatencyMs": metadata.get("detection_latency_ms"),
+                "bundleWaitMs": metadata.get("bundle_wait_ms"),
+                "wakeSource": metadata.get("wake_source"),
+            })
+
+    @staticmethod
+    def _merge_queued_delivery_metadata(target: MessageEvent, latest: MessageEvent) -> None:
+        target_metadata = target.metadata if isinstance(target.metadata, dict) else {}
+        latest_metadata = latest.metadata if isinstance(latest.metadata, dict) else {}
+        for key in (
+            "owner_revision",
+            "send_generation",
+            "detected_at",
+            "detection_latency_ms",
+            "bundle_wait_ms",
+            "wake_source",
+        ):
+            if key in latest_metadata:
+                target_metadata[key] = latest_metadata[key]
+        source_message_ids = []
+        for metadata in (target_metadata, latest_metadata):
+            for message_id in metadata.get("source_message_ids") or []:
+                value = str(message_id)
+                if value and value not in source_message_ids:
+                    source_message_ids.append(value)
+        if source_message_ids:
+            target_metadata["source_message_ids"] = source_message_ids
+            target_metadata["bundle_size"] = len(source_message_ids)
+        target.metadata = target_metadata
+
+    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
+        await super()._queue_text_debounce(session_key, event)
+        state = self._text_debounce_store().get(session_key)
+        if state is not None:
+            self._merge_queued_delivery_metadata(state.event, event)
+
+    async def _flush_text_debounce_now(self, session_key: str) -> bool:
+        state = self._text_debounce_store().get(session_key)
+        latest_event = state.event if state is not None else None
+        flushed = await super()._flush_text_debounce_now(session_key)
+        pending = self._pending_messages.get(session_key)
+        if flushed and pending is not None and latest_event is not None:
+            self._merge_queued_delivery_metadata(pending, latest_event)
+        return flushed
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect
         if self._running:

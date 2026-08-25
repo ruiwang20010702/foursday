@@ -48,6 +48,7 @@ async function writeSingleLoopProfile(layout) {
     "  tool_progress: off",
     "  interim_assistant_messages: false",
     "  long_running_notifications: false",
+    "  busy_input_mode: queue",
     "  busy_ack_enabled: false",
     "streaming:",
     "  enabled: false",
@@ -300,7 +301,7 @@ test("profile staging packages plugins, profile and skills without Python caches
   const profileConfiguration = await readFile(join(result.stage, "config.yaml"), "utf8");
   assert.match(profileConfiguration, /foursday-work-twin/u);
   assert.match(profileConfiguration, /approvals:\n  mode: 'off'/u);
-  assert.match(profileConfiguration, /display:\n  show_commentary: false\n  tool_progress: off\n  interim_assistant_messages: false\n  long_running_notifications: false\n  busy_ack_enabled: false/u);
+  assert.match(profileConfiguration, /display:\n  show_commentary: false\n  tool_progress: off\n  interim_assistant_messages: false\n  long_running_notifications: false\n  busy_input_mode: queue\n  busy_ack_enabled: false/u);
   assert.match(profileConfiguration, /streaming:\n  enabled: false/u);
   assert.match(profileConfiguration, /background_review:\n    enabled: false/u);
   assert.match(profileConfiguration, /title_generation:\n    enabled: false/u);

@@ -53,7 +53,7 @@ npx --no-install foursday status
 
 Shadow mode can receive, route, reason, call tools, and record evidence, but the DWS bridge refuses real sends.
 
-Before activation, verify that the event consumer reached its explicit `[event] ready` state or that the fallback state is visible, then test three message fragments spaced 5–8 seconds apart. Exactly one final reply may become send-eligible; superseded generations must remain unsent.
+Before activation, verify that the event consumer reached its explicit `[event] ready` state or that the fallback state is visible, then test three message fragments spaced 5–8 seconds apart. The Profile must report `display.busy_input_mode: queue`; exactly one queued or initially bundled final reply may become send-eligible, and superseded generations must remain unsent.
 
 Operate from Codex/Claude through the packaged Control MCP, or inspect the same state from the CLI:
 

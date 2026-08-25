@@ -48,6 +48,8 @@ The target split is deliberately asymmetric. Hermes owns channel ingress, platfo
 
 An authorized request grants the reversible work needed to finish its goal; Foursday does not ask for approval before every tool call. Business meaning, priority, content, and acceptance questions return to the requester. Production, cross-project access, personal high-authority MCPs, secrets, privilege expansion, and irreversible actions return to the owner. Owner messages freeze stale outbound generations before being classified as communication takeover, task correction, task takeover, resume, or unrelated conversation.
 
+The Foursday Profile fixes Hermes busy input to `queue`. Text fragments that arrive after a Codex turn has started are merged into the next turn instead of being redirected into a turn that still owns an older delivery generation. The old answer remains suppressed; the queued turn rebinds delivery from its final event metadata, so only an answer that owns the latest `ownerRevision/sendGeneration` can become visible.
+
 The current source candidate implements this contract. Bound `thread/resume` and same-task `thread/fork` survive Gateway restarts; Codex web/image, isolated Skills/Memory and native multi-agent support are enabled; the Foursday MCP exposes only evidence-gated memory and current-message attachment tools. Untrusted dynamic tools, model overrides, arbitrary shell network and high-risk exits remain blocked.
 
 ## Version scope
