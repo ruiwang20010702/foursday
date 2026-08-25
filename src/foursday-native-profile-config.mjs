@@ -381,14 +381,7 @@ export async function configureFoursdayNativeProfile(options = {}) {
     chmod(plan.environment.FOURSDAY_THREAD_BINDINGS_ROOT, 0o700),
   ]);
   const codexSkillContent = await readFile(plan.codexProjectSkillSource, "utf8");
-  const [
-    configResult,
-    registryResult,
-    envResult,
-    codexConfigResult,
-    codexRulesResult,
-    codexSkillResult,
-  ] = await Promise.all([
+  const writeResults = await Promise.allSettled([
     atomicWrite(
       plan.targetConfig,
       `${JSON.stringify(plan.profileProductionConfig, null, 2)}\n`,
@@ -414,6 +407,16 @@ export async function configureFoursdayNativeProfile(options = {}) {
       { replace: options.replace },
     ),
   ]);
+  const failedWrite = writeResults.find((result) => result.status === "rejected");
+  if (failedWrite) throw failedWrite.reason;
+  const [
+    configResult,
+    registryResult,
+    envResult,
+    codexConfigResult,
+    codexRulesResult,
+    codexSkillResult,
+  ] = writeResults.map((result) => result.value);
   return {
     ...plan,
     apply: true,
