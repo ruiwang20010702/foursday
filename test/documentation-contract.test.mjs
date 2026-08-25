@@ -35,6 +35,11 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
   assert.equal(packageJson.dependencies["@larksuiteoapi/node-sdk"], undefined);
 });
 
+test("private attachment staging can never become an ordinary Git candidate", async () => {
+  const gitignore = await text(".gitignore");
+  assert.match(gitignore, /^\.foursday-inbox\/$/mu);
+});
+
 test("documentation tree has one small current set and no history mirror", async () => {
   const files = async (directory) => (await readdir(resolve(root, directory), { withFileTypes: true }))
     .filter((entry) => entry.isFile())

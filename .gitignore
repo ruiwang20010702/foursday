@@ -1,4 +1,5 @@
 .runtime/
+.foursday-inbox/
 **/__pycache__/
 **/*.pyc
 node_modules/

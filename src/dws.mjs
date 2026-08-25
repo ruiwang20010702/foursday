@@ -321,6 +321,14 @@ export function dwsMessageContentDigest(value) {
 export function dwsMessageContentFingerprint(value) {
   const canonical = normalizedText(value)
     .normalize("NFKC")
+    .replaceAll(
+      /\[([^\]\n]{1,500})\]\(((?:file:\/\/)?(?:\/|~\/)[^)\n]+)\)/gu,
+      (_match, label, destination) => {
+        const line = String(destination).match(/:(\d+)(?::\d+)?$/u);
+        return `[${label}](${line ? `:${line[1]}` : ""})`;
+      },
+    )
+    .replaceAll(/(^|\s)\d+\.(?=\s)/gu, (_match, prefix) => `${prefix}1.`)
     .replaceAll(/[`*_~]/gu, "")
     .replaceAll(/\s+/gu, "");
   return createHash("sha256").update(canonical).digest("hex");

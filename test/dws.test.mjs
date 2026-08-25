@@ -332,6 +332,38 @@ test("DWS rendered Markdown keeps one automation fingerprint", () => {
   }]), true);
 });
 
+test("DWS stripped local-link paths keep one automation fingerprint", () => {
+  const original = [
+    "1. 消息碎片口径基本一致：",
+    "参考 ([产品需求文档](/Users/example/Documents/Foursday/docs/产品需求文档.md:526))，",
+    "2. 并对照 ([技术设计文档](file:///Users/example/Documents/Foursday/docs/技术设计文档.md:234))。",
+  ].join("\n");
+  const rendered = [
+    "1. 消息碎片口径基本一致：",
+    "参考 ([产品需求文档](:526))，",
+    "1. 并对照 ([技术设计文档](:234))。",
+  ].join("\n");
+  assert.notEqual(dwsMessageContentDigest(original), dwsMessageContentDigest(rendered));
+  assert.equal(dwsMessageContentFingerprint(original), dwsMessageContentFingerprint(rendered));
+  assert.equal(isAutomatedSelfMessage({
+    id: "rendered-local-link-message",
+    conversationId: "self-conversation",
+    createTime: "2026-08-25T23:55:54+08:00",
+    content: rendered,
+    raw: {},
+  }, [{
+    conversationId: "self-conversation",
+    startedAt: "2026-08-25T23:55:53+08:00",
+    status: "unknown",
+    contentFingerprint: dwsMessageContentFingerprint(original),
+  }]), true);
+
+  assert.notEqual(
+    dwsMessageContentFingerprint(original),
+    dwsMessageContentFingerprint(rendered.replace("产品需求文档", "另一份文档")),
+  );
+});
+
 test("DWS CLI calls are serialized so the local data lock cannot race", async () => {
   let active = 0;
   let maximumActive = 0;

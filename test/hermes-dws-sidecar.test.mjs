@@ -1876,7 +1876,7 @@ test("Hermes DWS sidecar verifies Markdown-transformed readback without an AI ma
     id: "rendered-readback-message",
     conversationId: "conversation-1",
     createTime: "2026-08-18T14:01:01+08:00",
-    content: "当前状态：  \n- 版本：**v1**- 模式：**active**- 发送：**true**",
+    content: "当前状态：  \n1. 版本：**v1**1. 模式：**active**1. 发送：**true**1. 证据：[技术设计文档](:234)",
     raw: {},
   };
   const runtime = await createSidecarRuntime({
@@ -1898,7 +1898,7 @@ test("Hermes DWS sidecar verifies Markdown-transformed readback without an AI ma
   await runtime.start();
   const receipt = await runtime.send({
     conversationId: "conversation-1",
-    content: "当前状态：\n\n- 版本：`v1`\n- 模式：`active`\n- 发送：`true`",
+    content: "当前状态：\n\n1. 版本：`v1`\n2. 模式：`active`\n3. 发送：`true`\n4. 证据：[技术设计文档](/Users/example/Foursday/docs/技术设计文档.md:234)",
     ownerRevision: 0,
     sendGeneration: 1,
   });
