@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 import contextvars
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -193,7 +193,7 @@ def _work_context_token(
 
 def _reply_evidence_key(event: dict[str, Any]) -> str:
     return ":".join(str(event.get(name) or "") for name in (
-        "conversationHash", "replyToHash", "deliveryContextHash", "contentHash",
+        "releaseSha", "conversationHash", "replyToHash", "deliveryContextHash", "contentHash",
     ))
 
 
@@ -215,6 +215,12 @@ def _shadow_evidence(event: dict[str, Any]) -> bool:
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
             raise RuntimeError("Foursday shadow evidence must be a private regular file")
+    release_sha = str(os.getenv("FOURSDAY_RELEASE_SHA", "")).strip().lower()
+    event = {
+        **event,
+        "releaseSha": release_sha if re.fullmatch(r"[a-f0-9]{40}", release_sha) else None,
+        "recordedAt": datetime.now(timezone.utc).isoformat(),
+    }
     if event.get("type") == "reply_attempt":
         key = _reply_evidence_key(event)
         known = _SHADOW_REPLY_KEYS.get(str(path))

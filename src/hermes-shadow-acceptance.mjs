@@ -30,9 +30,10 @@ export function evaluateHermesShadowAcceptance({
   if (!Array.isArray(events) || events.length > 100_000) {
     throw new Error("Foursday shadow events must be a bounded array");
   }
-  const inbound = events.filter((event) => event?.type === "inbound");
-  const replies = events.filter((event) => event?.type === "reply_attempt");
-  const interventions = events.filter((event) => [
+  const scopedEvents = events.filter((event) => event?.releaseSha === releaseSha);
+  const inbound = scopedEvents.filter((event) => event?.type === "inbound");
+  const replies = scopedEvents.filter((event) => event?.type === "reply_attempt");
+  const interventions = scopedEvents.filter((event) => [
     "communication_takeover",
     "task_correction",
     "task_takeover",
@@ -96,6 +97,7 @@ export function evaluateHermesShadowAcceptance({
     .map(([name]) => name);
   const summary = {
     releaseSha,
+    ignoredEventCount: events.length - scopedEvents.length,
     counts: {
       inbound: inbound.length,
       replyAttempts: replies.length,

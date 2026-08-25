@@ -662,6 +662,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {
             "FOURSDAY_SHADOW_EVIDENCE_FILE": str(evidence),
             "FOURSDAY_MODE": "shadow",
+            "FOURSDAY_RELEASE_SHA": "a" * 40,
         }):
             await self.bridge.emit({
                 "id": "private-message-id",
@@ -714,6 +715,8 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         ]:
             self.assertNotIn(private, serialized)
         self.assertEqual(rows[-1]["mode"], "shadow")
+        self.assertEqual(rows[-1]["releaseSha"], "a" * 40)
+        self.assertRegex(rows[-1]["recordedAt"], r"^\d{4}-")
         self.assertFalse(rows[-1]["bridgeSuccess"])
         self.assertEqual(rows[0]["detectionLatencyMs"], 1200)
         self.assertEqual(rows[0]["wakeSource"], "dws_event")

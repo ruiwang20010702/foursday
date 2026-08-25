@@ -16,10 +16,12 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isSecretReference, secretConfigKeys } from "./secret-provider.mjs";
+import { productionConfigKeys } from "./production-config-file.mjs";
 
 const execFileAsync = promisify(execFile);
 const memoryPromoterJobName = "foursday-memory-promoter";
 const cronText = /^[^\u0000-\u001f\u007f]{1,20000}$/u;
+const fullReleaseSha = /^[a-f0-9]{40}$/u;
 
 async function privateJson(path, label) {
   const absolute = resolve(path);
@@ -221,14 +223,26 @@ export async function buildFoursdayNativeProfileConfiguration({
   dwsPath,
   codexPath,
   pythonPath = null,
+  releaseSha = null,
 } = {}) {
   const production = await privateJson(productionConfigPath, "Foursday production config");
   const registry = await privateJson(projectRegistryPath, "Foursday project registry");
   if (registry.value.schemaVersion !== 1 || !Array.isArray(registry.value.projects)) {
     throw new Error("Foursday project registry is invalid");
   }
+  for (const key of Object.keys(production.value)) {
+    if (key.startsWith("FOURSDAY_") && !productionConfigKeys.has(key)) {
+      throw new Error(`Unsupported Foursday production config key: ${key}`);
+    }
+  }
+  const profileProductionConfig = Object.fromEntries(
+    Object.entries(production.value).filter(([key]) => productionConfigKeys.has(key)),
+  );
+  if (releaseSha != null && !fullReleaseSha.test(String(releaseSha))) {
+    throw new Error("Foursday Profile config release SHA is invalid");
+  }
   for (const key of secretConfigKeys) {
-    if (key in production.value && !isSecretReference(production.value[key])) {
+    if (key in profileProductionConfig && !isSecretReference(profileProductionConfig[key])) {
       throw new Error(`Foursday production secret must remain externally referenced: ${key}`);
     }
   }
@@ -271,6 +285,7 @@ export async function buildFoursdayNativeProfileConfiguration({
     FOURSDAY_THREAD_BINDINGS_ROOT: join(stateRoot, "thread-bindings"),
     FOURSDAY_CONTROL_FILE: join(stateRoot, "control.json"),
     FOURSDAY_MODE: "shadow",
+    ...(releaseSha ? { FOURSDAY_RELEASE_SHA: String(releaseSha) } : {}),
     FOURSDAY_MEMORY_HOME: layout.userHome,
     FOURSDAY_DWS_HOME: layout.userHome,
     FOURSDAY_CODEX_PATH: codex,
@@ -280,29 +295,29 @@ export async function buildFoursdayNativeProfileConfiguration({
     FOURSDAY_REQUIRE_WORK_CONTEXT: "true",
     CODEX_HOME: codexRoot,
     DWS_PATH: dws,
-    DWS_PERSONAL_ALLOWED_USERS: scalar(production.value, "FOURSDAY_DINGTALK_USERS"),
-    DWS_PERSONAL_FETCH_USERS: scalar(production.value, "FOURSDAY_DINGTALK_USERS"),
-    DWS_PERSONAL_ALLOWED_GROUPS: scalar(production.value, "FOURSDAY_DINGTALK_GROUPS"),
-    DINGTALK_SELF_USER_ID: scalar(production.value, "FOURSDAY_DINGTALK_SELF_USER"),
+    DWS_PERSONAL_ALLOWED_USERS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS"),
+    DWS_PERSONAL_FETCH_USERS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS"),
+    DWS_PERSONAL_ALLOWED_GROUPS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_GROUPS"),
+    DINGTALK_SELF_USER_ID: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_SELF_USER"),
     DINGTALK_DATA_ROOT: join(layout.userHome, "Library", "Application Support", "DingTalkMac"),
     DWS_PERSONAL_STATE_FILE: join(stateRoot, "dws.json"),
     DWS_PERSONAL_MEDIA_ROOT: join(stateRoot, "media"),
     // A bounded overlap keeps restarts lossless without replaying old conversations.
     DWS_PERSONAL_INITIAL_LOOKBACK_MS: "600000",
-    DWS_PERSONAL_FALLBACK_MS: scalar(production.value, "FOURSDAY_DINGTALK_FALLBACK_MS", 30_000),
+    DWS_PERSONAL_FALLBACK_MS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_FALLBACK_MS", 30_000),
     DWS_PERSONAL_HISTORY_SETTLE_MS: scalar(
-      production.value, "FOURSDAY_DINGTALK_HISTORY_SETTLE_MS", 120_000,
+      profileProductionConfig, "FOURSDAY_DINGTALK_HISTORY_SETTLE_MS", 120_000,
     ),
-    DWS_PERSONAL_BUNDLE_QUIET_MS: scalar(production.value, "FOURSDAY_DINGTALK_QUIET_MS", 3_000),
-    DWS_PERSONAL_BUNDLE_MAX_WAIT_MS: scalar(production.value, "FOURSDAY_DINGTALK_MAX_WAIT_MS", 8_000),
+    DWS_PERSONAL_BUNDLE_QUIET_MS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_QUIET_MS", 3_000),
+    DWS_PERSONAL_BUNDLE_MAX_WAIT_MS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_MAX_WAIT_MS", 8_000),
     DWS_PERSONAL_EVENT_WAKE_ENABLED: scalar(
-      production.value, "FOURSDAY_DINGTALK_EVENT_WAKE_ENABLED", true,
+      profileProductionConfig, "FOURSDAY_DINGTALK_EVENT_WAKE_ENABLED", true,
     ),
     DWS_PERSONAL_OUTBOUND_QUIET_MS: scalar(
-      production.value, "FOURSDAY_DINGTALK_OUTBOUND_QUIET_MS", 8_000,
+      profileProductionConfig, "FOURSDAY_DINGTALK_OUTBOUND_QUIET_MS", 8_000,
     ),
     DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS: scalar(
-      production.value, "FOURSDAY_DINGTALK_OUTBOUND_MAX_QUIET_MS", 20_000,
+      profileProductionConfig, "FOURSDAY_DINGTALK_OUTBOUND_MAX_QUIET_MS", 20_000,
     ),
     DWS_PERSONAL_SEND_ENABLED: "false",
     PATH: [join(layout.profileDirectory, "host", "bin"), dirname(codex), dirname(node),
@@ -318,6 +333,7 @@ export async function buildFoursdayNativeProfileConfiguration({
     codexProjectSkillSource,
     sourceConfig: production.absolute,
     sourceRegistry: registry.absolute,
+    profileProductionConfig,
     environment,
     envContent: `${Object.entries(environment)
       .sort(([left], [right]) => left.localeCompare(right))
@@ -374,7 +390,7 @@ export async function configureFoursdayNativeProfile(options = {}) {
   ] = await Promise.all([
     atomicWrite(
       plan.targetConfig,
-      `${JSON.stringify(JSON.parse(await readFile(plan.sourceConfig, "utf8")), null, 2)}\n`,
+      `${JSON.stringify(plan.profileProductionConfig, null, 2)}\n`,
       { replace: options.replace },
     ),
     atomicWrite(

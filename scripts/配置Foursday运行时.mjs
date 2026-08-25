@@ -23,6 +23,11 @@ if (args.includes("--replace") && !args.includes("--apply")) {
   throw new Error("--replace requires --apply");
 }
 const layout = foursdayNativeHermesLayout({ projectRoot });
+const releaseDocument = JSON.parse(await readFile(join(
+  layout.profileDirectory,
+  "foursday-release.json",
+), "utf8"));
+const releaseSha = String(releaseDocument.foursdayCommit ?? "");
 const productionConfigPath = process.env.FOURSDAY_CONFIG_FILE ?? defaultProductionConfigPath();
 const productionValues = JSON.parse(await readFile(productionConfigPath, "utf8"));
 const rawDwsPath = String(productionValues.FOURSDAY_DWS_PATH ?? "dws");
@@ -53,6 +58,7 @@ const result = await configureFoursdayNativeProfile({
   nodePath: join(layout.hermesHome, "node", "bin", "node"),
   dwsPath,
   codexPath,
+  releaseSha,
   apply: args.includes("--apply"),
   replace: args.includes("--replace"),
 });

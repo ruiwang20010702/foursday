@@ -42,7 +42,7 @@ function completeEvents() {
       conversationHash: "conversation-hash",
       participantHash: "participant-hash",
     },
-  ];
+  ].map((event) => ({ ...event, releaseSha, recordedAt: "2026-08-18T11:59:00.000Z" }));
 }
 
 test("Foursday shadow 十项证据完整时生成不含正文的 acceptance", () => {
@@ -102,4 +102,22 @@ test("Foursday shadow 同一自然回复被重试时不能通过无重复门禁"
   });
   assert.equal(result.valid, false);
   assert.ok(result.missing.includes("noDuplicate"));
+});
+
+test("Foursday shadow ignores evidence from another release", () => {
+  const events = completeEvents().map((event) => ({
+    ...event,
+    releaseSha: "d".repeat(40),
+  }));
+  const result = evaluateHermesShadowAcceptance({
+    releaseSha,
+    events,
+    restartEvidence: evidence,
+    codeWorkEvidence: evidence,
+  });
+  assert.equal(result.valid, false);
+  assert.equal(result.summary.counts.inbound, 0);
+  assert.equal(result.summary.ignoredEventCount, events.length);
+  assert.ok(result.missing.includes("allowlistedMessage"));
+  assert.ok(result.missing.includes("sendDisabled"));
 });

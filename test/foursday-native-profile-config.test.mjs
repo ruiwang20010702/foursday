@@ -33,6 +33,8 @@ async function fixture(t) {
   const python = join(root, "python-runtime", "bin", "python");
   await mkdir(dirname(python), { recursive: true });
   await writeFile(production, JSON.stringify({
+    DATABASE_URL: "keychain://legacy/database",
+    AI_EMPLOYEE_PERSONAL_MEMORY_ENABLED: false,
     FOURSDAY_DATABASE_URL: "keychain://service/database",
     FOURSDAY_DATA_KEY: "keychain://service/data",
     FOURSDAY_DINGTALK_USERS: "trusted-user",
@@ -66,10 +68,14 @@ test("native profile config contains paths and allowlists but no resolved secret
     dwsPath: value.dws,
     codexPath: value.codex,
     pythonPath: value.python,
+    releaseSha: "a".repeat(40),
   });
   assert.equal(plan.mode, "shadow");
   assert.equal(plan.sendEnabled, false);
   assert.equal(plan.secretsCopied, false);
+  assert.equal(Object.hasOwn(plan.profileProductionConfig, "DATABASE_URL"), false);
+  assert.equal(Object.hasOwn(plan.profileProductionConfig, "AI_EMPLOYEE_PERSONAL_MEMORY_ENABLED"), false);
+  assert.equal(plan.profileProductionConfig.FOURSDAY_DATABASE_URL, "keychain://service/database");
   assert.match(plan.envContent, /DWS_PERSONAL_ALLOWED_USERS="trusted-user"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_EVENT_WAKE_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_FALLBACK_MS="30000"/u);
@@ -80,6 +86,7 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /CODEX_HOME=/u);
   assert.match(plan.envContent, /FOURSDAY_PYTHON_PATH=.*python-runtime/u);
   assert.match(plan.envContent, /FOURSDAY_CONTROL_FILE=.*control\.json/u);
+  assert.match(plan.envContent, /FOURSDAY_RELEASE_SHA="a{40}"/u);
   assert.match(plan.codexConfigContent, /default_permissions = "foursday-workspace"/u);
   assert.match(plan.codexConfigContent, /":root" = "deny"/u);
   assert.match(plan.codexConfigContent, /\[permissions\.foursday-workspace\.network\]\nenabled = false/u);
@@ -113,6 +120,7 @@ test("native profile config writes private user-owned files idempotently and req
     dwsPath: value.dws,
     codexPath: value.codex,
     pythonPath: value.python,
+    releaseSha: "a".repeat(40),
     apply: true,
   };
   const first = await configureFoursdayNativeProfile(options);
@@ -132,6 +140,10 @@ test("native profile config writes private user-owned files idempotently and req
     await readFile(join(first.codexRoot, "skills", "project-work", "SKILL.md"), "utf8"),
     /Work from evidence/u,
   );
+  const installedProduction = JSON.parse(await readFile(first.targetConfig, "utf8"));
+  assert.equal(Object.hasOwn(installedProduction, "DATABASE_URL"), false);
+  assert.equal(Object.hasOwn(installedProduction, "AI_EMPLOYEE_PERSONAL_MEMORY_ENABLED"), false);
+  assert.equal(installedProduction.FOURSDAY_DATABASE_URL, "keychain://service/database");
   await writeFile(value.production, JSON.stringify({
     FOURSDAY_DATABASE_URL: "keychain://service/database",
     FOURSDAY_DATA_KEY: "keychain://service/data",
@@ -156,6 +168,26 @@ test("native profile config rejects inline production secrets", async (t) => {
       pythonPath: value.python,
     }),
     /externally referenced/u,
+  );
+});
+
+test("native profile config rejects unknown FOURSDAY fields while ignoring retired legacy fields", async (t) => {
+  const value = await fixture(t);
+  await writeFile(value.production, JSON.stringify({
+    DATABASE_URL: "keychain://legacy/database",
+    FOURSDAY_UNKNOWN_SETTING: true,
+  }), { mode: 0o600 });
+  await assert.rejects(
+    buildFoursdayNativeProfileConfiguration({
+      layout: value.layout,
+      productionConfigPath: value.production,
+      projectRegistryPath: value.registry,
+      nodePath: value.node,
+      dwsPath: value.dws,
+      codexPath: value.codex,
+      pythonPath: value.python,
+    }),
+    /Unsupported Foursday production config key/u,
   );
 });
 

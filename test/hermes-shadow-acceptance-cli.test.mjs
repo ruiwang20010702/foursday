@@ -31,7 +31,7 @@ async function fixture(t) {
     { type: "reply_attempt", conversationHash: "c", contentHash: "c".repeat(64), contentBytes: 8, mode: "shadow", bridgeSuccess: false, outcomeUnknown: false },
     { type: "inbound", conversationHash: "c", participantHash: "p", messageHashes: ["m2"], projectId: "p1", routeStatus: "bound", memoryStatus: "available" },
     { type: "communication_takeover", conversationHash: "c", participantHash: "p" },
-  ];
+  ].map((event) => ({ ...event, releaseSha, recordedAt: "2026-08-18T11:59:00.000Z" }));
   await writeFile(ledger, `${events.map(JSON.stringify).join("\n")}\n`, { mode: 0o600 });
   for (const path of [restart, code]) {
     await writeFile(path, `${JSON.stringify({
