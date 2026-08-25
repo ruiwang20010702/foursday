@@ -132,10 +132,12 @@ test("DWS fileId download uses the typed shortcut without message context", asyn
 
 test("DWS sender history enriches generated file hints and merges existing media", async () => {
   const calls = [];
+  const timeouts = [];
   const dws = new DwsAdapter({
     dwsPath: "/safe/bin/dws",
-    commandRunner: async (_command, args) => {
+    commandRunner: async (_command, args, options) => {
       calls.push(args);
+      timeouts.push(options.timeout);
       if (args.includes("list-by-sender")) {
         return { stdout: JSON.stringify({
           result: {
@@ -170,8 +172,10 @@ test("DWS sender history enriches generated file hints and merges existing media
     senderUserId: "trusted-user",
     start: new Date("2026-08-25T13:54:00+08:00"),
     end: new Date("2026-08-25T13:55:00+08:00"),
+    timeoutMs: 12_000,
   });
   assert.equal(calls.length, 2);
+  assert.deepEqual(timeouts, [12_000, 12_000]);
   assert.equal(calls[1][calls[1].indexOf("--msg-ids") + 1], "message-1");
   assert.deepEqual(messages[0].media, [
     {
@@ -453,6 +457,22 @@ test("人工回复不会跨会话误取消", async () => {
     }),
     { known: true, replied: false, message: null },
   );
+});
+
+test("人工回复查询把发送边界的短超时传给DWS读取", async () => {
+  const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
+  let observed = null;
+  dws.fetchBySenderAll = async (input) => {
+    observed = input;
+    return [];
+  };
+  assert.deepEqual(await dws.hasManualReply({
+    conversationId: "c1",
+    selfUserId: "self",
+    after: "2026-07-31T10:00:00Z",
+    timeoutMs: 12_000,
+  }), { known: true, replied: false, message: null });
+  assert.equal(observed.timeoutMs, 12_000);
 });
 
 test("AI 标签、发送标识或同次发送内容不会冒充人工回复", () => {
@@ -778,6 +798,23 @@ test("私聊上下文从过去向现在读取并只保留截止时间前最后�
   assert.equal(args[args.indexOf("--forward") + 1], "true");
   assert.equal(args[args.indexOf("--limit") + 1], "8");
   assert.deepEqual(messages.map((message) => message.id), ["m2", "m3"]);
+});
+
+test("发送回读可以为私聊查询设置短超时", async () => {
+  const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
+  let observedTimeout = null;
+  dws.run = async (_args, options) => {
+    observedTimeout = options.timeout;
+    return { result: { conversationMessagesList: [] } };
+  };
+  assert.deepEqual(await dws.fetchDirect({
+    userId: "owner-user",
+    before: new Date("2026-08-25T10:00:00Z"),
+    limit: 10,
+    lookbackMs: 60_000,
+    timeoutMs: 10_000,
+  }), []);
+  assert.equal(observedTimeout, 10_000);
 });
 
 test("本人私聊文件通过消息详情富化为fileId附件", async () => {

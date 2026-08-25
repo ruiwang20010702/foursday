@@ -103,6 +103,8 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.checkpointBusy, false);
   assert.equal(status.manualReplyProbeReady, true);
   assert.equal(status.manualReplyProbeDegraded, false);
+  assert.equal(status.deferredReplyWaiting, false);
+  assert.equal(status.deferredReplyAttemptCount, 0);
   assert.equal(status.eventWakeReady, true);
   assert.equal(status.eventWakeDegraded, false);
   assert.equal(status.lastWakeSource, "dws_event");
@@ -125,6 +127,12 @@ test("native Gateway exposes a degraded manual-reply probe without failing messa
     errorCode: "dws_manual_reply_temporary",
     updatedAt: new Date().toISOString(),
   };
+  checkpoint.deferredReply = {
+    waiting: true,
+    attemptCount: 2,
+    errorCode: "tls_timeout",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
   await writeFile(checkpointPath, JSON.stringify(checkpoint), { mode: 0o600 });
   const status = await inspectFoursdayNativeGateway({
     layout: value.layout,
@@ -136,6 +144,10 @@ test("native Gateway exposes a degraded manual-reply probe without failing messa
   assert.equal(status.manualReplyProbeReady, false);
   assert.equal(status.manualReplyProbeDegraded, true);
   assert.equal(status.manualReplyProbeErrorCode, "dws_manual_reply_temporary");
+  assert.equal(status.deferredReplyWaiting, true);
+  assert.equal(status.deferredReplyAttemptCount, 2);
+  assert.equal(status.deferredReplyErrorCode, "tls_timeout");
+  assert.match(status.deferredReplyExpiresAt, /^\d{4}-/u);
 });
 
 test("native Gateway distinguishes bounded queue work from a stale check", async (t) => {

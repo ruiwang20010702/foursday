@@ -70,6 +70,11 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     file=sys.stderr,
                     flush=True,
                 )
+                print(
+                    "dws_sidecar_manual_reply_probe_failed:tls_timeout",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 print(json.dumps({"type": "ready"}), flush=True)
                 for line in sys.stdin:
                     frame = json.loads(line)
@@ -88,10 +93,11 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             )
             await bridge.start(lambda _record: asyncio.sleep(0))
             self.assertLessEqual(len(bridge._stderr_codes), 20)
-            self.assertEqual(
-                bridge._stderr_codes[-1],
+            self.assertIn(
                 "target:user:2:0123456789abcdef:network_unavailable",
+                bridge._stderr_codes,
             )
+            self.assertEqual(bridge._stderr_codes[-1], "manual_reply_probe:tls_timeout")
             await bridge.stop()
 
     def test_environment_factory_passes_only_bridge_configuration(self):
@@ -128,6 +134,7 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("FOURSDAY_DWS_HOME", bridge.environment)
             self.assertNotIn("DATABASE_URL", bridge.environment)
             self.assertNotIn("AI_EMPLOYEE_DATA_KEY", bridge.environment)
+            self.assertEqual(bridge.request_timeout, 300.0)
 
 
 if __name__ == "__main__":

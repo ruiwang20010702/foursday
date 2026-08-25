@@ -196,6 +196,10 @@ export async function inspectFoursdayNativeGateway({
   let manualReplyProbeReady = null;
   let manualReplyProbeDegraded = false;
   let manualReplyProbeErrorCode = null;
+  let deferredReplyWaiting = false;
+  let deferredReplyAttemptCount = 0;
+  let deferredReplyErrorCode = null;
+  let deferredReplyExpiresAt = null;
   let eventWakeEnabled = false;
   let eventWakeReady = false;
   let eventWakeDegraded = false;
@@ -225,6 +229,17 @@ export async function inspectFoursdayNativeGateway({
       manualReplyProbeDegraded = manualReplyProbeReady === false;
       manualReplyProbeErrorCode = typeof state.manualReplyProbe?.errorCode === "string"
         ? state.manualReplyProbe.errorCode.slice(0, 80)
+        : null;
+      deferredReplyWaiting = state.deferredReply?.waiting === true;
+      deferredReplyAttemptCount = Number.isSafeInteger(state.deferredReply?.attemptCount) &&
+          state.deferredReply.attemptCount >= 0
+        ? state.deferredReply.attemptCount
+        : 0;
+      deferredReplyErrorCode = typeof state.deferredReply?.errorCode === "string"
+        ? state.deferredReply.errorCode.slice(0, 80)
+        : null;
+      deferredReplyExpiresAt = typeof state.deferredReply?.expiresAt === "string"
+        ? state.deferredReply.expiresAt
         : null;
       ({
         checkpointHealthy,
@@ -271,6 +286,10 @@ export async function inspectFoursdayNativeGateway({
     manualReplyProbeReady,
     manualReplyProbeDegraded,
     manualReplyProbeErrorCode,
+    deferredReplyWaiting,
+    deferredReplyAttemptCount,
+    deferredReplyErrorCode,
+    deferredReplyExpiresAt,
     eventWakeEnabled,
     eventWakeReady,
     eventWakeDegraded,

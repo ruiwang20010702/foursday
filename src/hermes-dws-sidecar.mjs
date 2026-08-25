@@ -36,6 +36,31 @@ function diagnosticCode(error, fallback = "error") {
     .slice(0, 80) || fallback;
 }
 
+function manualReplyErrorCode(error) {
+  const stderr = String(error?.stderr ?? "").trim();
+  if (stderr && stderr.length <= 64 * 1024) {
+    try {
+      const parsed = JSON.parse(stderr);
+      const reason = parsed?.error?.reason ?? parsed?.error?.code;
+      if (reason != null) return diagnosticCode({ code: reason }, "dws_manual_reply_probe_failed");
+    } catch {}
+  }
+  return diagnosticCode(error, "dws_manual_reply_probe_failed");
+}
+
+const retryableManualReplyCodes = new Set([
+  "tls_timeout",
+  "network_unreachable",
+  "backend_dependency_unavailable",
+  "ETIMEDOUT",
+  "dws_manual_reply_temporary",
+]);
+const deferredReplyRetentionMs = 90_000;
+const deferredReplyProbeTimeoutMs = 12_000;
+const deferredReplyRetryDelays = Object.freeze([
+  500, 1_500, 3_000, 5_000, 8_000, 12_000, 15_000, 20_000, 25_000,
+]);
+
 function taskId(conversationId, participantUserId) {
   return createHash("sha256")
     .update(`${String(conversationId)}:${String(participantUserId)}`)
@@ -102,7 +127,7 @@ function sleep(milliseconds) {
 
 async function readBackSentMessage({ dws, route, conversationId, evidence }) {
   if (typeof dws.fetchDirect !== "function") return null;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
     if (attempt > 0) await sleep(1_000);
     let messages;
     try {
@@ -112,6 +137,7 @@ async function readBackSentMessage({ dws, route, conversationId, evidence }) {
         before: new Date(),
         limit: 50,
         lookbackMs: 10 * 60 * 1_000,
+        timeoutMs: 10_000,
       });
     } catch {
       continue;
@@ -136,6 +162,10 @@ function emptyState() {
     checkLifecycle: normalizeDwsCheckLifecycle(),
     sendBlocked: false, sendBlockReason: null, sendBlockedAt: null,
     manualReplyProbe: { ready: null, errorCode: null, updatedAt: null },
+    deferredReply: {
+      waiting: false, attemptCount: 0, errorCode: null,
+      expiresAt: null, updatedAt: null,
+    },
     lastWakeSource: null,
     lastDetection: null,
     eventWake: { enabled: false, ready: false, errorCode: null, updatedAt: null },
@@ -200,6 +230,22 @@ async function loadState(path) {
           : null,
         updatedAt: typeof parsed?.manualReplyProbe?.updatedAt === "string"
           ? parsed.manualReplyProbe.updatedAt
+          : null,
+      },
+      deferredReply: {
+        waiting: false,
+        attemptCount: Number.isSafeInteger(parsed?.deferredReply?.attemptCount) &&
+            parsed.deferredReply.attemptCount >= 0
+          ? parsed.deferredReply.attemptCount
+          : 0,
+        errorCode: parsed?.deferredReply?.waiting === true
+          ? "candidate_lost_on_restart"
+          : typeof parsed?.deferredReply?.errorCode === "string"
+            ? parsed.deferredReply.errorCode.slice(0, 80)
+            : null,
+        expiresAt: null,
+        updatedAt: typeof parsed?.deferredReply?.updatedAt === "string"
+          ? parsed.deferredReply.updatedAt
           : null,
       },
       lastCheckAt: typeof parsed?.lastCheckAt === "string" ? parsed.lastCheckAt : null,
@@ -397,16 +443,32 @@ export async function createSidecarRuntime({
     state.sendBlockedAt = now().toISOString();
     await persistState();
   };
-  const probeManualReply = async (input) => {
+  const probeManualReply = async (input, {
+    retryDelays = [250],
+    timeoutMs = 10_000,
+    deadlineAt = Number.POSITIVE_INFINITY,
+    beforeAttempt = async () => {},
+    onFailure = async () => {},
+  } = {}) => {
     if (!config.selfUserId || typeof dws.hasManualReply !== "function") {
       const error = new Error("DWS manual-reply verification is unavailable");
       error.code = "dws_manual_reply_probe_unavailable";
       throw error;
     }
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
       try {
-        const result = await dws.hasManualReply(input);
+        if (clock() >= deadlineAt) {
+          const error = new Error("Foursday deferred reply expired before verification");
+          error.code = "deferred_reply_expired";
+          throw error;
+        }
+        await beforeAttempt(attempt + 1);
+        const result = await dws.hasManualReply({
+          ...input,
+          now: now(),
+          timeoutMs,
+        });
         if (result?.known !== true) {
           const error = new Error("DWS manual-reply verification is inconclusive");
           error.code = "dws_manual_reply_probe_unknown";
@@ -417,19 +479,37 @@ export async function createSidecarRuntime({
           errorCode: null,
           updatedAt: now().toISOString(),
         };
+        if (clock() >= deadlineAt) {
+          const error = new Error("Foursday deferred reply expired during verification");
+          error.code = "deferred_reply_expired";
+          throw error;
+        }
         return result;
       } catch (error) {
         lastError = error;
-        if (attempt === 0) await wait(250);
+        const code = manualReplyErrorCode(error);
+        if (!["deferred_reply_stale", "deferred_reply_expired"].includes(code)) {
+          state.manualReplyProbe = {
+            ready: false,
+            errorCode: code,
+            updatedAt: now().toISOString(),
+          };
+        }
+        await onFailure({ attemptCount: attempt + 1, errorCode: code });
+        if (
+          attempt >= retryDelays.length ||
+          !retryableManualReplyCodes.has(code)
+        ) break;
+        const remaining = deadlineAt - clock();
+        const delay = Math.min(retryDelays[attempt], remaining);
+        if (!(delay > 0)) break;
+        await wait(delay);
       }
     }
-    const code = diagnosticCode(lastError, "dws_manual_reply_probe_failed");
-    state.manualReplyProbe = {
-      ready: false,
-      errorCode: code,
-      updatedAt: now().toISOString(),
-    };
-    diagnose(`dws_sidecar_manual_reply_probe_failed:${code}`);
+    const code = manualReplyErrorCode(lastError);
+    if (state.manualReplyProbe.ready === false && state.manualReplyProbe.errorCode) {
+      diagnose(`dws_sidecar_manual_reply_probe_failed:${state.manualReplyProbe.errorCode}`);
+    }
     throw lastError;
   };
 
@@ -951,24 +1031,30 @@ export async function createSidecarRuntime({
       if (!route) return { success: false, error: "DWS conversation recipient is unknown" };
       const ownerRevision = Number(payload?.ownerRevision);
       const sendGeneration = Number(payload?.sendGeneration);
-      const currentControl = controlStates.get(conversationId);
       const active = activeConversations.get(conversationId);
-      const externalControl = controlStore && active
-        ? await controlStore.snapshot()
-        : null;
-      const externalTask = active
-        ? externalControl?.tasks?.[taskId(conversationId, active.participantUserId)]
-        : null;
+      const replyFenceCurrent = async () => {
+        const local = controlStates.get(conversationId);
+        const external = controlStore && active
+          ? await controlStore.snapshot()
+          : null;
+        const task = active
+          ? external?.tasks?.[taskId(conversationId, active.participantUserId)]
+          : null;
+        return Boolean(
+          Number.isSafeInteger(ownerRevision) &&
+          Number.isSafeInteger(sendGeneration) &&
+          local && local.ownerRevision === ownerRevision &&
+          local.sendGeneration === sendGeneration &&
+          external?.global?.state !== "paused" &&
+          !["paused", "taken_over"].includes(task?.state) &&
+          (!task || (
+            task.ownerRevision === ownerRevision &&
+            task.sendGeneration === sendGeneration
+          ))
+        );
+      };
       if (
-        !Number.isSafeInteger(ownerRevision) || !Number.isSafeInteger(sendGeneration) ||
-        !currentControl || currentControl.ownerRevision !== ownerRevision ||
-        currentControl.sendGeneration !== sendGeneration ||
-        externalControl?.global?.state === "paused" ||
-        ["paused", "taken_over"].includes(externalTask?.state) ||
-        (externalTask && (
-          externalTask.ownerRevision !== ownerRevision ||
-          externalTask.sendGeneration !== sendGeneration
-        ))
+        !await replyFenceCurrent()
       ) {
         return {
           success: false,
@@ -988,12 +1074,7 @@ export async function createSidecarRuntime({
         const remaining = observedAt + adaptiveQuietMs - clock();
         if (remaining > 0) await wait(remaining);
       }
-      const stableControl = controlStates.get(conversationId);
-      if (
-        !stableControl ||
-        stableControl.ownerRevision !== ownerRevision ||
-        stableControl.sendGeneration !== sendGeneration
-      ) {
+      if (!await replyFenceCurrent()) {
         return {
           success: false,
           staleGeneration: true,
@@ -1034,6 +1115,23 @@ export async function createSidecarRuntime({
           error: "DWS send has an unresolved prior intent",
         };
       }
+      const deferredDeadlineAt = clock() + deferredReplyRetentionMs;
+      state.deferredReply = {
+        waiting: true,
+        attemptCount: 0,
+        errorCode: null,
+        expiresAt: new Date(deferredDeadlineAt).toISOString(),
+        updatedAt: now().toISOString(),
+      };
+      await persistState();
+      const finishDeferredReply = (errorCode = null) => {
+        state.deferredReply = {
+          ...state.deferredReply,
+          waiting: false,
+          errorCode,
+          updatedAt: now().toISOString(),
+        };
+      };
       let manualReply;
       try {
         manualReply = await probeManualReply({
@@ -1042,18 +1140,47 @@ export async function createSidecarRuntime({
           after: active?.after,
           now: now(),
           automatedSendEvidence,
+        }, {
+          retryDelays: deferredReplyRetryDelays,
+          timeoutMs: deferredReplyProbeTimeoutMs,
+          deadlineAt: deferredDeadlineAt,
+          beforeAttempt: async () => {
+            if (
+              !config.sendEnabled || state.sendBlocked ||
+              !await replyFenceCurrent()
+            ) {
+              const error = new Error("Foursday deferred reply lost its safety fence");
+              error.code = "deferred_reply_stale";
+              throw error;
+            }
+          },
+          onFailure: async ({ attemptCount, errorCode }) => {
+            state.deferredReply = {
+              ...state.deferredReply,
+              waiting: true,
+              attemptCount,
+              errorCode,
+              updatedAt: now().toISOString(),
+            };
+            await persistState();
+          },
         });
-      } catch {
+      } catch (error) {
+        const errorCode = manualReplyErrorCode(error);
+        finishDeferredReply(errorCode);
         await persistState();
         return {
           success: false,
           staleGeneration: true,
-          manualReplyUnknown: true,
+          manualReplyUnknown: !["deferred_reply_stale", "deferred_reply_expired"]
+            .includes(errorCode),
+          deferredReplyExpired: errorCode === "deferred_reply_expired",
           sendSuspended: true,
           error: "DWS manual-reply verification is unavailable",
         };
       }
       if (manualReply.replied === true) {
+        finishDeferredReply("owner_reply_detected");
         await persistState();
         return {
           success: false,
@@ -1062,6 +1189,26 @@ export async function createSidecarRuntime({
           error: "DWS detected an owner reply before transport",
         };
       }
+      if (state.sendBlocked) {
+        finishDeferredReply("send_blocked");
+        await persistState();
+        return {
+          success: false,
+          outcomeUnknown: true,
+          sendSuspended: true,
+          error: "DWS personal sending became blocked during verification",
+        };
+      }
+      if (!await replyFenceCurrent()) {
+        finishDeferredReply("deferred_reply_stale");
+        await persistState();
+        return {
+          success: false,
+          staleGeneration: true,
+          error: "DWS reply became stale after manual-reply verification",
+        };
+      }
+      finishDeferredReply(null);
       const idempotencyKey = idempotencyUuid(sendKey);
       const startedAt = now().toISOString();
       const intent = {
@@ -1077,23 +1224,7 @@ export async function createSidecarRuntime({
       while (sendLedger.size > 1_000) sendLedger.delete(sendLedger.keys().next().value);
       state.sendLedger = Object.fromEntries(sendLedger);
       await persistState();
-      const beforeSend = controlStates.get(conversationId);
-      const externalBeforeSend = controlStore && active
-        ? await controlStore.snapshot()
-        : null;
-      const externalTaskBeforeSend = active
-        ? externalBeforeSend?.tasks?.[taskId(conversationId, active.participantUserId)]
-        : null;
-      if (
-        !beforeSend || beforeSend.ownerRevision !== ownerRevision ||
-        beforeSend.sendGeneration !== sendGeneration ||
-        externalBeforeSend?.global?.state === "paused" ||
-        ["paused", "taken_over"].includes(externalTaskBeforeSend?.state) ||
-        (externalTaskBeforeSend && (
-          externalTaskBeforeSend.ownerRevision !== ownerRevision ||
-          externalTaskBeforeSend.sendGeneration !== sendGeneration
-        ))
-      ) {
+      if (!await replyFenceCurrent()) {
         sendLedger.set(sendKey, { ...intent, status: "cancelled_stale" });
         state.sendLedger = Object.fromEntries(sendLedger);
         await persistState();

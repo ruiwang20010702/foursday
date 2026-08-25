@@ -65,6 +65,9 @@ async function fixture(t) {
       checkpointGeneration: 9, checkpointOperation: "history_check",
       manualReplyProbeReady: false, manualReplyProbeDegraded: true,
       manualReplyProbeErrorCode: "dws_manual_reply_temporary",
+      deferredReplyWaiting: true, deferredReplyAttemptCount: 2,
+      deferredReplyErrorCode: "tls_timeout",
+      deferredReplyExpiresAt: "2026-08-25T10:00:00.000Z",
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
@@ -83,6 +86,10 @@ test("control service projects tasks, schedules, memory and evidence without pri
   assert.equal(status.gateway.manualReplyProbeReady, false);
   assert.equal(status.gateway.manualReplyProbeDegraded, true);
   assert.equal(status.gateway.manualReplyProbeErrorCode, "dws_manual_reply_temporary");
+  assert.equal(status.gateway.deferredReplyWaiting, true);
+  assert.equal(status.gateway.deferredReplyAttemptCount, 2);
+  assert.equal(status.gateway.deferredReplyErrorCode, "tls_timeout");
+  assert.equal(status.gateway.deferredReplyExpiresAt, "2026-08-25T10:00:00.000Z");
   assert.equal(status.gateway.sendBlocked, false);
   assert.equal(status.gateway.lastWakeSource, "filesystem");
   assert.equal(status.gateway.lastDetectionLatencyMs, 1250);

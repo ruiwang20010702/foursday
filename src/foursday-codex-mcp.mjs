@@ -360,6 +360,17 @@ export async function readFoursdayRuntimeStatus(input, {
     manualReplyProbeErrorCode: typeof state.manualReplyProbe?.errorCode === "string"
       ? state.manualReplyProbe.errorCode.slice(0, 80)
       : null,
+    deferredReplyWaiting: state.deferredReply?.waiting === true,
+    deferredReplyAttemptCount: Number.isSafeInteger(state.deferredReply?.attemptCount) &&
+        state.deferredReply.attemptCount >= 0
+      ? state.deferredReply.attemptCount
+      : 0,
+    deferredReplyErrorCode: typeof state.deferredReply?.errorCode === "string"
+      ? state.deferredReply.errorCode.slice(0, 80)
+      : null,
+    deferredReplyExpiresAt: typeof state.deferredReply?.expiresAt === "string"
+      ? state.deferredReply.expiresAt
+      : null,
     eventWakeReady: state.eventWake?.ready === true,
   };
 }

@@ -147,6 +147,8 @@ test("runtime status tool reads live Profile state instead of project memory", a
   assert.equal(result.checkpointOperation, null);
   assert.equal(result.manualReplyProbeReady, true);
   assert.equal(result.manualReplyProbeDegraded, false);
+  assert.equal(result.deferredReplyWaiting, false);
+  assert.equal(result.deferredReplyAttemptCount, 0);
   assert.equal(result.eventWakeReady, true);
 
   const called = await handleFoursdayMcpRequest({

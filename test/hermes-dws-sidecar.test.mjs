@@ -118,6 +118,7 @@ class FakeDws {
     this.directCalls = 0;
     this.manualReply = false;
     this.manualReplyFailures = 0;
+    this.manualReplyFailure = null;
     this.manualReplyCalls = 0;
     this.withdrawn = false;
     this.receiptWithoutMessageId = false;
@@ -186,6 +187,7 @@ class FakeDws {
     this.manualInput = input;
     if (this.manualReplyFailures > 0) {
       this.manualReplyFailures -= 1;
+      if (this.manualReplyFailure) throw this.manualReplyFailure;
       const error = new Error("temporary manual reply lookup failure");
       error.code = "dws_manual_reply_temporary";
       throw error;
@@ -1163,8 +1165,337 @@ test("manual-reply probe failure degrades only the probe and recovers on the nex
   }
 });
 
-test("send boundary suppresses output while manual-reply verification is unavailable", async () => {
+test("send boundary retains the candidate until a transient manual probe recovers", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-manual-send-gate-"));
+  const stateFile = join(root, "state.json");
+  const dws = new FakeDws();
+  const retryCodes = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    wait: async () => {
+      const persisted = JSON.parse(await readFile(stateFile, "utf8"));
+      retryCodes.push(persisted.deferredReply.errorCode);
+    },
+    now: () => new Date("2026-08-25T16:43:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    const tlsTimeout = new Error("DWS request failed");
+    tlsTimeout.code = 1;
+    tlsTimeout.stderr = JSON.stringify({ error: { reason: "tls_timeout" } });
+    dws.manualReplyFailure = tlsTimeout;
+    dws.manualReplyFailures = 2;
+    const recovered = await runtime.send({
+      conversationId: "conversation-1",
+      content: "safe after bounded retry",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(recovered.success, true);
+    assert.equal(dws.sent.length, 1);
+    const persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(persisted.manualReplyProbe.ready, true);
+    assert.equal(persisted.deferredReply.waiting, false);
+    assert.equal(persisted.deferredReply.attemptCount, 2);
+    assert.equal(persisted.deferredReply.errorCode, null);
+    assert.equal(Object.values(persisted.sendLedger).length, 1);
+    assert.equal(Object.hasOwn(persisted.deferredReply, "content"), false);
+    assert.deepEqual(retryCodes, ["tls_timeout", "tls_timeout"]);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("deferred reply expires after ninety seconds without creating an intent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-deferred-expiry-"));
+  const stateFile = join(root, "state.json");
+  const dws = new FakeDws();
+  let current = new Date("2026-08-25T17:54:12+08:00").getTime();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    clock: () => current,
+    now: () => new Date(current),
+    wait: async (milliseconds) => { current += milliseconds; },
+  });
+  try {
+    await runtime.start();
+    const tlsTimeout = new Error("DWS request failed");
+    tlsTimeout.code = 1;
+    tlsTimeout.stderr = JSON.stringify({ error: { reason: "tls_timeout" } });
+    dws.manualReplyFailure = tlsTimeout;
+    dws.manualReplyFailures = 100;
+    const expired = await runtime.send({
+      conversationId: "conversation-1",
+      content: "must expire without transport",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(expired.success, false);
+    assert.equal(expired.staleGeneration, true);
+    assert.equal(expired.deferredReplyExpired, true);
+    assert.equal(dws.sent.length, 0);
+    const persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(persisted.sendLedger, {});
+    assert.equal(persisted.deferredReply.waiting, false);
+    assert.equal(persisted.deferredReply.errorCode, "deferred_reply_expired");
+    assert.equal(persisted.deferredReply.attemptCount, 10);
+    assert.equal(Object.hasOwn(persisted.deferredReply, "content"), false);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("deferred reply is discarded when task ownership changes during retry", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dws-deferred-takeover-")));
+  const controlFile = join(root, "control.json");
+  const control = await new FoursdayControlStore({ path: controlFile }).open();
+  const dws = new FakeDws();
+  let takeoverApplied = false;
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    controlStore: control,
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    wait: async () => {
+      if (takeoverApplied) return;
+      takeoverApplied = true;
+      const snapshot = await control.snapshot();
+      await control.apply({
+        action: "task_takeover",
+        expectedRevision: snapshot.revision,
+        taskId: createHash("sha256")
+          .update("conversation-1:trusted-user")
+          .digest("hex"),
+      });
+    },
+    now: () => new Date("2026-08-25T17:54:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    dws.manualReplyFailures = 1;
+    const stale = await runtime.send({
+      conversationId: "conversation-1",
+      content: "must be discarded after takeover",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(stale.success, false);
+    assert.equal(stale.staleGeneration, true);
+    assert.equal(stale.manualReplyUnknown, false);
+    assert.equal(dws.sent.length, 0);
+    const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.deepEqual(persisted.sendLedger, {});
+    assert.equal(persisted.deferredReply.waiting, false);
+    assert.equal(persisted.deferredReply.errorCode, "deferred_reply_stale");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("deferred reply is discarded when the global control pauses during retry", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dws-deferred-pause-")));
+  const controlFile = join(root, "control.json");
+  const control = await new FoursdayControlStore({ path: controlFile }).open();
+  const dws = new FakeDws();
+  let pauseApplied = false;
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    controlStore: control,
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    wait: async () => {
+      if (pauseApplied) return;
+      pauseApplied = true;
+      const snapshot = await control.snapshot();
+      await control.apply({ action: "pause_all", expectedRevision: snapshot.revision });
+    },
+    now: () => new Date("2026-08-25T17:54:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    dws.manualReplyFailures = 1;
+    const stale = await runtime.send({
+      conversationId: "conversation-1",
+      content: "must be discarded after global pause",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(stale.success, false);
+    assert.equal(stale.staleGeneration, true);
+    assert.equal(dws.sent.length, 0);
+    const persisted = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.deepEqual(persisted.sendLedger, {});
+    assert.equal(persisted.deferredReply.errorCode, "deferred_reply_stale");
+    assert.equal((await control.snapshot()).global.state, "paused");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("deferred reply cannot create an intent after another send blocks transport", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-deferred-send-block-"));
+  const stateFile = join(root, "state.json");
+  const dws = new FakeDws();
+  let runtime;
+  let blockerResult = null;
+  let blockerStarted = false;
+  runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    wait: async () => {
+      if (blockerStarted) return;
+      blockerStarted = true;
+      dws.transportFailure = true;
+      blockerResult = await runtime.send({
+        conversationId: "conversation-1",
+        content: "blocker transport",
+        ownerRevision: 0,
+        sendGeneration: 1,
+      });
+    },
+    now: () => new Date("2026-08-25T17:54:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    dws.manualReplyFailures = 1;
+    const suppressed = await runtime.send({
+      conversationId: "conversation-1",
+      content: "outer candidate must not send",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(blockerResult.outcomeUnknown, true);
+    assert.equal(suppressed.success, false);
+    assert.equal(suppressed.staleGeneration, true);
+    assert.equal(dws.sent.length, 1);
+    const persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(persisted.sendBlocked, true);
+    assert.equal(Object.values(persisted.sendLedger).length, 1);
+    assert.equal(Object.values(persisted.sendLedger)[0].status, "unknown");
+    assert.equal(persisted.deferredReply.waiting, false);
+    assert.equal(persisted.deferredReply.errorCode, "deferred_reply_stale");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("restart retires an in-memory deferred reply without replaying it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-deferred-restart-"));
+  const stateFile = join(root, "state.json");
+  await writeFile(stateFile, `${JSON.stringify({
+    deferredReply: {
+      waiting: true,
+      attemptCount: 3,
+      errorCode: "tls_timeout",
+      expiresAt: "2026-08-25T10:00:00.000Z",
+      updatedAt: "2026-08-25T09:59:00.000Z",
+    },
+  })}\n`, { mode: 0o600 });
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      sendEnabled: false,
+    },
+    dws: new FakeDws(),
+    emit: () => {},
+  });
+  try {
+    await runtime.start();
+    const persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(persisted.deferredReply.waiting, false);
+    assert.equal(persisted.deferredReply.attemptCount, 3);
+    assert.equal(persisted.deferredReply.errorCode, "candidate_lost_on_restart");
+    assert.equal(persisted.deferredReply.expiresAt, null);
+    assert.deepEqual(persisted.sendLedger, {});
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("deferred reply is suppressed when an owner reply appears during retry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-manual-detected-"));
   const stateFile = join(root, "state.json");
   const dws = new FakeDws();
   const runtime = await createSidecarRuntime({
@@ -1183,67 +1514,12 @@ test("send boundary suppresses output while manual-reply verification is unavail
     },
     dws,
     emit: () => {},
-    diagnose: () => {},
-    wait: async () => {},
+    wait: async () => { dws.manualReply = true; },
     now: () => new Date("2026-08-25T16:43:12+08:00"),
   });
   try {
     await runtime.start();
-    dws.manualReplyFailures = 2;
-    const suppressed = await runtime.send({
-      conversationId: "conversation-1",
-      content: "must not leave the host",
-      ownerRevision: 0,
-      sendGeneration: 1,
-    });
-    assert.equal(suppressed.success, false);
-    assert.equal(suppressed.staleGeneration, true);
-    assert.equal(suppressed.manualReplyUnknown, true);
-    assert.equal(suppressed.sendSuspended, true);
-    assert.equal(dws.sent.length, 0);
-    let persisted = JSON.parse(await readFile(stateFile, "utf8"));
-    assert.deepEqual(persisted.sendLedger, {});
-    assert.equal(persisted.manualReplyProbe.ready, false);
-
-    const recovered = await runtime.send({
-      conversationId: "conversation-1",
-      content: "safe after a fresh probe",
-      ownerRevision: 0,
-      sendGeneration: 1,
-    });
-    assert.equal(recovered.success, true);
-    assert.equal(dws.sent.length, 1);
-    persisted = JSON.parse(await readFile(stateFile, "utf8"));
-    assert.equal(persisted.manualReplyProbe.ready, true);
-  } finally {
-    await runtime.stop();
-  }
-});
-
-test("send boundary suppresses output when an owner reply is detected", async () => {
-  const root = await mkdtemp(join(tmpdir(), "foursday-dws-manual-detected-"));
-  const dws = new FakeDws();
-  const runtime = await createSidecarRuntime({
-    config: {
-      dwsPath: process.execPath,
-      dingtalkRoot: "",
-      userIds: ["trusted-user"],
-      groupIds: [],
-      selfUserId: "owner-user",
-      stateFile: join(root, "state.json"),
-      initialLookbackMs: 120_000,
-      fallbackMs: 300_000,
-      outboundQuietMs: 0,
-      outboundMaxQuietMs: 0,
-      sendEnabled: true,
-    },
-    dws,
-    emit: () => {},
-    now: () => new Date("2026-08-25T16:43:12+08:00"),
-  });
-  try {
-    await runtime.start();
-    dws.manualReply = true;
+    dws.manualReplyFailures = 1;
     const suppressed = await runtime.send({
       conversationId: "conversation-1",
       content: "late answer",
@@ -1254,6 +1530,10 @@ test("send boundary suppresses output when an owner reply is detected", async ()
     assert.equal(suppressed.staleGeneration, true);
     assert.equal(suppressed.manualReplyDetected, true);
     assert.equal(dws.sent.length, 0);
+    const persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(persisted.deferredReply.waiting, false);
+    assert.equal(persisted.deferredReply.errorCode, "owner_reply_detected");
+    assert.deepEqual(persisted.sendLedger, {});
   } finally {
     await runtime.stop();
   }

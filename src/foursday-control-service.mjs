@@ -169,6 +169,12 @@ export class FoursdayControlService {
           : null,
         manualReplyProbeDegraded: gateway.manualReplyProbeDegraded === true,
         manualReplyProbeErrorCode: gateway.manualReplyProbeErrorCode ?? null,
+        deferredReplyWaiting: gateway.deferredReplyWaiting === true,
+        deferredReplyAttemptCount: Number.isSafeInteger(gateway.deferredReplyAttemptCount)
+          ? gateway.deferredReplyAttemptCount
+          : 0,
+        deferredReplyErrorCode: gateway.deferredReplyErrorCode ?? null,
+        deferredReplyExpiresAt: gateway.deferredReplyExpiresAt ?? null,
         modeConsistent: gateway.modeConsistent === true,
         eventWakeEnabled: gateway.eventWakeEnabled === true,
         eventWakeReady: gateway.eventWakeReady === true,

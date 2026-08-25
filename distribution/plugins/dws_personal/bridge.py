@@ -14,6 +14,9 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 _SAFE_ERROR_CODE = re.compile(r"^dws_sidecar_check_failed:([A-Za-z0-9_.-]{1,80})$")
+_SAFE_MANUAL_REPLY_ERROR = re.compile(
+    r"^dws_sidecar_manual_reply_probe_failed:([A-Za-z0-9_.-]{1,80})$"
+)
 _SAFE_TARGET_ERROR = re.compile(
     r"^dws_sidecar_target_failed:(user|group):(\d{1,3}):([a-f0-9]{16}):([A-Za-z0-9_.-]{1,80})$"
 )
@@ -36,7 +39,7 @@ class JsonLineDwsBridge:
         sidecar_path: str,
         environment: Optional[dict[str, str]] = None,
         startup_timeout: float = 120.0,
-        request_timeout: float = 60.0,
+        request_timeout: float = 300.0,
     ) -> None:
         self.node_path = _required_file(node_path, "Node executable")
         if not os.access(self.node_path, os.X_OK):
@@ -123,10 +126,13 @@ class JsonLineDwsBridge:
             text = line.decode("utf-8", errors="replace").strip()
             if text:
                 matched = _SAFE_ERROR_CODE.fullmatch(text)
+                manual_reply = _SAFE_MANUAL_REPLY_ERROR.fullmatch(text)
                 target = _SAFE_TARGET_ERROR.fullmatch(text)
                 code = (
                     matched.group(1)
                     if matched
+                    else f"manual_reply_probe:{manual_reply.group(1)}"
+                    if manual_reply
                     else f"target:{target.group(1)}:{target.group(2)}:{target.group(3)}:{target.group(4)}"
                     if target
                     else "sidecar_stderr"

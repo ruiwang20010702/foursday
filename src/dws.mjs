@@ -622,12 +622,15 @@ export class DwsAdapter {
     return { path: valid[0], receipt };
   }
 
-  async fetchBySenderAll({ senderUserId, start, end }) {
+  async fetchBySenderAll({ senderUserId, start, end, timeoutMs = 60_000 }) {
     const expectedSenderUserId = normalizeDwsIdentity(senderUserId);
     if (!expectedSenderUserId) {
       const error = new Error("DWS list-by-sender requires a sender identity");
       error.code = "dws_sender_identity_required";
       throw error;
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
+      throw new Error("DWS sender lookup timeout must be between 1 and 60 seconds");
     }
     const messages = [];
     let expectedOpenDingTalkId = this.userIdentityCache.get(
@@ -655,7 +658,7 @@ export class DwsAdapter {
         "50",
         "--cursor",
         cursor,
-      ]);
+      ], { timeout: timeoutMs });
       const pageMessages = collectMessages(payload);
       const messagesNeedingOpenIdentity = pageMessages.filter(
         (message) => message.senderIdentitySource !== "payload_user_id",
@@ -682,13 +685,16 @@ export class DwsAdapter {
         ),
       );
       const pageInfo = pagination(payload);
-      if (!pageInfo.hasMore) return this.enrichMessageResources(messages);
+      if (!pageInfo.hasMore) return this.enrichMessageResources(messages, { timeoutMs });
       cursor = pageInfo.nextCursor;
     }
     throw new Error("DWS pagination exceeded 100 pages");
   }
 
-  async enrichMessageResources(messages) {
+  async enrichMessageResources(messages, { timeoutMs = 60_000 } = {}) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
+      throw new Error("DWS resource enrichment timeout must be between 1 and 60 seconds");
+    }
     const ids = [...new Set(messages.filter((message) =>
       dwsStructuredResourceHint.test(String(message.content ?? ""))
     ).map((message) => String(message.id)))];
@@ -698,7 +704,7 @@ export class DwsAdapter {
       const payload = await this.run([
         "chat", "+messages-mget",
         "--msg-ids", chunk.join(","),
-      ]);
+      ], { timeout: timeoutMs });
       enriched = mergeDwsMessageResourceDetails(enriched, payload);
     }
     return enriched;
@@ -815,6 +821,7 @@ export class DwsAdapter {
     before = new Date(),
     limit = 30,
     lookbackMs = 2 * 60 * 60 * 1_000,
+    timeoutMs = 60_000,
   }) {
     const beforeTime = epoch(before);
     if (beforeTime == null) throw new Error("DWS direct context cutoff is invalid");
@@ -823,6 +830,9 @@ export class DwsAdapter {
     }
     if (!Number.isSafeInteger(lookbackMs) || lookbackMs < 60_000 || lookbackMs > 24 * 60 * 60 * 1_000) {
       throw new Error("DWS direct context lookback must be between 1 minute and 24 hours");
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
+      throw new Error("DWS direct context timeout must be between 1 and 60 seconds");
     }
     if (identityKind != null && !["open_dingtalk_id", "user_id"].includes(identityKind)) {
       throw new Error("DWS direct context identity kind is invalid");
@@ -847,7 +857,7 @@ export class DwsAdapter {
       "true",
       "--limit",
       String(queryLimit),
-    ]);
+    ], { timeout: timeoutMs });
     const messages = collectMessages(payload, userId)
       .filter((message) => {
         const createdAt = epoch(message.createTime);
@@ -855,7 +865,7 @@ export class DwsAdapter {
       })
       .sort((a, b) => String(a.createTime).localeCompare(String(b.createTime)))
       .slice(-limit);
-    return this.enrichMessageResources(messages);
+    return this.enrichMessageResources(messages, { timeoutMs });
   }
 
   async hasManualReply({
@@ -864,6 +874,7 @@ export class DwsAdapter {
     after,
     now = new Date(),
     automatedSendEvidence = [],
+    timeoutMs = 60_000,
   }) {
     if (!selfUserId) {
       return {
@@ -891,6 +902,7 @@ export class DwsAdapter {
       senderUserId: selfUserId,
       start: new Date(afterTime),
       end: now,
+      timeoutMs,
     });
     const replies = messages.filter((message) => {
       const messageTime = epoch(message.createTime);
@@ -995,6 +1007,7 @@ export class DwsAdapter {
     after,
     now,
     automatedSendEvidence,
+    timeoutMs,
   }) {
     return this.hasManualReply({
       conversationId,
@@ -1002,6 +1015,7 @@ export class DwsAdapter {
       after,
       now,
       automatedSendEvidence,
+      timeoutMs,
     });
   }
 
