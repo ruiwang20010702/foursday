@@ -354,6 +354,18 @@ class DwsPersonalAdapter(BasePlatformAdapter):
     splits_long_messages = False
     MAX_MESSAGE_LENGTH = 20_000
 
+    @staticmethod
+    def filter_local_delivery_paths(file_paths) -> list[str]:
+        """Keep local Markdown citations out of Hermes' attachment fallback.
+
+        Codex uses absolute local links as auditable citations. Hermes extracts
+        those links after composing the text response and, on platforms without
+        native document delivery, would otherwise send a second failure notice.
+        Explicit MEDIA directives still use the separate media-delivery path.
+        """
+        del file_paths
+        return []
+
     def __init__(
         self,
         config: PlatformConfig,

@@ -141,6 +141,20 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.platform["allow_all_env"], "DWS_PERSONAL_ALLOW_ALL_USERS")
         self.assertTrue(callable(ctx.platform["adapter_factory"]))
 
+    def test_local_markdown_citations_do_not_create_a_second_attachment_send(self):
+        citation = Path(self.temp.name) / "design.md"
+        citation.write_text("design evidence\n", encoding="utf-8")
+        paths, text = self.adapter.extract_local_files(
+            f"1. 结论（[技术设计文档]({citation}:92)）"
+        )
+        self.assertEqual(len(paths), 1)
+        self.assertIn("结论", text)
+        self.assertEqual(self.adapter.filter_local_delivery_paths(paths), [])
+        self.assertEqual(
+            self.adapter.filter_media_delivery_paths([(str(citation), False)]),
+            [(str(citation.resolve()), False)],
+        )
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addAsyncCleanup(asyncio.to_thread, self.temp.cleanup)
