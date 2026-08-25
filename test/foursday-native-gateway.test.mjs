@@ -97,6 +97,7 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.serviceEnabled, true);
   assert.equal(status.mode, "shadow");
   assert.equal(status.sendEnabled, false);
+  assert.equal(status.sendBlocked, false);
   assert.equal(status.eventWakeReady, true);
   assert.equal(status.eventWakeDegraded, false);
   assert.equal(status.lastWakeSource, "dws_event");
@@ -108,6 +109,30 @@ test("native Gateway status is derived from the official profile and send mode",
   });
   assert.equal(stopped.ready, false);
   assert.equal(stopped.safeStopped, false);
+});
+
+test("native Gateway reports an active unknown-send block as not ready", async (t) => {
+  const value = await fixture(t);
+  const checkpoint = JSON.parse(await readFile(join(value.root, "dws.json"), "utf8"));
+  checkpoint.sendBlocked = true;
+  await writeFile(join(value.root, "dws.json"), JSON.stringify(checkpoint), { mode: 0o600 });
+  await writeFile(join(value.profileDirectory, ".env"), [
+    'DWS_PERSONAL_SEND_ENABLED="true"',
+    `DWS_PERSONAL_STATE_FILE=${JSON.stringify(join(value.root, "dws.json"))}`,
+    'DWS_PERSONAL_FALLBACK_MS="300000"',
+    'FOURSDAY_MODE="active"',
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const status = await inspectFoursdayNativeGateway({
+    layout: value.layout,
+    run: async () => ({ stdout: "Gateway is running\n" }),
+    now: Date.now() + 1_000,
+  });
+  assert.equal(status.mode, "active");
+  assert.equal(status.sendBlocked, true);
+  assert.equal(status.sendEnabled, false);
+  assert.equal(status.modeConsistent, false);
+  assert.equal(status.ready, false);
 });
 
 test("native Gateway activation preview is zero-write and gated apply is atomic", async (t) => {

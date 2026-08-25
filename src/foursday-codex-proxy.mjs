@@ -299,6 +299,12 @@ export function codexProcessEnvironment(source, realCodex, configuredCodex = rea
     "FOURSDAY_PRODUCTION_CONFIG",
     "FOURSDAY_PROJECT_REGISTRY",
     "FOURSDAY_WORK_CONTEXT_FILE",
+    "FOURSDAY_PROFILE_RELEASE_FILE",
+    "FOURSDAY_RELEASE_SHA",
+    "FOURSDAY_MODE",
+    "DWS_PERSONAL_SEND_ENABLED",
+    "DWS_PERSONAL_STATE_FILE",
+    "DWS_PERSONAL_FALLBACK_MS",
   ]) {
     if (typeof source[name] === "string" && source[name] !== "") environment[name] = source[name];
   }

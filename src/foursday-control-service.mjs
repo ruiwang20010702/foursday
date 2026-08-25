@@ -155,6 +155,7 @@ export class FoursdayControlService {
         installed: gateway.installed === true,
         mode: gateway.mode,
         sendEnabled: gateway.sendEnabled === true,
+        sendBlocked: gateway.sendBlocked === true,
         running: gateway.running === true,
         checkpointHealthy: gateway.checkpointHealthy === true,
         modeConsistent: gateway.modeConsistent === true,

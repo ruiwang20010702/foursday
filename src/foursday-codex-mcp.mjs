@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { admitHermesMemoryCandidate } from "./hermes-memory-candidate-sidecar.mjs";
 import {
@@ -19,6 +19,8 @@ const toolName = "foursday_remember_project_fact";
 const listAttachmentsToolName = "foursday_list_attachments";
 const stageAttachmentToolName = "foursday_stage_attachment";
 const readProjectMemoryToolName = "foursday_read_project_memory";
+const runtimeStatusToolName = "foursday_runtime_status";
+const fullReleaseSha = /^[a-f0-9]{40}$/u;
 
 export const foursdayCodexTool = Object.freeze({
   name: toolName,
@@ -87,6 +89,19 @@ export const foursdayStageAttachmentTool = Object.freeze({
 export const foursdayReadProjectMemoryTool = Object.freeze({
   name: readProjectMemoryToolName,
   description: "Read only the personal-gbrain pages registered for the current routed project.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      contextToken: { type: "string", description: "Opaque Foursday token from the current message context." },
+    },
+    required: ["contextToken"],
+    additionalProperties: false,
+  },
+});
+
+export const foursdayRuntimeStatusTool = Object.freeze({
+  name: runtimeStatusToolName,
+  description: "Read the current live Foursday Profile version, mode, send gate and DWS checkpoint. Use this for every current runtime-status question; never answer those from memory or chat history.",
   inputSchema: {
     type: "object",
     properties: {
@@ -227,6 +242,74 @@ async function registeredProjectMemorySlugs(path, projectId) {
   }
 }
 
+async function privateRuntimeJson(path, label, maximum = 1024 * 1024) {
+  if (!path) throw new Error("runtime_status_unavailable");
+  const absolute = resolve(path);
+  const handle = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.size > maximum) {
+      throw new Error("runtime_status_unavailable");
+    }
+    return JSON.parse(await handle.readFile("utf8"));
+  } catch {
+    throw new Error("runtime_status_unavailable");
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readFoursdayRuntimeStatus(input, {
+  environment = process.env,
+  cwd = process.cwd(),
+  now = Date.now(),
+} = {}) {
+  const context = await attachmentContext(input, { environment, cwd, now });
+  if (context.sourceScope !== "direct") throw new Error("work_context_mcp_scope_denied");
+  const releasePath = environment.FOURSDAY_PROFILE_RELEASE_FILE || (
+    environment.FOURSDAY_PROFILE_INSTRUCTIONS_FILE
+      ? join(dirname(environment.FOURSDAY_PROFILE_INSTRUCTIONS_FILE), "foursday-release.json")
+      : null
+  );
+  const statePath = environment.DWS_PERSONAL_STATE_FILE;
+  const [release, state] = await Promise.all([
+    privateRuntimeJson(releasePath, "release"),
+    privateRuntimeJson(statePath, "checkpoint", 16 * 1024 * 1024),
+  ]);
+  const releaseSha = String(environment.FOURSDAY_RELEASE_SHA ?? "").trim();
+  if (
+    release?.schema !== "foursday-profile-release/v1" ||
+    !fullReleaseSha.test(releaseSha) ||
+    release.foursdayCommit !== releaseSha
+  ) throw new Error("runtime_status_unavailable");
+  const mode = String(environment.FOURSDAY_MODE ?? "unknown");
+  const configuredSendEnabled = String(
+    environment.DWS_PERSONAL_SEND_ENABLED ?? "false",
+  ).toLowerCase() === "true";
+  const sendBlocked = state.sendBlocked === true;
+  const fallbackMs = Number(environment.DWS_PERSONAL_FALLBACK_MS ?? 30_000);
+  const fullSuccessAt = new Date(state.lastFullSuccessAt ?? "").getTime();
+  const currentTime = Number(now);
+  const maxAge = Math.max(60_000, fallbackMs * 2);
+  const checkpointHealthy =
+    state.lastErrorCount === 0 &&
+    Number.isFinite(fullSuccessAt) &&
+    Number.isFinite(currentTime) &&
+    currentTime - fullSuccessAt >= 0 &&
+    currentTime - fullSuccessAt <= maxAge;
+  return {
+    asOf: new Date(currentTime).toISOString(),
+    source: "live_profile",
+    version: String(release.foursdayVersion ?? ""),
+    releaseSha,
+    mode,
+    sendEnabled: configuredSendEnabled && !sendBlocked,
+    sendBlocked,
+    checkpointHealthy,
+    eventWakeReady: state.eventWake?.ready === true,
+  };
+}
+
 export async function readFoursdayProjectMemory(input, {
   environment = process.env,
   cwd = process.cwd(),
@@ -312,12 +395,13 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
         foursdayListAttachmentsTool,
         foursdayStageAttachmentTool,
         foursdayReadProjectMemoryTool,
+        foursdayRuntimeStatusTool,
       ],
     });
   }
   if (request.method === "tools/call") {
     const name = request.params?.name;
-    if (![toolName, listAttachmentsToolName, stageAttachmentToolName, readProjectMemoryToolName].includes(name)) {
+    if (![toolName, listAttachmentsToolName, stageAttachmentToolName, readProjectMemoryToolName, runtimeStatusToolName].includes(name)) {
       return errorResponse(request.id, -32601, "Unknown tool");
     }
     try {
@@ -327,7 +411,9 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
           ? await listFoursdayAttachments(request.params?.arguments, options)
           : name === stageAttachmentToolName
             ? await stageFoursdayAttachment(request.params?.arguments, options)
-            : await readFoursdayProjectMemory(request.params?.arguments, options);
+            : name === readProjectMemoryToolName
+              ? await readFoursdayProjectMemory(request.params?.arguments, options)
+              : await readFoursdayRuntimeStatus(request.params?.arguments, options);
       return response(request.id, {
         content: [{ type: "text", text: JSON.stringify(result) }],
         structuredContent: result,
@@ -348,6 +434,7 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
         "attachment_inbox_unsafe",
         "attachment_stage_conflict",
         "project_memory_unavailable",
+        "runtime_status_unavailable",
       ]);
       const candidate = String(error?.message ?? "");
       const code = knownErrors.has(candidate)
@@ -356,7 +443,9 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
           ? "memory_candidate_rejected"
           : name === readProjectMemoryToolName
             ? "project_memory_unavailable"
-            : "attachment_rejected";
+            : name === runtimeStatusToolName
+              ? "runtime_status_unavailable"
+              : "attachment_rejected";
       return response(request.id, {
         content: [{ type: "text", text: JSON.stringify({ accepted: false, error: code }) }],
         structuredContent: { accepted: false, error: code },

@@ -259,6 +259,14 @@ export function dwsMessageContentDigest(value) {
   return createHash("sha256").update(normalizedText(value)).digest("hex");
 }
 
+export function dwsMessageContentFingerprint(value) {
+  const canonical = normalizedText(value)
+    .normalize("NFKC")
+    .replaceAll(/[`*_~]/gu, "")
+    .replaceAll(/\s+/gu, "");
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
 function explicitAiMarker(raw) {
   const values = [
     raw?.aiTag,
@@ -325,6 +333,7 @@ export function isAutomatedSelfMessage(message, evidence = []) {
     }
     const startedAt = epoch(item.startedAt);
     const contentDigest = String(item.contentDigest ?? "").trim();
+    const contentFingerprint = String(item.contentFingerprint ?? "").trim();
     if (
       messageTime != null &&
       startedAt != null &&
@@ -334,7 +343,9 @@ export function isAutomatedSelfMessage(message, evidence = []) {
       (
         normalizedText(message?.content) === normalizedText(item.content) ||
         (/^[a-f0-9]{64}$/u.test(contentDigest) &&
-          dwsMessageContentDigest(message?.content) === contentDigest)
+          dwsMessageContentDigest(message?.content) === contentDigest) ||
+        (/^[a-f0-9]{64}$/u.test(contentFingerprint) &&
+          dwsMessageContentFingerprint(message?.content) === contentFingerprint)
       )
     ) {
       return true;

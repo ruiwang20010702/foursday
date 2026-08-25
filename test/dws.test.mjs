@@ -10,6 +10,7 @@ import {
   collectMessages,
   DwsAdapter,
   dwsMessageContentDigest,
+  dwsMessageContentFingerprint,
   extractDwsMediaDescriptors,
   isAutomatedSelfMessage,
 } from "../src/dws.mjs";
@@ -169,6 +170,24 @@ test("DWS 子进程只接收工具运行白名单环境", async () => {
   ]) {
     assert.equal(childValues.has(secret), false);
   }
+});
+
+test("DWS rendered Markdown keeps one automation fingerprint", () => {
+  const original = "截至最新可用回读：\n\n- 版本：`v1`\n- 模式：`active`\n- 发送：`true`";
+  const rendered = "截至最新可用回读：  \n- 版本：**v1**- 模式：**active**- 发送：**true**";
+  assert.notEqual(dwsMessageContentDigest(original), dwsMessageContentDigest(rendered));
+  assert.equal(dwsMessageContentFingerprint(original), dwsMessageContentFingerprint(rendered));
+  assert.equal(isAutomatedSelfMessage({
+    id: "rendered-message",
+    conversationId: "self-conversation",
+    createTime: "2026-08-25T11:16:01+08:00",
+    content: rendered,
+    raw: {},
+  }, [{
+    conversationId: "self-conversation",
+    startedAt: "2026-08-25T11:16:00+08:00",
+    contentFingerprint: dwsMessageContentFingerprint(original),
+  }]), true);
 });
 
 test("DWS CLI calls are serialized so the local data lock cannot race", async () => {

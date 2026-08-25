@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import {
   DwsAdapter,
   dwsMessageContentDigest,
+  dwsMessageContentFingerprint,
   isAutomatedSelfMessage,
 } from "./dws.mjs";
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
@@ -125,6 +126,7 @@ function emptyState() {
     recipients: {}, activeConversations: {}, takeoverReported: [],
     controlStates: {},
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
+    sendBlocked: false, sendBlockReason: null, sendBlockedAt: null,
     lastWakeSource: null,
     lastDetection: null,
     eventWake: { enabled: false, ready: false, errorCode: null, updatedAt: null },
@@ -173,6 +175,13 @@ async function loadState(path) {
       sendLedger: parsed?.sendLedger && typeof parsed.sendLedger === "object"
         ? Object.fromEntries(Object.entries(parsed.sendLedger).slice(-1_000))
         : {},
+      sendBlocked: parsed?.sendBlocked === true,
+      sendBlockReason: typeof parsed?.sendBlockReason === "string"
+        ? parsed.sendBlockReason.slice(0, 80)
+        : null,
+      sendBlockedAt: typeof parsed?.sendBlockedAt === "string"
+        ? parsed.sendBlockedAt
+        : null,
       lastCheckAt: typeof parsed?.lastCheckAt === "string" ? parsed.lastCheckAt : null,
       lastFullSuccessAt:
         typeof parsed?.lastFullSuccessAt === "string" ? parsed.lastFullSuccessAt : null,
@@ -343,6 +352,12 @@ export async function createSidecarRuntime({
     const current = stateWrite.catch(() => {}).then(() => saveState(config.stateFile, snapshot));
     stateWrite = current;
     return current;
+  };
+  const blockSending = async (reason) => {
+    state.sendBlocked = true;
+    state.sendBlockReason = String(reason ?? "send_outcome_unknown").slice(0, 80);
+    state.sendBlockedAt = now().toISOString();
+    await persistState();
   };
 
   const remember = (id) => {
@@ -727,6 +742,11 @@ export async function createSidecarRuntime({
 
   return {
     async start() {
+      if (!config.sendEnabled && state.sendBlocked) {
+        state.sendBlocked = false;
+        state.sendBlockReason = null;
+        state.sendBlockedAt = null;
+      }
       const initialFrames = await check({
         deferEmit: true,
         wakeSource: "startup",
@@ -868,6 +888,14 @@ export async function createSidecarRuntime({
           error: "DWS personal send is disabled",
         };
       }
+      if (state.sendBlocked) {
+        return {
+          success: false,
+          outcomeUnknown: true,
+          sendSuspended: true,
+          error: "DWS personal sending is suspended after an unknown outcome",
+        };
+      }
       const sendKey = stableSendKey(payload);
       const existing = sendLedger.get(sendKey);
       if (existing?.status === "completed" && existing.messageId) {
@@ -878,6 +906,9 @@ export async function createSidecarRuntime({
         };
       }
       if (existing) {
+        if (existing.status === "unknown" && !state.sendBlocked) {
+          await blockSending("unresolved_prior_intent");
+        }
         return {
           success: false,
           outcomeUnknown: true,
@@ -892,6 +923,7 @@ export async function createSidecarRuntime({
         startedAt,
         idempotencyKey,
         contentDigest: dwsMessageContentDigest(payload?.content),
+        contentFingerprint: dwsMessageContentFingerprint(payload?.content),
       };
       sendLedger.set(sendKey, intent);
       rememberAutomatedSend(intent);
@@ -939,7 +971,7 @@ export async function createSidecarRuntime({
         sendLedger.set(sendKey, unknown);
         rememberAutomatedSend(unknown);
         state.sendLedger = Object.fromEntries(sendLedger);
-        await persistState();
+        await blockSending("transport_exception_after_intent");
         return {
           success: false,
           outcomeUnknown: true,
@@ -975,7 +1007,7 @@ export async function createSidecarRuntime({
         sendLedger.set(sendKey, unknown);
         rememberAutomatedSend({ ...unknown, receipt });
         state.sendLedger = Object.fromEntries(sendLedger);
-        await persistState();
+        await blockSending("missing_server_message_id");
         return {
           success: false,
           outcomeUnknown: true,

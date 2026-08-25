@@ -86,6 +86,7 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /CODEX_HOME=/u);
   assert.match(plan.envContent, /FOURSDAY_PYTHON_PATH=.*python-runtime/u);
   assert.match(plan.envContent, /FOURSDAY_CONTROL_FILE=.*control\.json/u);
+  assert.match(plan.envContent, /FOURSDAY_PROFILE_RELEASE_FILE=.*foursday-release\.json/u);
   assert.match(plan.envContent, /FOURSDAY_RELEASE_SHA="a{40}"/u);
   assert.match(plan.codexConfigContent, /default_permissions = "foursday-workspace"/u);
   assert.match(plan.codexConfigContent, /":root" = "deny"/u);
@@ -101,6 +102,8 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexConfigContent, /trust_level = "untrusted"/u);
   assert.match(plan.codexConfigContent, /\[mcp_servers\.foursday\]/u);
   assert.match(plan.codexConfigContent, /foursday-codex-mcp\.mjs/u);
+  assert.match(plan.codexConfigContent, /foursday_runtime_status/u);
+  assert.match(plan.codexConfigContent, /FOURSDAY_PROFILE_RELEASE_FILE/u);
   assert.match(plan.codexConfigContent, /foursday_stage_attachment/u);
   assert.match(plan.codexRulesContent, /pattern=\[\["git","\/usr\/bin\/git".*\],"push"\].*decision="forbidden"/u);
   assert.match(plan.codexRulesContent, /pattern=\[\["git","\/usr\/bin\/git".*\],"add","-A"\].*decision="forbidden"/u);

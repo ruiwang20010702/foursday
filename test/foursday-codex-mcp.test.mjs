@@ -9,6 +9,7 @@ import {
   handleFoursdayMcpRequest,
   listFoursdayAttachments,
   readFoursdayProjectMemory,
+  readFoursdayRuntimeStatus,
 } from "../src/foursday-codex-mcp.mjs";
 
 async function fixture(t, {
@@ -51,6 +52,17 @@ async function fixture(t, {
       gbrainSlugs: ["projects/example"],
     }],
   })}\n`, { mode: 0o600 });
+  await writeFile(join(root, "foursday-release.json"), `${JSON.stringify({
+    schema: "foursday-profile-release/v1",
+    foursdayVersion: "0.8.0-rc.1",
+    foursdayCommit: "e".repeat(40),
+  })}\n`, { mode: 0o600 });
+  await writeFile(join(root, "dws.json"), `${JSON.stringify({
+    lastFullSuccessAt: new Date(Date.now() - 1_000).toISOString(),
+    lastErrorCount: 0,
+    sendBlocked: false,
+    eventWake: { ready: true },
+  })}\n`, { mode: 0o600 });
   return {
     root,
     token,
@@ -60,6 +72,12 @@ async function fixture(t, {
       FOURSDAY_WORK_CONTEXT_FILE: contextPath,
       FOURSDAY_PRODUCTION_CONFIG: join(root, "production.json"),
       FOURSDAY_PROJECT_REGISTRY: join(root, "projects.json"),
+      FOURSDAY_PROFILE_RELEASE_FILE: join(root, "foursday-release.json"),
+      FOURSDAY_RELEASE_SHA: "e".repeat(40),
+      FOURSDAY_MODE: "active",
+      DWS_PERSONAL_SEND_ENABLED: "true",
+      DWS_PERSONAL_FALLBACK_MS: "30000",
+      DWS_PERSONAL_STATE_FILE: join(root, "dws.json"),
     },
   };
 }
@@ -81,7 +99,7 @@ function input(contextToken) {
   };
 }
 
-test("Codex MCP advertises only bounded memory and current-message attachment tools", async () => {
+test("Codex MCP advertises bounded memory, attachment and live-status tools", async () => {
   const initialized = await handleFoursdayMcpRequest({
     jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" },
   });
@@ -92,8 +110,33 @@ test("Codex MCP advertises only bounded memory and current-message attachment to
     "foursday_list_attachments",
     "foursday_stage_attachment",
     "foursday_read_project_memory",
+    "foursday_runtime_status",
   ]);
   assert.ok(listed.result.tools[0].inputSchema.required.includes("contextToken"));
+});
+
+test("runtime status tool reads live Profile state instead of project memory", async (t) => {
+  const value = await fixture(t);
+  const now = Date.now();
+  const result = await readFoursdayRuntimeStatus(
+    { contextToken: value.token },
+    { environment: value.environment, cwd: value.root, now },
+  );
+  assert.equal(result.source, "live_profile");
+  assert.equal(result.version, "0.8.0-rc.1");
+  assert.equal(result.releaseSha, "e".repeat(40));
+  assert.equal(result.mode, "active");
+  assert.equal(result.sendEnabled, true);
+  assert.equal(result.sendBlocked, false);
+  assert.equal(result.checkpointHealthy, true);
+  assert.equal(result.eventWakeReady, true);
+
+  const called = await handleFoursdayMcpRequest({
+    jsonrpc: "2.0", id: 20, method: "tools/call",
+    params: { name: "foursday_runtime_status", arguments: { contextToken: value.token } },
+  }, { environment: value.environment, cwd: value.root, now });
+  assert.equal(called.result.isError, false);
+  assert.equal(called.result.structuredContent.mode, "active");
 });
 
 test("attachment tools hide host paths and stage exact bytes inside the routed workspace", async (t) => {

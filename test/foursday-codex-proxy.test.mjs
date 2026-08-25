@@ -148,13 +148,19 @@ test("proxy rejects command-line config overrides before starting Codex", async 
   assert.equal(spawned, false);
 });
 
-test("proxy gives Codex only runtime essentials and three MCP path bindings", () => {
+test("proxy gives Codex only runtime essentials and read-only MCP status bindings", () => {
   const environment = codexProcessEnvironment({
     HOME: "/home/foursday",
     CODEX_HOME: "/home/foursday/codex",
     FOURSDAY_PRODUCTION_CONFIG: "/private/config.json",
     FOURSDAY_PROJECT_REGISTRY: "/private/projects.json",
     FOURSDAY_WORK_CONTEXT_FILE: "/private/contexts.json",
+    FOURSDAY_PROFILE_RELEASE_FILE: "/private/release.json",
+    FOURSDAY_RELEASE_SHA: "a".repeat(40),
+    FOURSDAY_MODE: "shadow",
+    DWS_PERSONAL_SEND_ENABLED: "false",
+    DWS_PERSONAL_STATE_FILE: "/private/dws.json",
+    DWS_PERSONAL_FALLBACK_MS: "30000",
     FOURSDAY_PYTHON_PATH: "/managed/python/bin/python3",
     FOURSDAY_NODE_PATH: "/managed/node/bin/node",
     FOURSDAY_DINGTALK_USERS: "private-user-id",
@@ -164,6 +170,11 @@ test("proxy gives Codex only runtime essentials and three MCP path bindings", ()
   }, "/usr/local/bin/codex");
   assert.equal(environment.HOME, "/home/foursday");
   assert.equal(environment.FOURSDAY_PROJECT_REGISTRY, "/private/projects.json");
+  assert.equal(environment.FOURSDAY_PROFILE_RELEASE_FILE, "/private/release.json");
+  assert.equal(environment.FOURSDAY_RELEASE_SHA, "a".repeat(40));
+  assert.equal(environment.FOURSDAY_MODE, "shadow");
+  assert.equal(environment.DWS_PERSONAL_SEND_ENABLED, "false");
+  assert.equal(environment.DWS_PERSONAL_STATE_FILE, "/private/dws.json");
   assert.equal(environment.PYTHON, "/managed/python/bin/python3");
   assert.equal(environment.PATH.split(":")[0], "/managed/node/bin");
   assert.equal(environment.FOURSDAY_NODE_PATH, undefined);

@@ -74,10 +74,30 @@ _INTERNAL_GATEWAY_NOTICE = re.compile(
     r"|⏩ Steered into current run)(?:\s|\(|[.—-])",
     re.IGNORECASE,
 )
+_CURRENT_RUNTIME_STATUS = re.compile(
+    r"(?:Foursday.{0,32}(?:当前|现在|最新|运行|版本|模式|状态|发送|send|active|shadow|ready)"
+    r"|(?:当前|现在|最新|运行状态|版本|模式|真实发送).{0,32}Foursday)",
+    re.IGNORECASE,
+)
 
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _dingtalk_plain_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"```[^\n]*\n?", "", text)
+    text = text.replace("```", "")
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_\n]+)__", r"\1", text)
+    text = re.sub(r"~~([^~\n]+)~~", r"\1", text)
+    text = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+", "", text)
+    text = re.sub(r"(?m)^[ \t]*[-*+][ \t]+", "• ", text)
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
 
 
 _SHADOW_REPLY_KEYS: dict[str, set[str]] = {}
@@ -547,9 +567,10 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             str(latest.get("createTime") or "").replace("Z", "+00:00")
         )
         route = self._router.route(text=content, session_key=f"{conversation_id}:{user_id}")
+        runtime_status_required = bool(_CURRENT_RUNTIME_STATUS.search(content))
         memory_context = ""
-        memory_status = "not_configured"
-        if self._memory is not None:
+        memory_status = "skipped_live_status" if runtime_status_required else "not_configured"
+        if self._memory is not None and not runtime_status_required:
             try:
                 memory_context = await self._memory.context_for_route(route)
                 memory_status = "available" if memory_context else "empty"
@@ -577,7 +598,17 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             if context_token else ""
         )
         channel_prompt = "\n\n".join(
-            item for item in [route.context, memory_context, tool_context] if item
+            item for item in [
+                route.context,
+                memory_context,
+                (
+                    "This request asks for current Foursday operational status. "
+                    "You MUST call foursday_runtime_status with the current context token. "
+                    "Do not use gbrain, README, release notes or prior Session values for version, mode or send state."
+                    if runtime_status_required else ""
+                ),
+                tool_context,
+            ] if item
         )
         source = self.build_source(
             chat_id=conversation_id,
@@ -721,7 +752,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             )
         payload = {
             "conversationId": str(chat_id),
-            "content": str(content),
+            "content": _dingtalk_plain_text(content),
             "replyTo": str(reply_to) if reply_to else None,
             "metadata": dict(metadata or {}),
         }
@@ -784,6 +815,22 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 return SendResult(
                     success=True,
                     message_id=f"shadow-{shadow_id}",
+                )
+            if isinstance(result, dict) and result.get("outcomeUnknown") is True:
+                suppressed_id = hashlib.sha256(
+                    f"{chat_id}\n{content}".encode("utf-8")
+                ).hexdigest()[:24]
+                return SendResult(
+                    success=True,
+                    message_id=f"suppressed-unknown-{suppressed_id}",
+                )
+            if isinstance(result, dict) and result.get("staleGeneration") is True:
+                suppressed_id = hashlib.sha256(
+                    f"{chat_id}\n{content}".encode("utf-8")
+                ).hexdigest()[:24]
+                return SendResult(
+                    success=True,
+                    message_id=f"suppressed-stale-{suppressed_id}",
                 )
             return SendResult(
                 success=False,

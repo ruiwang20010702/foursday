@@ -59,6 +59,7 @@ async function fixture(t) {
     productionConfigPath,
     gatewayInspector: async () => ({
       ready: true, installed: true, mode: "shadow", sendEnabled: false,
+      sendBlocked: false,
       running: true, checkpointHealthy: true, modeConsistent: true,
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
@@ -71,6 +72,7 @@ test("control service projects tasks, schedules, memory and evidence without pri
   const { service } = await fixture(t);
   const status = await service.status();
   assert.equal(status.gateway.eventWakeDegraded, true);
+  assert.equal(status.gateway.sendBlocked, false);
   assert.equal(status.gateway.lastWakeSource, "filesystem");
   assert.equal(status.gateway.lastDetectionLatencyMs, 1250);
   const tasks = await service.tasks();

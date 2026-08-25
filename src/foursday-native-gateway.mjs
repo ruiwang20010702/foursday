@@ -159,7 +159,7 @@ export async function inspectFoursdayNativeGateway({
 } = {}) {
   const envDocument = await privateEnv(join(layout.profileDirectory, ".env"));
   const mode = envDocument.values.get("FOURSDAY_MODE") ?? "unknown";
-  const sendEnabled = envDocument.values.get("DWS_PERSONAL_SEND_ENABLED") === "true";
+  const configuredSendEnabled = envDocument.values.get("DWS_PERSONAL_SEND_ENABLED") === "true";
   let stdout = "";
   let running = false;
   let serviceEnabled = null;
@@ -185,10 +185,6 @@ export async function inspectFoursdayNativeGateway({
   } catch {
     serviceEnabled = null;
   }
-  const modeConsistent =
-    (mode === "shadow" && !sendEnabled) ||
-    (mode === "active" && sendEnabled);
-  const safeStopped = !running && serviceEnabled === false && mode === "shadow" && !sendEnabled;
   const checkpointPath = envDocument.values.get("DWS_PERSONAL_STATE_FILE") ?? "";
   const fallbackMs = Number(envDocument.values.get("DWS_PERSONAL_FALLBACK_MS") ?? 300_000);
   let checkpointHealthy = false;
@@ -197,6 +193,7 @@ export async function inspectFoursdayNativeGateway({
   let eventWakeDegraded = false;
   let lastWakeSource = null;
   let lastDetectionLatencyMs = null;
+  let sendBlocked = false;
   if (checkpointPath) {
     try {
       const metadata = await lstat(checkpointPath);
@@ -204,6 +201,7 @@ export async function inspectFoursdayNativeGateway({
         throw new Error("unsafe checkpoint");
       }
       const state = JSON.parse(await readFile(checkpointPath, "utf8"));
+      sendBlocked = state.sendBlocked === true;
       eventWakeEnabled = state.eventWake?.enabled === true;
       eventWakeReady = state.eventWake?.ready === true;
       eventWakeDegraded = eventWakeEnabled && !eventWakeReady;
@@ -224,6 +222,11 @@ export async function inspectFoursdayNativeGateway({
       checkpointHealthy = false;
     }
   }
+  const sendEnabled = configuredSendEnabled && !sendBlocked;
+  const modeConsistent =
+    (mode === "shadow" && !configuredSendEnabled) ||
+    (mode === "active" && configuredSendEnabled && !sendBlocked);
+  const safeStopped = !running && serviceEnabled === false && mode === "shadow" && !configuredSendEnabled;
   return {
     schema: "foursday-native-gateway-status/v1",
     label: nativeFoursdayGatewayLabel,
@@ -232,6 +235,7 @@ export async function inspectFoursdayNativeGateway({
     profile: "foursday",
     mode,
     sendEnabled,
+    sendBlocked,
     running,
     serviceEnabled,
     checkpointHealthy,

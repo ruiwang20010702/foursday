@@ -188,6 +188,53 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
 
+    async def test_current_runtime_status_requires_live_tool_and_skips_stale_memory(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 0,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+            memory=FakeMemory(),
+        )
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        await self.bridge.emit({
+            "id": "status-message",
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "status-conversation",
+            "content": "Foursday 当前版本、模式和真实发送状态是什么？",
+            "createTime": "2026-08-25T11:15:36+08:00",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        })
+        await asyncio.sleep(0)
+        event = self.events[-1]
+        self.assertIn("MUST call foursday_runtime_status", event.channel_prompt)
+        self.assertNotIn("长期项目背景", event.channel_prompt)
+        self.assertEqual(event.metadata["personal_memory_status"], "skipped_live_status")
+
+    async def test_outbound_markdown_is_rendered_as_stable_dingtalk_plain_text(self):
+        receipt = await self.adapter.send(
+            "direct-1",
+            "当前状态：\n\n- 版本：`v1`\n- 模式：**active**\n- 发送：`true`",
+            metadata={
+                "foursday_owner_revision": 0,
+                "foursday_send_generation": 1,
+            },
+        )
+        self.assertTrue(receipt.success)
+        self.assertEqual(
+            self.bridge.sent[-1]["content"],
+            "当前状态：\n\n• 版本：v1\n• 模式：active\n• 发送：true",
+        )
+
     async def test_startup_events_are_released_after_adapter_connects(self):
         await self.adapter.disconnect()
         record = {
@@ -589,7 +636,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events[0].metadata["send_generation"], 3)
         self.assertEqual(self.bridge.acked, [("a" * 64, "event-1")])
 
-    async def test_unknown_send_receipt_is_not_retryable(self):
+    async def test_unknown_send_receipt_is_suppressed_without_gateway_fallback(self):
         self.bridge.send_result = {
             "success": False,
             "outcomeUnknown": True,
@@ -603,8 +650,8 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "foursday_send_generation": 1,
             },
         )
-        self.assertFalse(receipt.success)
-        self.assertFalse(receipt.retryable)
+        self.assertTrue(receipt.success)
+        self.assertTrue(receipt.message_id.startswith("suppressed-unknown-"))
 
     async def test_internal_gateway_busy_notice_is_silently_suppressed(self):
         before = len(self.bridge.sent)
@@ -619,7 +666,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(receipt.message_id.startswith("suppressed-internal-"))
         self.assertEqual(len(self.bridge.sent), before)
 
-    async def test_stale_owner_revision_is_not_retryable(self):
+    async def test_stale_owner_revision_is_silently_suppressed(self):
         self.bridge.send_result = {
             "success": False,
             "staleGeneration": True,
@@ -633,8 +680,8 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "foursday_send_generation": 1,
             },
         )
-        self.assertFalse(receipt.success)
-        self.assertFalse(receipt.retryable)
+        self.assertTrue(receipt.success)
+        self.assertTrue(receipt.message_id.startswith("suppressed-stale-"))
 
     async def test_secret_or_irreversible_commitment_never_reaches_dws(self):
         before = len(self.bridge.sent)

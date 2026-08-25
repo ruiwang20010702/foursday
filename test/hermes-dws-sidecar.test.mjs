@@ -1058,7 +1058,32 @@ test("Hermes DWS sidecar marks an explicit send without server message id as unk
   assert.equal(result.success, false);
   assert.equal(result.outcomeUnknown, true);
   assert.equal(duplicate.outcomeUnknown, true);
+  assert.equal(duplicate.sendSuspended, true);
   assert.equal(dws.sent.length, 1);
+  const blocked = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+  assert.equal(blocked.sendBlocked, true);
+  assert.equal(blocked.sendBlockReason, "missing_server_message_id");
+
+  const shadow = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws: new FakeDws(),
+    emit: () => {},
+    now: () => new Date("2026-08-18T14:02:00+08:00"),
+  });
+  await shadow.start();
+  await shadow.stop();
+  const cleared = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+  assert.equal(cleared.sendBlocked, false);
 });
 
 test("Hermes DWS sidecar reuses a completed send receipt after restart", async () => {
@@ -1203,6 +1228,49 @@ test("Hermes DWS sidecar verifies a missing receipt id by exact DWS readback", a
   await runtime.stop();
   assert.equal(receipt.success, true);
   assert.equal(receipt.messageId, "readback-message-1");
+});
+
+test("Hermes DWS sidecar verifies Markdown-transformed readback without an AI marker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-rendered-readback-"));
+  const stateFile = join(root, "state.json");
+  const dws = new FakeDws();
+  dws.receiptWithoutMessageId = true;
+  dws.readBackMessage = {
+    id: "rendered-readback-message",
+    conversationId: "conversation-1",
+    createTime: "2026-08-18T14:01:01+08:00",
+    content: "当前状态：  \n- 版本：**v1**- 模式：**active**- 发送：**true**",
+    raw: {},
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    now: () => new Date("2026-08-18T14:01:00+08:00"),
+  });
+  await runtime.start();
+  const receipt = await runtime.send({
+    conversationId: "conversation-1",
+    content: "当前状态：\n\n- 版本：`v1`\n- 模式：`active`\n- 发送：`true`",
+    ownerRevision: 0,
+    sendGeneration: 1,
+  });
+  await runtime.stop();
+  const state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(receipt.success, true);
+  assert.equal(receipt.messageId, "rendered-readback-message");
+  assert.equal(state.sendBlocked, false);
+  assert.equal(Object.values(state.sendLedger)[0].status, "completed");
 });
 
 test("Hermes DWS sidecar resolves an ambiguous receipt through exact readback", async () => {
