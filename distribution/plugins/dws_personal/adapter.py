@@ -79,6 +79,7 @@ _CURRENT_RUNTIME_STATUS = re.compile(
     r"|(?:当前|现在|最新|运行状态|版本|模式|真实发送).{0,32}Foursday)",
     re.IGNORECASE,
 )
+_FULL_RELEASE_SHA = re.compile(r"^[a-f0-9]{40}$")
 
 
 def _digest(value: Any) -> str:
@@ -98,6 +99,61 @@ def _dingtalk_plain_text(value: Any) -> str:
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text
+
+
+def _private_runtime_json(path_value: Any, maximum: int) -> dict[str, Any]:
+    path = Path(str(path_value or "")).expanduser()
+    if not path.is_absolute():
+        raise RuntimeError("Foursday runtime status path is invalid")
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_mode & 0o077
+        or metadata.st_size > maximum
+        or path.resolve(strict=True) != path
+    ):
+        raise RuntimeError("Foursday runtime status file is unsafe")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("Foursday runtime status file is invalid")
+    return value
+
+
+def _live_runtime_status_context() -> str:
+    release = _private_runtime_json(
+        os.getenv("FOURSDAY_PROFILE_RELEASE_FILE"), 1024 * 1024,
+    )
+    state = _private_runtime_json(
+        os.getenv("DWS_PERSONAL_STATE_FILE"), 16 * 1024 * 1024,
+    )
+    release_sha = str(os.getenv("FOURSDAY_RELEASE_SHA", "")).strip()
+    if (
+        release.get("schema") != "foursday-profile-release/v1"
+        or not _FULL_RELEASE_SHA.fullmatch(release_sha)
+        or release.get("foursdayCommit") != release_sha
+    ):
+        raise RuntimeError("Foursday live release identity is unavailable")
+    mode = str(os.getenv("FOURSDAY_MODE", "unknown")).strip()
+    configured_send = str(
+        os.getenv("DWS_PERSONAL_SEND_ENABLED", "false")
+    ).lower() == "true"
+    send_blocked = state.get("sendBlocked") is True
+    snapshot = {
+        "source": "live_profile",
+        "capturedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "version": str(release.get("foursdayVersion") or ""),
+        "releaseSha": release_sha,
+        "mode": mode,
+        "sendEnabled": configured_send and not send_blocked,
+        "sendBlocked": send_blocked,
+        "eventWakeReady": (state.get("eventWake") or {}).get("ready") is True,
+    }
+    return (
+        "Authoritative live Foursday runtime snapshot captured by the connector: "
+        + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+        + ". Answer naturally from this snapshot. Do not call tools for these fields, "
+        "and do not use gbrain, README, release notes or prior Session values."
+    )
 
 
 _SHADOW_REPLY_KEYS: dict[str, set[str]] = {}
@@ -568,6 +624,17 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         )
         route = self._router.route(text=content, session_key=f"{conversation_id}:{user_id}")
         runtime_status_required = bool(_CURRENT_RUNTIME_STATUS.search(content))
+        runtime_status_context = ""
+        if runtime_status_required:
+            try:
+                runtime_status_context = _live_runtime_status_context()
+            except Exception:
+                runtime_status_context = (
+                    "This request asks for current Foursday operational status. "
+                    "Call foursday_runtime_status with the current context token. "
+                    "If it is unavailable, say live status cannot be confirmed. "
+                    "Do not use gbrain, README, release notes or prior Session values."
+                )
         memory_context = ""
         memory_status = "skipped_live_status" if runtime_status_required else "not_configured"
         if self._memory is not None and not runtime_status_required:
@@ -601,12 +668,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             item for item in [
                 route.context,
                 memory_context,
-                (
-                    "This request asks for current Foursday operational status. "
-                    "You MUST call foursday_runtime_status with the current context token. "
-                    "Do not use gbrain, README, release notes or prior Session values for version, mode or send state."
-                    if runtime_status_required else ""
-                ),
+                runtime_status_context,
                 tool_context,
             ] if item
         )

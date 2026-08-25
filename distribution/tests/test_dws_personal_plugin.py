@@ -188,7 +188,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
 
-    async def test_current_runtime_status_requires_live_tool_and_skips_stale_memory(self):
+    async def test_current_runtime_status_injects_live_snapshot_and_skips_stale_memory(self):
         await self.adapter.disconnect()
         self.bridge = FakeBridge()
         self.adapter = DwsPersonalAdapter(
@@ -202,21 +202,47 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         )
         self.adapter.set_message_handler(lambda event: self._capture(event))
         self.assertTrue(await self.adapter.connect())
-        await self.bridge.emit({
-            "id": "status-message",
-            "senderUserId": "trusted-user",
-            "senderName": "娜娜老师",
-            "senderOpenDingTalkId": "open-trusted",
-            "conversationId": "status-conversation",
-            "content": "Foursday 当前版本、模式和真实发送状态是什么？",
-            "createTime": "2026-08-25T11:15:36+08:00",
-            "chatType": "direct",
-            "mentionedSelf": False,
-            "isSelf": False,
-        })
+        canonical_temp = Path(self.temp.name).resolve()
+        release_path = canonical_temp / "foursday-release.json"
+        state_path = canonical_temp / "dws.json"
+        release_sha = "a" * 40
+        release_path.write_text(json.dumps({
+            "schema": "foursday-profile-release/v1",
+            "foursdayVersion": "0.8.0-rc.1",
+            "foursdayCommit": release_sha,
+        }), encoding="utf-8")
+        state_path.write_text(json.dumps({
+            "sendBlocked": False,
+            "eventWake": {"ready": True},
+        }), encoding="utf-8")
+        release_path.chmod(0o600)
+        state_path.chmod(0o600)
+        with patch.dict(os.environ, {
+            "FOURSDAY_PROFILE_RELEASE_FILE": str(release_path),
+            "FOURSDAY_RELEASE_SHA": release_sha,
+            "FOURSDAY_MODE": "shadow",
+            "DWS_PERSONAL_SEND_ENABLED": "false",
+            "DWS_PERSONAL_STATE_FILE": str(state_path),
+        }):
+            await self.bridge.emit({
+                "id": "status-message",
+                "senderUserId": "trusted-user",
+                "senderName": "娜娜老师",
+                "senderOpenDingTalkId": "open-trusted",
+                "conversationId": "status-conversation",
+                "content": "Foursday 当前版本、模式和真实发送状态是什么？",
+                "createTime": "2026-08-25T11:15:36+08:00",
+                "chatType": "direct",
+                "mentionedSelf": False,
+                "isSelf": False,
+            })
         await asyncio.sleep(0)
         event = self.events[-1]
-        self.assertIn("MUST call foursday_runtime_status", event.channel_prompt)
+        self.assertIn('"source":"live_profile"', event.channel_prompt)
+        self.assertIn('"version":"0.8.0-rc.1"', event.channel_prompt)
+        self.assertIn('"mode":"shadow"', event.channel_prompt)
+        self.assertIn('"sendEnabled":false', event.channel_prompt)
+        self.assertIn("Do not call tools for these fields", event.channel_prompt)
         self.assertNotIn("长期项目背景", event.channel_prompt)
         self.assertEqual(event.metadata["personal_memory_status"], "skipped_live_status")
 
