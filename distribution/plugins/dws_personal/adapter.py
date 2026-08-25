@@ -395,6 +395,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._seen_order = deque(maxlen=5_000)
         self._pending: dict[str, list[dict]] = {}
         self._bundle_tasks: dict[str, asyncio.Task] = {}
+        self._latest_delivery_versions: dict[str, dict[str, Any]] = {}
         self._control_ack_tasks: set[asyncio.Task] = set()
         self._startup_release_task: Optional[asyncio.Task] = None
 
@@ -726,6 +727,20 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             except Exception:
                 memory_status = "unavailable"
         session_key = f"{conversation_id}:{user_id}"
+        latest_delivery_version = {
+            "conversationId": conversation_id,
+            "messageId": message_ids[-1],
+            "ownerRevision": int(latest.get("ownerRevision") or 0),
+            "sendGeneration": int(latest.get("sendGeneration") or 0),
+            "turnStartedMonotonic": time.monotonic(),
+            "detectionLatencyMs": detection_latency_ms,
+            "bundleWaitMs": bundle_wait_ms,
+            "wakeSource": wake_source,
+        }
+        self._latest_delivery_versions.pop(conversation_id, None)
+        self._latest_delivery_versions[conversation_id] = latest_delivery_version
+        while len(self._latest_delivery_versions) > 1_000:
+            self._latest_delivery_versions.pop(next(iter(self._latest_delivery_versions)))
         context_token = _work_context_token(
             project=getattr(route, "project", None),
             session_key=session_key,
@@ -815,15 +830,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         })
         from project_router.runtime_context import routed_project_scope
 
-        delivery_version = _TURN_DELIVERY_VERSION.set({
-            "conversationId": conversation_id,
-            "ownerRevision": int(latest.get("ownerRevision") or 0),
-            "sendGeneration": int(latest.get("sendGeneration") or 0),
-            "turnStartedMonotonic": time.monotonic(),
-            "detectionLatencyMs": detection_latency_ms,
-            "bundleWaitMs": bundle_wait_ms,
-            "wakeSource": wake_source,
-        })
+        delivery_version = _TURN_DELIVERY_VERSION.set(dict(latest_delivery_version))
         try:
             with routed_project_scope(route, principal_id=user_id):
                 await self.handle_message(event)
@@ -910,6 +917,35 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                     "ownerRevision": owner_revision,
                     "sendGeneration": send_generation,
                 }
+        anchor_rebound = False
+        latest_version = self._latest_delivery_versions.get(str(chat_id))
+        latest_reply_anchor = bool(
+            reply_to
+            and latest_version is not None
+            and latest_version.get("conversationId") == str(chat_id)
+            and secrets.compare_digest(
+                str(reply_to), str(latest_version.get("messageId") or "")
+            )
+        )
+        if (
+            version is not None
+            and version.get("conversationId") == str(chat_id)
+            and latest_reply_anchor
+            and int(latest_version.get("ownerRevision") or 0) >= int(
+                version.get("ownerRevision") or 0
+            )
+            and int(latest_version.get("sendGeneration") or 0) >= int(
+                version.get("sendGeneration") or 0
+            )
+            and (
+                int(latest_version.get("ownerRevision") or 0)
+                > int(version.get("ownerRevision") or 0)
+                or int(latest_version.get("sendGeneration") or 0)
+                > int(version.get("sendGeneration") or 0)
+            )
+        ):
+            version = latest_version
+            anchor_rebound = True
         if version is None or version.get("conversationId") != str(chat_id):
             return SendResult(
                 success=False,
@@ -947,6 +983,10 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "bundleWaitMs": version.get("bundleWaitMs"),
             "agentDurationMs": agent_duration_ms,
             "wakeSource": version.get("wakeSource"),
+            "ownerRevision": int(version.get("ownerRevision") or 0),
+            "sendGeneration": int(version.get("sendGeneration") or 0),
+            "latestReplyAnchor": latest_reply_anchor,
+            "generationRebound": anchor_rebound,
         })
         if not isinstance(result, dict) or result.get("success") is not True:
             shadow_mode = str(
