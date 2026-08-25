@@ -140,6 +140,10 @@ test("runtime status tool reads live Profile state instead of project memory", a
   assert.equal(result.sendEnabled, true);
   assert.equal(result.sendBlocked, false);
   assert.equal(result.checkpointHealthy, true);
+  assert.equal(result.checkpointState, "healthy");
+  assert.equal(result.checkpointBusy, false);
+  assert.equal(result.checkpointGeneration, 0);
+  assert.equal(result.checkpointOperation, null);
   assert.equal(result.eventWakeReady, true);
 
   const called = await handleFoursdayMcpRequest({
@@ -148,6 +152,35 @@ test("runtime status tool reads live Profile state instead of project memory", a
   }, { environment: value.environment, cwd: value.root, now });
   assert.equal(called.result.isError, false);
   assert.equal(called.result.structuredContent.mode, "active");
+});
+
+test("runtime status tool projects a bounded DWS queue wait without marking it stale", async (t) => {
+  const value = await fixture(t);
+  const baseline = Date.now();
+  await writeFile(join(value.root, "dws.json"), `${JSON.stringify({
+    lastFullSuccessAt: new Date(baseline - 70_000).toISOString(),
+    lastErrorCount: 0,
+    sendBlocked: false,
+    eventWake: { ready: true },
+    checkLifecycle: {
+      status: "running",
+      generation: 8,
+      operation: "history_check",
+      wakeSource: "fallback",
+      startedAt: new Date(baseline - 70_000).toISOString(),
+      completedAt: null,
+      errorCount: 0,
+    },
+  })}\n`, { mode: 0o600 });
+  const result = await readFoursdayRuntimeStatus(
+    { contextToken: value.token },
+    { environment: value.environment, cwd: value.root, now: baseline },
+  );
+  assert.equal(result.checkpointState, "busy_but_bounded");
+  assert.equal(result.checkpointHealthy, true);
+  assert.equal(result.checkpointBusy, true);
+  assert.equal(result.checkpointGeneration, 8);
+  assert.equal(result.checkpointOperation, "history_check");
 });
 
 test("attachment tools hide host paths and stage exact bytes inside the routed workspace", async (t) => {

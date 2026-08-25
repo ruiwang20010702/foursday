@@ -9,7 +9,12 @@ import { createFoursdayControlSite } from "../src/foursday-control-site.mjs";
 
 function service() {
   return {
-    status: async () => ({ ready: true, control: { revision: 4, state: "running" }, gateway: {}, taskCounts: {} }),
+    status: async () => ({
+      ready: true,
+      control: { revision: 4, state: "running" },
+      gateway: { checkpointState: "busy_but_bounded", checkpointGeneration: 7 },
+      taskCounts: {},
+    }),
     tasks: async () => ({ revision: 4, items: [{ taskId: "a".repeat(64), projectId: "p", state: "active" }] }),
     schedules: async () => ({ items: [] }),
     memory: async () => ({ readEnabled: true, projects: [] }),
@@ -63,6 +68,8 @@ test("optional status page is loopback-only, read-only and uses the same service
   assert.match(pageText, /不保存第二套状态/u);
   assert.match(pageText, /已暂停/u);
   assert.match(pageText, /filter\(x=>x\.enabled\)/u);
+  assert.match(pageText, /DWS检查点/u);
+  assert.match(pageText, /检查中（有界）/u);
   assert.match(page.headers.get("content-security-policy"), /default-src 'none'/u);
   const status = await fetch(`${started.url}api/status`).then((response) => response.json());
   assert.equal(status.control.revision, 4);

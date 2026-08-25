@@ -751,6 +751,75 @@ test("Hermes DWS sidecar emits allowlisted records and persists a private checkp
   assert.equal(state.lastUsers["trusted-user"], "2026-08-18T05:59:00.000Z");
   assert.equal(state.lastFullSuccessAt, "2026-08-18T06:01:00.000Z");
   assert.equal(state.lastErrorCount, 0);
+  assert.equal(state.checkLifecycle.status, "completed");
+  assert.equal(state.checkLifecycle.generation, 2);
+  assert.equal(state.checkLifecycle.operation, "history_check");
+  assert.equal(state.checkLifecycle.completedAt, "2026-08-18T06:01:00.000Z");
+});
+
+test("Hermes DWS sidecar persists a bounded running lifecycle before waiting for DWS", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-lifecycle-"));
+  const stateFile = join(root, "state.json");
+  let current = new Date("2026-08-25T15:00:00+08:00");
+  let calls = 0;
+  let releaseFetch;
+  let enteredFetch;
+  const entered = new Promise((resolve) => { enteredFetch = resolve; });
+  const blocked = new Promise((resolve) => { releaseFetch = resolve; });
+  const dws = {
+    async fetchBySender() {
+      calls += 1;
+      if (calls === 2) {
+        enteredFetch();
+        await blocked;
+      }
+      return [];
+    },
+    async fetchGroupMentions() { return []; },
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile,
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    now: () => current,
+  });
+  try {
+    await runtime.start();
+    current = new Date("2026-08-25T15:01:10+08:00");
+    const check = runtime.check({ wakeSource: "fallback" });
+    await entered;
+    const running = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(running.checkLifecycle.status, "running");
+    assert.equal(running.checkLifecycle.generation, 2);
+    assert.equal(running.checkLifecycle.wakeSource, "fallback");
+    assert.equal(running.lastFullSuccessAt, "2026-08-25T07:00:00.000Z");
+
+    current = new Date("2026-08-25T15:01:15+08:00");
+    releaseFetch();
+    await check;
+    const completed = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(completed.checkLifecycle.status, "completed");
+    assert.equal(completed.checkLifecycle.completedAt, "2026-08-25T07:01:15.000Z");
+    assert.equal(completed.lastFullSuccessAt, "2026-08-25T07:01:15.000Z");
+  } finally {
+    releaseFetch?.();
+    await runtime.stop();
+  }
 });
 
 test("Hermes DWS sidecar 按源消息时间升序交给 Agent", async () => {
@@ -838,12 +907,22 @@ test("Hermes DWS sidecar 并发抓取目标且部分失败不覆盖失败游标"
     runtime.check(),
     (error) => error.code === "DWS_SIDECAR_TARGETS_UNAVAILABLE",
   );
-  await runtime.stop();
   const second = JSON.parse(await readFile(stateFile, "utf8"));
   assert.equal(second.lastUsers["good-user"], "2026-08-18T06:00:00.000Z");
   assert.equal(second.lastUsers["bad-user"], "2026-08-18T05:59:00.000Z");
   assert.equal(second.lastFullSuccessAt, "2026-08-18T06:01:00.000Z");
   assert.equal(second.lastErrorCount, 1);
+  assert.equal(second.checkLifecycle.status, "failed");
+  assert.equal(second.checkLifecycle.errorCount, 1);
+
+  failing.clear();
+  currentTime = new Date("2026-08-18T14:03:00+08:00");
+  await runtime.check();
+  const recovered = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(recovered.lastErrorCount, 0);
+  assert.equal(recovered.checkLifecycle.status, "completed");
+  assert.equal(recovered.checkLifecycle.generation, 3);
+  await runtime.stop();
 });
 
 test("Hermes DWS sidecar keeps real sending disabled unless explicitly enabled", async () => {

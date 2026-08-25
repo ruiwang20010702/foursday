@@ -258,6 +258,7 @@ test("profile staging packages plugins, profile and skills without Python caches
   await mkdir(join(root, "src"));
   await mkdir(join(root, "scripts"));
   for (const name of [
+    "dws-checkpoint-health.mjs",
     "hermes-dws-sidecar.mjs",
     "hermes-personal-memory-context.mjs",
     "hermes-memory-candidate-sidecar.mjs",

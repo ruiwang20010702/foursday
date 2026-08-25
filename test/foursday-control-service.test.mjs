@@ -60,7 +60,9 @@ async function fixture(t) {
     gatewayInspector: async () => ({
       ready: true, installed: true, mode: "shadow", sendEnabled: false,
       sendBlocked: false,
-      running: true, checkpointHealthy: true, modeConsistent: true,
+      running: true, checkpointHealthy: true, checkpointState: "busy_but_bounded",
+      checkpointBusy: true, modeConsistent: true,
+      checkpointGeneration: 9, checkpointOperation: "history_check",
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
@@ -72,6 +74,10 @@ test("control service projects tasks, schedules, memory and evidence without pri
   const { service } = await fixture(t);
   const status = await service.status();
   assert.equal(status.gateway.eventWakeDegraded, true);
+  assert.equal(status.gateway.checkpointState, "busy_but_bounded");
+  assert.equal(status.gateway.checkpointBusy, true);
+  assert.equal(status.gateway.checkpointGeneration, 9);
+  assert.equal(status.gateway.checkpointOperation, "history_check");
   assert.equal(status.gateway.sendBlocked, false);
   assert.equal(status.gateway.lastWakeSource, "filesystem");
   assert.equal(status.gateway.lastDetectionLatencyMs, 1250);

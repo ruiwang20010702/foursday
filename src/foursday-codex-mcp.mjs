@@ -9,6 +9,7 @@ import {
   createHermesPersonalMemoryClient,
   readHermesProjectMemoryContext,
 } from "./hermes-personal-memory-context.mjs";
+import { evaluateDwsCheckpointHealth } from "./dws-checkpoint-health.mjs";
 import {
   foursdayContextTokenPattern,
   loadFoursdayWorkContext,
@@ -282,7 +283,10 @@ async function privateRuntimeJson(path, label, maximum = 1024 * 1024) {
     if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.size > maximum) {
       throw new Error("runtime_status_unavailable");
     }
-    return JSON.parse(await handle.readFile("utf8"));
+    return {
+      document: JSON.parse(await handle.readFile("utf8")),
+      modifiedAt: metadata.mtimeMs,
+    };
   } catch {
     throw new Error("runtime_status_unavailable");
   } finally {
@@ -303,10 +307,12 @@ export async function readFoursdayRuntimeStatus(input, {
       : null
   );
   const statePath = environment.DWS_PERSONAL_STATE_FILE;
-  const [release, state] = await Promise.all([
+  const [releaseFile, stateFile] = await Promise.all([
     privateRuntimeJson(releasePath, "release"),
     privateRuntimeJson(statePath, "checkpoint", 16 * 1024 * 1024),
   ]);
+  const release = releaseFile.document;
+  const state = stateFile.document;
   const releaseSha = String(environment.FOURSDAY_RELEASE_SHA ?? "").trim();
   if (
     release?.schema !== "foursday-profile-release/v1" ||
@@ -319,15 +325,20 @@ export async function readFoursdayRuntimeStatus(input, {
   ).toLowerCase() === "true";
   const sendBlocked = state.sendBlocked === true;
   const fallbackMs = Number(environment.DWS_PERSONAL_FALLBACK_MS ?? 30_000);
-  const fullSuccessAt = new Date(state.lastFullSuccessAt ?? "").getTime();
   const currentTime = Number(now);
-  const maxAge = Math.max(60_000, fallbackMs * 2);
-  const checkpointHealthy =
-    state.lastErrorCount === 0 &&
-    Number.isFinite(fullSuccessAt) &&
-    Number.isFinite(currentTime) &&
-    currentTime - fullSuccessAt >= 0 &&
-    currentTime - fullSuccessAt <= maxAge;
+  const {
+    checkpointHealthy,
+    checkpointState,
+    checkpointBusy,
+    checkpointGeneration,
+    checkpointOperation,
+  } =
+    evaluateDwsCheckpointHealth({
+      state,
+      now: currentTime,
+      fallbackMs,
+      modifiedAt: stateFile.modifiedAt,
+    });
   return {
     asOf: new Date(currentTime).toISOString(),
     source: "live_profile",
@@ -337,6 +348,10 @@ export async function readFoursdayRuntimeStatus(input, {
     sendEnabled: configuredSendEnabled && !sendBlocked,
     sendBlocked,
     checkpointHealthy,
+    checkpointState,
+    checkpointBusy,
+    checkpointGeneration,
+    checkpointOperation,
     eventWakeReady: state.eventWake?.ready === true,
   };
 }

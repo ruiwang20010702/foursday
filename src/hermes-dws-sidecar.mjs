@@ -12,6 +12,7 @@ import {
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
 import { isMainModule } from "./main-module.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
+import { normalizeDwsCheckLifecycle } from "./dws-checkpoint-health.mjs";
 
 function csv(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))];
@@ -126,6 +127,7 @@ function emptyState() {
     recipients: {}, activeConversations: {}, takeoverReported: [],
     controlStates: {},
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
+    checkLifecycle: normalizeDwsCheckLifecycle(),
     sendBlocked: false, sendBlockReason: null, sendBlockedAt: null,
     lastWakeSource: null,
     lastDetection: null,
@@ -188,6 +190,7 @@ async function loadState(path) {
       lastErrorCount: Number.isSafeInteger(parsed?.lastErrorCount)
         ? parsed.lastErrorCount
         : 0,
+      checkLifecycle: normalizeDwsCheckLifecycle(parsed?.checkLifecycle),
       lastWakeSource: typeof parsed?.lastWakeSource === "string"
         ? parsed.lastWakeSource.slice(0, 40)
         : null,
@@ -353,6 +356,22 @@ export async function createSidecarRuntime({
     stateWrite = current;
     return current;
   };
+  const persistCheckHealth = () => {
+    const health = structuredClone({
+      lastCheckAt: state.lastCheckAt,
+      lastFullSuccessAt: state.lastFullSuccessAt,
+      lastErrorCount: state.lastErrorCount,
+      lastWakeSource: state.lastWakeSource,
+      checkLifecycle: state.checkLifecycle,
+    });
+    const current = stateWrite.catch(() => {}).then(async () => {
+      const stored = await loadState(config.stateFile);
+      Object.assign(stored, health);
+      await saveState(config.stateFile, stored);
+    });
+    stateWrite = current;
+    return current;
+  };
   const blockSending = async (reason) => {
     state.sendBlocked = true;
     state.sendBlockReason = String(reason ?? "send_outcome_unknown").slice(0, 80);
@@ -506,9 +525,23 @@ export async function createSidecarRuntime({
       return;
     }
     running = true;
+    const startedAt = now();
+    const generation = Number(state.checkLifecycle?.generation ?? 0) + 1;
+    const operation = reconcileLookbackMs == null ? "history_check" : "history_reconcile";
+    state.lastWakeSource = wakeSource;
+    state.checkLifecycle = {
+      status: "running",
+      generation,
+      operation,
+      wakeSource,
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      errorCount: 0,
+    };
+    let lifecycleFinished = false;
     try {
-      const end = now();
-      state.lastWakeSource = wakeSource;
+      await persistState();
+      const end = startedAt;
       const deferredFrames = [];
       const dispatch = deferEmit
         ? (frame) => deferredFrames.push(frame)
@@ -701,16 +734,44 @@ export async function createSidecarRuntime({
           });
         }
       }
-      state.lastCheckAt = end.toISOString();
+      const completedAt = now();
+      state.lastCheckAt = completedAt.toISOString();
       state.lastErrorCount = errors.length;
-      if (errors.length === 0) state.lastFullSuccessAt = end.toISOString();
-      if (!deferEmit) await persistState();
+      if (errors.length === 0) state.lastFullSuccessAt = completedAt.toISOString();
+      state.checkLifecycle = {
+        status: errors.length === 0 ? "completed" : "failed",
+        generation,
+        operation,
+        wakeSource,
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        errorCount: errors.length,
+      };
+      await (deferEmit ? persistCheckHealth() : persistState());
+      lifecycleFinished = true;
       if (errors.length > 0) {
         const error = new Error("One or more DWS shadow targets are unavailable");
         error.code = "DWS_SIDECAR_TARGETS_UNAVAILABLE";
         throw error;
       }
       return deferredFrames;
+    } catch (error) {
+      if (!lifecycleFinished) {
+        const completedAt = now();
+        state.lastCheckAt = completedAt.toISOString();
+        state.lastErrorCount = Math.max(1, Number(state.lastErrorCount ?? 0));
+        state.checkLifecycle = {
+          status: "failed",
+          generation,
+          operation,
+          wakeSource,
+          startedAt: startedAt.toISOString(),
+          completedAt: completedAt.toISOString(),
+          errorCount: state.lastErrorCount,
+        };
+        await (deferEmit ? persistCheckHealth() : persistState());
+      }
+      throw error;
     } finally {
       running = false;
       if (pending) {

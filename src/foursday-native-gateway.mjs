@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { authorizeFoursdayNativeGatewayAction } from "./foursday-native-cutover.mjs";
 import { assertFoursdayEmbeddedRuntimeIdentity } from "./foursday-hermes-native-install.mjs";
+import { evaluateDwsCheckpointHealth } from "./dws-checkpoint-health.mjs";
 
 const execFileAsync = promisify(execFile);
 // The embedded runtime owns this macOS-internal label. Public Foursday status
@@ -188,6 +189,10 @@ export async function inspectFoursdayNativeGateway({
   const checkpointPath = envDocument.values.get("DWS_PERSONAL_STATE_FILE") ?? "";
   const fallbackMs = Number(envDocument.values.get("DWS_PERSONAL_FALLBACK_MS") ?? 300_000);
   let checkpointHealthy = false;
+  let checkpointState = "stale";
+  let checkpointBusy = false;
+  let checkpointGeneration = 0;
+  let checkpointOperation = null;
   let eventWakeEnabled = false;
   let eventWakeReady = false;
   let eventWakeDegraded = false;
@@ -211,15 +216,25 @@ export async function inspectFoursdayNativeGateway({
       lastDetectionLatencyMs = Number.isFinite(Number(state.lastDetection?.latencyMs))
         ? Math.max(0, Number(state.lastDetection.latencyMs))
         : null;
-      const fullSuccess = new Date(state.lastFullSuccessAt ?? "").getTime();
-      const maxAge = Math.max(60_000, fallbackMs * 2);
-      checkpointHealthy =
-        state.lastErrorCount === 0 &&
-        Number.isFinite(fullSuccess) &&
-        now - fullSuccess >= 0 && now - fullSuccess <= maxAge &&
-        now - metadata.mtimeMs >= 0 && now - metadata.mtimeMs <= maxAge;
+      ({
+        checkpointHealthy,
+        checkpointState,
+        checkpointBusy,
+        checkpointGeneration,
+        checkpointOperation,
+      } =
+        evaluateDwsCheckpointHealth({
+          state,
+          now,
+          fallbackMs,
+          modifiedAt: metadata.mtimeMs,
+        }));
     } catch {
       checkpointHealthy = false;
+      checkpointState = "failed";
+      checkpointBusy = false;
+      checkpointGeneration = 0;
+      checkpointOperation = null;
     }
   }
   const sendEnabled = configuredSendEnabled && !sendBlocked;
@@ -239,6 +254,10 @@ export async function inspectFoursdayNativeGateway({
     running,
     serviceEnabled,
     checkpointHealthy,
+    checkpointState,
+    checkpointBusy,
+    checkpointGeneration,
+    checkpointOperation,
     eventWakeEnabled,
     eventWakeReady,
     eventWakeDegraded,

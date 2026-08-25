@@ -98,6 +98,8 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.mode, "shadow");
   assert.equal(status.sendEnabled, false);
   assert.equal(status.sendBlocked, false);
+  assert.equal(status.checkpointState, "healthy");
+  assert.equal(status.checkpointBusy, false);
   assert.equal(status.eventWakeReady, true);
   assert.equal(status.eventWakeDegraded, false);
   assert.equal(status.lastWakeSource, "dws_event");
@@ -109,6 +111,49 @@ test("native Gateway status is derived from the official profile and send mode",
   });
   assert.equal(stopped.ready, false);
   assert.equal(stopped.safeStopped, false);
+});
+
+test("native Gateway distinguishes bounded queue work from a stale check", async (t) => {
+  const value = await fixture(t);
+  const checkpointPath = join(value.root, "dws.json");
+  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+  const baseline = new Date(checkpoint.lastFullSuccessAt).getTime();
+  checkpoint.checkLifecycle = {
+    status: "running",
+    generation: 3,
+    operation: "history_check",
+    wakeSource: "fallback",
+    startedAt: new Date(baseline).toISOString(),
+    completedAt: null,
+    errorCount: 0,
+  };
+  await writeFile(checkpointPath, JSON.stringify(checkpoint), { mode: 0o600 });
+  await writeFile(join(value.profileDirectory, ".env"), [
+    'DWS_PERSONAL_SEND_ENABLED="false"',
+    `DWS_PERSONAL_STATE_FILE=${JSON.stringify(checkpointPath)}`,
+    'DWS_PERSONAL_FALLBACK_MS="30000"',
+    'FOURSDAY_MODE="shadow"',
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const run = async () => ({ stdout: "Gateway is running\n" });
+  const bounded = await inspectFoursdayNativeGateway({
+    layout: value.layout,
+    run,
+    now: baseline + 70_000,
+  });
+  assert.equal(bounded.checkpointState, "busy_but_bounded");
+  assert.equal(bounded.checkpointBusy, true);
+  assert.equal(bounded.checkpointGeneration, 3);
+  assert.equal(bounded.checkpointOperation, "history_check");
+  assert.equal(bounded.ready, true);
+
+  const stale = await inspectFoursdayNativeGateway({
+    layout: value.layout,
+    run,
+    now: baseline + 121_000,
+  });
+  assert.equal(stale.checkpointState, "stale");
+  assert.equal(stale.ready, false);
 });
 
 test("native Gateway reports an active unknown-send block as not ready", async (t) => {

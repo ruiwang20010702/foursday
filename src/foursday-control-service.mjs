@@ -158,6 +158,12 @@ export class FoursdayControlService {
         sendBlocked: gateway.sendBlocked === true,
         running: gateway.running === true,
         checkpointHealthy: gateway.checkpointHealthy === true,
+        checkpointState: gateway.checkpointState ?? "stale",
+        checkpointBusy: gateway.checkpointBusy === true,
+        checkpointGeneration: Number.isSafeInteger(gateway.checkpointGeneration)
+          ? gateway.checkpointGeneration
+          : 0,
+        checkpointOperation: gateway.checkpointOperation ?? null,
         modeConsistent: gateway.modeConsistent === true,
         eventWakeEnabled: gateway.eventWakeEnabled === true,
         eventWakeReady: gateway.eventWakeReady === true,

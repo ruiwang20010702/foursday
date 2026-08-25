@@ -28,6 +28,7 @@ const pluginDirectories = Object.freeze([
   "foursday_work_twin",
 ]);
 const hostEntrypoints = Object.freeze([
+  "src/dws-checkpoint-health.mjs",
   "src/hermes-dws-sidecar.mjs",
   "src/hermes-personal-memory-context.mjs",
   "src/hermes-memory-candidate-sidecar.mjs",
