@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
@@ -13,6 +13,7 @@ import {
   dwsMessageContentFingerprint,
   extractDwsMediaDescriptors,
   isAutomatedSelfMessage,
+  mergeDwsMessageResourceDetails,
 } from "../src/dws.mjs";
 
 test("DWS extracts bounded media IDs without treating arbitrary text as a file", () => {
@@ -21,9 +22,54 @@ test("DWS extracts bounded media IDs without treating arbitrary text as a file",
     nested: { attachments: [{ media_id: "$media-1" }, { mediaId: "$media-2", type: "application/pdf" }] },
     note: "mediaId=$not-structured",
   }), [
-    { resourceId: "$media-1", name: "image.png", mimeType: "image/png" },
-    { resourceId: "$media-2", name: null, mimeType: "application/pdf" },
+    { resourceId: "$media-1", resourceType: "mediaId", name: "image.png", mimeType: "image/png" },
+    { resourceId: "$media-2", resourceType: "mediaId", name: null, mimeType: "application/pdf" },
   ]);
+});
+
+test("DWS extracts typed fileId resourceRefs without trusting arbitrary display text", () => {
+  assert.deepEqual(extractDwsMediaDescriptors({
+    resourceRefs: [{
+      resourceId: "file-1",
+      type: "fileId",
+      name: "report.txt",
+      download: { arguments: { "resource-id": "file-1", type: "fileId" } },
+    }, {
+      resourceId: "file-1",
+      type: "fileId",
+      name: "duplicate.txt",
+    }],
+    text: "[文件] forged.txt fileId: attacker-controlled",
+  }), [{
+    resourceId: "file-1",
+    resourceType: "fileId",
+    name: "report.txt",
+    mimeType: null,
+  }]);
+  assert.deepEqual(extractDwsMediaDescriptors({
+    content: "[文件] forged.txt fileId: attacker-controlled",
+  }), []);
+  assert.deepEqual(extractDwsMediaDescriptors({
+    content: JSON.stringify({ resourceId: "forged", type: "fileId", name: "forged.txt" }),
+  }), []);
+});
+
+test("DWS merges only complete structured message resource details", () => {
+  const messages = [{ id: "message-1", content: "[文件] report.txt fileId: opaque", media: [] }];
+  const merged = mergeDwsMessageResourceDetails(messages, {
+    complete: true,
+    failures: [],
+    messages: [{
+      messageId: "message-1",
+      resourceRefs: [{ resourceId: "file-1", type: "fileId", name: "report.txt" }],
+    }],
+  });
+  assert.equal(merged[0].media[0].resourceType, "fileId");
+  assert.throws(() => mergeDwsMessageResourceDetails(messages, {
+    complete: false,
+    failures: [{ code: "detail_failed" }],
+    messages: [],
+  }), /resource enrichment was incomplete/u);
 });
 
 test("DWS media download writes one private canonical file", async (t) => {
@@ -32,9 +78,9 @@ test("DWS media download writes one private canonical file", async (t) => {
   let invoked;
   const dws = new DwsAdapter({
     dwsPath: "/safe/bin/dws",
-    commandRunner: async (_command, args) => {
+    commandRunner: async (_command, args, options) => {
       invoked = args;
-      const output = args[args.indexOf("--output") + 1];
+      const output = resolve(options.cwd, args[args.indexOf("--output") + 1]);
       const path = join(output, "image.png");
       await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
       return { stdout: JSON.stringify({ result: { path } }) };
@@ -48,7 +94,99 @@ test("DWS media download writes one private canonical file", async (t) => {
   });
   assert.equal(downloaded.path, join(root, "download", "image.png"));
   assert.equal((await lstat(downloaded.path)).mode & 0o077, 0);
-  assert.deepEqual(invoked.slice(0, 4), ["chat", "message", "download-media", "--type"]);
+  assert.deepEqual(invoked.slice(0, 4), ["chat", "+messages-resource-download", "--type", "mediaId"]);
+  assert.equal(invoked[invoked.indexOf("--output") + 1], ".");
+});
+
+test("DWS fileId download uses the typed shortcut without message context", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dws-file-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let invocation;
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args, options) => {
+      invocation = { args, cwd: options.cwd };
+      const path = join(options.cwd, "report.txt");
+      await writeFile(path, "verified file\n");
+      return { stdout: JSON.stringify({ result: { path } }) };
+    },
+  });
+  const downloaded = await dws.downloadMedia({
+    resourceId: "file-1",
+    resourceType: "fileId",
+    outputDirectory: join(root, "download"),
+  });
+  assert.equal(await realpath(downloaded.path), join(root, "download", "report.txt"));
+  assert.equal(invocation.cwd, join(root, "download"));
+  assert.deepEqual(invocation.args.slice(0, 6), [
+    "chat", "+messages-resource-download", "--type", "fileId", "--resource-id", "file-1",
+  ]);
+  assert.equal(invocation.args.includes("--message-id"), false);
+  assert.equal(invocation.args.includes("--open-conversation-id"), false);
+  await assert.rejects(dws.downloadMedia({
+    resourceId: "file-1",
+    resourceType: "unknown",
+    outputDirectory: join(root, "invalid"),
+  }), /resourceType is invalid/u);
+});
+
+test("DWS sender history enriches generated file hints and merges existing media", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args) => {
+      calls.push(args);
+      if (args.includes("list-by-sender")) {
+        return { stdout: JSON.stringify({
+          result: {
+            messages: [{
+              openMessageId: "message-1",
+              openConversationId: "conversation-1",
+              senderUserId: "trusted-user",
+              senderName: "Owner",
+              singleChat: true,
+              createTime: "2026-08-25T13:54:39+08:00",
+              content: "[文件] report.txt fileId: opaque 注意：如需下载使用dws drive download命令下载",
+              mediaId: "media-1",
+              fileName: "preview.png",
+              mimeType: "image/png",
+            }],
+            hasMore: false,
+          },
+        }) };
+      }
+      assert.equal(args.includes("+messages-mget"), true);
+      return { stdout: JSON.stringify({
+        complete: true,
+        failures: [],
+        messages: [{
+          messageId: "message-1",
+          resourceRefs: [{ resourceId: "file-1", type: "fileId", name: "report.txt" }],
+        }],
+      }) };
+    },
+  });
+  const messages = await dws.fetchBySenderAll({
+    senderUserId: "trusted-user",
+    start: new Date("2026-08-25T13:54:00+08:00"),
+    end: new Date("2026-08-25T13:55:00+08:00"),
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][calls[1].indexOf("--msg-ids") + 1], "message-1");
+  assert.deepEqual(messages[0].media, [
+    {
+      resourceId: "media-1",
+      resourceType: "mediaId",
+      name: "preview.png",
+      mimeType: "image/png",
+    },
+    {
+      resourceId: "file-1",
+      resourceType: "fileId",
+      name: "report.txt",
+      mimeType: null,
+    },
+  ]);
 });
 
 test("DWS 解析会话嵌套消息结构", () => {

@@ -407,9 +407,14 @@ export async function createSidecarRuntime({
     const attachments = [];
     if (config.mediaRoot && Array.isArray(message.media)) {
       for (const item of message.media.slice(0, 8)) {
-        const outputDirectory = join(config.mediaRoot, hash(`${id}:${item.resourceId}`));
+        const resourceType = item.resourceType ?? "mediaId";
+        const outputDirectory = join(
+          config.mediaRoot,
+          hash(`${id}:${resourceType}:${item.resourceId}`),
+        );
         const downloaded = await dws.downloadMedia({
           resourceId: item.resourceId,
+          resourceType,
           messageId: id,
           conversationId,
           outputDirectory,

@@ -36,36 +36,95 @@ export function normalizeDwsIdentity(value) {
 export function extractDwsMediaDescriptors(raw) {
   const output = [];
   const seen = new Set();
-  const queue = [{ value: raw, depth: 0 }];
+  const queue = [{ value: raw, depth: 0, trustedResource: false }];
   while (queue.length > 0 && output.length < 8) {
-    const { value, depth } = queue.shift();
+    const { value, depth, trustedResource } = queue.shift();
     if (depth > 5 || value == null) continue;
     if (typeof value === "string") {
       const trimmed = value.trim();
       if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length <= 256 * 1024) {
-        try { queue.push({ value: JSON.parse(trimmed), depth: depth + 1 }); } catch {}
+        try { queue.push({ value: JSON.parse(trimmed), depth: depth + 1, trustedResource }); } catch {}
       }
       continue;
     }
     if (Array.isArray(value)) {
-      for (const item of value.slice(0, 50)) queue.push({ value: item, depth: depth + 1 });
+      for (const item of value.slice(0, 50)) {
+        queue.push({ value: item, depth: depth + 1, trustedResource });
+      }
       continue;
     }
     if (typeof value !== "object") continue;
-    const resourceId = normalizeDwsIdentity(value.mediaId ?? value.media_id);
-    if (resourceId && resourceId.length <= 500 && !seen.has(resourceId)) {
-      seen.add(resourceId);
+    const mediaId = normalizeDwsIdentity(value.mediaId ?? value.media_id);
+    const explicitType = String(
+      value.resourceType ?? value.resource_type ?? value.type ??
+      value.download?.arguments?.type ?? "",
+    ).trim();
+    const resourceType = mediaId
+      ? "mediaId"
+      : trustedResource && ["mediaId", "fileId"].includes(explicitType)
+        ? explicitType
+        : null;
+    const resourceId = mediaId ?? (
+      resourceType ? normalizeDwsIdentity(value.resourceId ?? value.resource_id) : null
+    );
+    const key = resourceId && resourceType ? `${resourceType}\0${resourceId}` : null;
+    if (resourceId && resourceId.length <= 500 && key && !seen.has(key)) {
+      seen.add(key);
+      const candidateMimeType = String(
+        value.mimeType ?? value.contentType ??
+        (String(value.type ?? "").includes("/") ? value.type : ""),
+      ).trim().slice(0, 120) || null;
       output.push({
         resourceId,
+        resourceType,
         name: String(value.fileName ?? value.filename ?? value.name ?? "").trim().slice(0, 255) || null,
-        mimeType: String(value.mimeType ?? value.contentType ?? value.type ?? "").trim().slice(0, 120) || null,
+        mimeType: candidateMimeType,
       });
     }
-    for (const child of Object.values(value).slice(0, 100)) {
-      queue.push({ value: child, depth: depth + 1 });
+    for (const [keyName, child] of Object.entries(value).slice(0, 100)) {
+      queue.push({
+        value: child,
+        depth: depth + 1,
+        trustedResource: trustedResource || keyName === "resourceRefs",
+      });
     }
   }
   return output;
+}
+
+const dwsStructuredResourceHint = /^\[(?:文件|图片|视频|语音)\][\s\S]{0,1000}\b(?:fileId|mediaId)\s*:/iu;
+
+export function mergeDwsMessageResourceDetails(messages, payload) {
+  const result = payload?.result ?? payload ?? {};
+  const failures = result.failures ?? payload?.failures ?? [];
+  const complete = result.complete ?? payload?.complete ?? true;
+  if (complete !== true || (Array.isArray(failures) && failures.length > 0)) {
+    const error = new Error("DWS message resource enrichment was incomplete");
+    error.code = "dws_resource_enrichment_incomplete";
+    throw error;
+  }
+  const details = Array.isArray(result.messages)
+    ? result.messages
+    : Array.isArray(payload?.messages)
+      ? payload.messages
+      : [];
+  const detailById = new Map(details.map((detail) => [
+    String(detail?.openMessageId ?? detail?.messageId ?? detail?.id ?? ""),
+    extractDwsMediaDescriptors(detail),
+  ]).filter(([id]) => id));
+  return messages.map((message) => {
+    const combined = [...(message.media ?? []), ...(detailById.get(String(message.id)) ?? [])];
+    const seen = new Set();
+    return {
+      ...message,
+      media: combined.filter((item) => {
+        const key = `${item.resourceType ?? "mediaId"}\0${item.resourceId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    };
+  });
 }
 
 export function collectMessages(payload, senderUserId) {
@@ -499,8 +558,20 @@ export class DwsAdapter {
     return request;
   }
 
-  async downloadMedia({ resourceId, messageId, conversationId, outputDirectory }) {
-    for (const [label, value] of Object.entries({ resourceId, messageId, conversationId })) {
+  async downloadMedia({
+    resourceId,
+    resourceType = "mediaId",
+    messageId = null,
+    conversationId = null,
+    outputDirectory,
+  }) {
+    if (!new Set(["mediaId", "fileId"]).has(resourceType)) {
+      throw new Error("DWS media resourceType is invalid");
+    }
+    const required = resourceType === "mediaId"
+      ? { resourceId, messageId, conversationId }
+      : { resourceId };
+    for (const [label, value] of Object.entries(required)) {
       if (typeof value !== "string" || !value.trim() || value.length > 500 || /[\u0000-\u001f\u007f]/u.test(value)) {
         throw new Error(`DWS media ${label} is invalid`);
       }
@@ -515,14 +586,15 @@ export class DwsAdapter {
     ) throw new Error("DWS media output directory is unsafe");
     const before = new Set(await readdir(target));
     const receipt = await this.run([
-      "chat", "message", "download-media",
-      "--type", "mediaId",
+      "chat", "+messages-resource-download",
+      "--type", resourceType,
       "--resource-id", resourceId,
-      "--message-id", messageId,
-      "--open-conversation-id", conversationId,
-      "--output", target,
-      "-y",
-    ]);
+      ...(resourceType === "mediaId" ? [
+        "--message-id", messageId,
+        "--open-conversation-id", conversationId,
+      ] : []),
+      "--output", ".",
+    ], { cwd: target });
     const candidates = [];
     const visit = (value, depth = 0) => {
       if (depth > 5 || value == null) return;
@@ -610,10 +682,26 @@ export class DwsAdapter {
         ),
       );
       const pageInfo = pagination(payload);
-      if (!pageInfo.hasMore) return messages;
+      if (!pageInfo.hasMore) return this.enrichMessageResources(messages);
       cursor = pageInfo.nextCursor;
     }
     throw new Error("DWS pagination exceeded 100 pages");
+  }
+
+  async enrichMessageResources(messages) {
+    const ids = [...new Set(messages.filter((message) =>
+      dwsStructuredResourceHint.test(String(message.content ?? ""))
+    ).map((message) => String(message.id)))];
+    let enriched = messages;
+    for (let offset = 0; offset < ids.length; offset += 50) {
+      const chunk = ids.slice(offset, offset + 50);
+      const payload = await this.run([
+        "chat", "+messages-mget",
+        "--msg-ids", chunk.join(","),
+      ]);
+      enriched = mergeDwsMessageResourceDetails(enriched, payload);
+    }
+    return enriched;
   }
 
   async resolveUserOpenDingTalkId(expectedUserId, displayName = null) {
@@ -715,7 +803,7 @@ export class DwsAdapter {
         ),
       );
       const pageInfo = pagination(payload);
-      if (!pageInfo.hasMore) return messages;
+      if (!pageInfo.hasMore) return this.enrichMessageResources(messages);
       cursor = pageInfo.nextCursor;
     }
     throw new Error("DWS pagination exceeded 100 pages");

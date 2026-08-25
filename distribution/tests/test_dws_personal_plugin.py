@@ -465,6 +465,60 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             ["bundle-1", "bundle-2"],
         )
 
+    async def test_file_message_and_followup_text_share_one_context_attachment(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 20,
+                "bundle_max_wait_ms": 2_000,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        context_path = str((Path(self.temp.name) / "state-file" / "work-contexts.json").resolve())
+        attachment = Path(self.temp.name).resolve() / "downloaded.txt"
+        attachment.write_text("verified attachment\n", encoding="utf-8")
+        attachment.chmod(0o600)
+        base = {
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "direct-file-bundle",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        }
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
+            await self.bridge.emit({
+                **base,
+                "id": "file-bundle-1",
+                "content": "[文件] downloaded.txt",
+                "attachments": [{
+                    "path": str(attachment),
+                    "name": "downloaded.txt",
+                    "mimeType": "text/plain",
+                }],
+                "createTime": "2026-08-18T14:00:00+08:00",
+            })
+            await self.bridge.emit({
+                **base,
+                "id": "file-bundle-2",
+                "content": "读取并概括这个附件",
+                "createTime": "2026-08-18T14:00:01+08:00",
+            })
+            await asyncio.sleep(0.05)
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].metadata["bundle_size"], 2)
+        token = re.search(r"fctx_[a-f0-9]{64}", self.events[0].text).group(0)
+        context = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"][token]
+        self.assertEqual(len(context["attachments"]), 1)
+        self.assertEqual(context["attachments"][0]["name"], "downloaded.txt")
+        self.assertEqual(context["attachments"][0]["path"], str(attachment))
+
     async def test_followup_bundle_is_not_stranded_while_first_agent_turn_runs(self):
         await self.adapter.disconnect()
         self.bridge = FakeBridge()

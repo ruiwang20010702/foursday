@@ -125,6 +125,7 @@ class FakeDws {
     this.media = false;
     this.downloadFailures = 0;
     this.eventWakeStopped = false;
+    this.downloadInputs = [];
   }
 
   createPersonalEventWake({ onEvent }) {
@@ -148,7 +149,12 @@ class FakeDws {
       isSelf: false,
       isWithdrawn: this.withdrawn,
       withdrawnAt: this.withdrawn ? "2026-08-18T14:00:30+08:00" : null,
-      media: this.media ? [{ resourceId: "$media-1", name: "image.png", mimeType: "image/png" }] : [],
+      media: this.media ? [{
+        resourceId: this.media === "file" ? "file-1" : "$media-1",
+        resourceType: this.media === "file" ? "fileId" : "mediaId",
+        name: this.media === "file" ? "report.txt" : "image.png",
+        mimeType: this.media === "file" ? "text/plain" : "image/png",
+      }] : [],
     }];
   }
 
@@ -190,7 +196,9 @@ class FakeDws {
     return this.readBackMessage ? [this.readBackMessage] : [];
   }
 
-  async downloadMedia({ outputDirectory }) {
+  async downloadMedia(input) {
+    const { outputDirectory } = input;
+    this.downloadInputs.push(input);
     if (this.downloadFailures > 0) {
       this.downloadFailures -= 1;
       throw new Error("temporary media failure");
@@ -677,6 +685,37 @@ test("Hermes DWS sidecar downloads message media into the private profile cache"
   assert.equal(event.record.attachments.length, 1);
   assert.equal(event.record.attachments[0].mimeType, "image/png");
   assert.match(event.record.attachments[0].path, /media\/.*\/image\.png$/u);
+  assert.equal(dws.downloadInputs[0].resourceType, "mediaId");
+});
+
+test("Hermes DWS sidecar preserves fileId type through the download boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-file-sidecar-"));
+  const frames = [];
+  const dws = new FakeDws();
+  dws.media = "file";
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: join(root, "media"),
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    now: () => new Date("2026-08-18T14:01:00+08:00"),
+  });
+  await runtime.start();
+  await runtime.stop();
+  const event = frames.find((frame) => frame.type === "event");
+  assert.equal(event.record.attachments.length, 1);
+  assert.equal(event.record.attachments[0].name, "report.txt");
+  assert.equal(dws.downloadInputs[0].resourceType, "fileId");
 });
 
 test("Hermes DWS sidecar emits allowlisted records and persists a private checkpoint", async () => {
