@@ -117,6 +117,8 @@ class FakeDws {
     this.sent = [];
     this.directCalls = 0;
     this.manualReply = false;
+    this.manualReplyFailures = 0;
+    this.manualReplyCalls = 0;
     this.withdrawn = false;
     this.receiptWithoutMessageId = false;
     this.receiptUnknown = false;
@@ -180,7 +182,14 @@ class FakeDws {
   }
 
   async hasManualReply(input) {
+    this.manualReplyCalls += 1;
     this.manualInput = input;
+    if (this.manualReplyFailures > 0) {
+      this.manualReplyFailures -= 1;
+      const error = new Error("temporary manual reply lookup failure");
+      error.code = "dws_manual_reply_temporary";
+      throw error;
+    }
     return {
       known: true,
       replied: this.manualReply,
@@ -933,7 +942,7 @@ test("Hermes DWS sidecar keeps real sending disabled unless explicitly enabled",
     dingtalkRoot: "",
     userIds: ["trusted-user"],
     groupIds: [],
-    selfUserId: null,
+    selfUserId: "owner-user",
     stateFile: join(root, "state.json"),
     initialLookbackMs: 120_000,
     fallbackMs: 300_000,
@@ -1022,7 +1031,7 @@ test("outbound quiet window lets a six-second follow-up invalidate the old reply
       dingtalkRoot: "",
       userIds: ["trusted-user"],
       groupIds: [],
-      selfUserId: null,
+      selfUserId: "owner-user",
       stateFile: join(root, "state.json"),
       mediaRoot: null,
       initialLookbackMs: 120_000,
@@ -1109,6 +1118,147 @@ test("Hermes DWS sidecar converts a verified owner reply into one communication 
   assert.equal(dws.sent.length, 0);
 });
 
+test("manual-reply probe failure degrades only the probe and recovers on the next check", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-manual-probe-"));
+  const stateFile = join(root, "state.json");
+  const diagnostics = [];
+  const dws = new FakeDws();
+  dws.manualReplyFailures = 2;
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: () => {},
+    diagnose: (value) => diagnostics.push(value),
+    wait: async () => {},
+    now: () => new Date("2026-08-25T16:43:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    const degraded = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(degraded.lastErrorCount, 0);
+    assert.equal(degraded.checkLifecycle.status, "completed");
+    assert.equal(degraded.manualReplyProbe.ready, false);
+    assert.equal(degraded.manualReplyProbe.errorCode, "dws_manual_reply_temporary");
+    assert.deepEqual(diagnostics, [
+      "dws_sidecar_manual_reply_probe_failed:dws_manual_reply_temporary",
+    ]);
+
+    await runtime.check({ wakeSource: "fallback" });
+    const recovered = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(recovered.lastErrorCount, 0);
+    assert.equal(recovered.manualReplyProbe.ready, true);
+    assert.equal(recovered.manualReplyProbe.errorCode, null);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("send boundary suppresses output while manual-reply verification is unavailable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-manual-send-gate-"));
+  const stateFile = join(root, "state.json");
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+    wait: async () => {},
+    now: () => new Date("2026-08-25T16:43:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    dws.manualReplyFailures = 2;
+    const suppressed = await runtime.send({
+      conversationId: "conversation-1",
+      content: "must not leave the host",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(suppressed.success, false);
+    assert.equal(suppressed.staleGeneration, true);
+    assert.equal(suppressed.manualReplyUnknown, true);
+    assert.equal(suppressed.sendSuspended, true);
+    assert.equal(dws.sent.length, 0);
+    let persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(persisted.sendLedger, {});
+    assert.equal(persisted.manualReplyProbe.ready, false);
+
+    const recovered = await runtime.send({
+      conversationId: "conversation-1",
+      content: "safe after a fresh probe",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(recovered.success, true);
+    assert.equal(dws.sent.length, 1);
+    persisted = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(persisted.manualReplyProbe.ready, true);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("send boundary suppresses output when an owner reply is detected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-manual-detected-"));
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    now: () => new Date("2026-08-25T16:43:12+08:00"),
+  });
+  try {
+    await runtime.start();
+    dws.manualReply = true;
+    const suppressed = await runtime.send({
+      conversationId: "conversation-1",
+      content: "late answer",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(suppressed.success, false);
+    assert.equal(suppressed.staleGeneration, true);
+    assert.equal(suppressed.manualReplyDetected, true);
+    assert.equal(dws.sent.length, 0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("Hermes DWS sidecar emits withdrawal audit without replaying message content", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-withdrawn-"));
   const frames = [];
@@ -1149,7 +1299,7 @@ test("Hermes DWS sidecar marks an explicit send without server message id as unk
       dingtalkRoot: "",
       userIds: ["trusted-user"],
       groupIds: [],
-      selfUserId: null,
+      selfUserId: "owner-user",
       stateFile: join(root, "state.json"),
       initialLookbackMs: 120_000,
       fallbackMs: 300_000,
@@ -1212,7 +1362,7 @@ test("Hermes DWS sidecar reuses a completed send receipt after restart", async (
     dingtalkRoot: "",
     userIds: ["trusted-user"],
     groupIds: [],
-    selfUserId: null,
+    selfUserId: "owner-user",
     stateFile,
     initialLookbackMs: 120_000,
     fallbackMs: 300_000,
@@ -1265,7 +1415,7 @@ test("Hermes DWS sidecar restart keeps dedupe and recipient recovery", async () 
     dingtalkRoot: "",
     userIds: ["trusted-user"],
     groupIds: [],
-    selfUserId: null,
+    selfUserId: "owner-user",
     stateFile,
     initialLookbackMs: 120_000,
     fallbackMs: 300_000,
@@ -1326,7 +1476,7 @@ test("Hermes DWS sidecar verifies a missing receipt id by exact DWS readback", a
       dingtalkRoot: "",
       userIds: ["trusted-user"],
       groupIds: [],
-      selfUserId: null,
+      selfUserId: "owner-user",
       stateFile: join(root, "state.json"),
       initialLookbackMs: 120_000,
       fallbackMs: 300_000,
@@ -1366,7 +1516,7 @@ test("Hermes DWS sidecar verifies Markdown-transformed readback without an AI ma
       dingtalkRoot: "",
       userIds: ["trusted-user"],
       groupIds: [],
-      selfUserId: null,
+      selfUserId: "owner-user",
       stateFile,
       initialLookbackMs: 120_000,
       fallbackMs: 300_000,
@@ -1409,7 +1559,7 @@ test("Hermes DWS sidecar resolves an ambiguous receipt through exact readback", 
       dingtalkRoot: "",
       userIds: ["trusted-user"],
       groupIds: [],
-      selfUserId: null,
+      selfUserId: "owner-user",
       stateFile: join(root, "state.json"),
       initialLookbackMs: 120_000,
       fallbackMs: 300_000,

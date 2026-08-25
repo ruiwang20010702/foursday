@@ -60,6 +60,7 @@ async function fixture(t, {
   await writeFile(join(root, "dws.json"), `${JSON.stringify({
     lastFullSuccessAt: new Date(Date.now() - 1_000).toISOString(),
     lastErrorCount: 0,
+    manualReplyProbe: { ready: true, errorCode: null },
     sendBlocked: false,
     eventWake: { ready: true },
   })}\n`, { mode: 0o600 });
@@ -144,6 +145,8 @@ test("runtime status tool reads live Profile state instead of project memory", a
   assert.equal(result.checkpointBusy, false);
   assert.equal(result.checkpointGeneration, 0);
   assert.equal(result.checkpointOperation, null);
+  assert.equal(result.manualReplyProbeReady, true);
+  assert.equal(result.manualReplyProbeDegraded, false);
   assert.equal(result.eventWakeReady, true);
 
   const called = await handleFoursdayMcpRequest({

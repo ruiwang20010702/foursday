@@ -30,6 +30,12 @@ function hash(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 16);
 }
 
+function diagnosticCode(error, fallback = "error") {
+  return String(error?.code ?? error?.name ?? fallback)
+    .replaceAll(/[^A-Za-z0-9_.-]/gu, "_")
+    .slice(0, 80) || fallback;
+}
+
 function taskId(conversationId, participantUserId) {
   return createHash("sha256")
     .update(`${String(conversationId)}:${String(participantUserId)}`)
@@ -129,6 +135,7 @@ function emptyState() {
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
     checkLifecycle: normalizeDwsCheckLifecycle(),
     sendBlocked: false, sendBlockReason: null, sendBlockedAt: null,
+    manualReplyProbe: { ready: null, errorCode: null, updatedAt: null },
     lastWakeSource: null,
     lastDetection: null,
     eventWake: { enabled: false, ready: false, errorCode: null, updatedAt: null },
@@ -184,6 +191,17 @@ async function loadState(path) {
       sendBlockedAt: typeof parsed?.sendBlockedAt === "string"
         ? parsed.sendBlockedAt
         : null,
+      manualReplyProbe: {
+        ready: typeof parsed?.manualReplyProbe?.ready === "boolean"
+          ? parsed.manualReplyProbe.ready
+          : null,
+        errorCode: typeof parsed?.manualReplyProbe?.errorCode === "string"
+          ? parsed.manualReplyProbe.errorCode.slice(0, 80)
+          : null,
+        updatedAt: typeof parsed?.manualReplyProbe?.updatedAt === "string"
+          ? parsed.manualReplyProbe.updatedAt
+          : null,
+      },
       lastCheckAt: typeof parsed?.lastCheckAt === "string" ? parsed.lastCheckAt : null,
       lastFullSuccessAt:
         typeof parsed?.lastFullSuccessAt === "string" ? parsed.lastFullSuccessAt : null,
@@ -363,6 +381,7 @@ export async function createSidecarRuntime({
       lastErrorCount: state.lastErrorCount,
       lastWakeSource: state.lastWakeSource,
       checkLifecycle: state.checkLifecycle,
+      manualReplyProbe: state.manualReplyProbe,
     });
     const current = stateWrite.catch(() => {}).then(async () => {
       const stored = await loadState(config.stateFile);
@@ -377,6 +396,41 @@ export async function createSidecarRuntime({
     state.sendBlockReason = String(reason ?? "send_outcome_unknown").slice(0, 80);
     state.sendBlockedAt = now().toISOString();
     await persistState();
+  };
+  const probeManualReply = async (input) => {
+    if (!config.selfUserId || typeof dws.hasManualReply !== "function") {
+      const error = new Error("DWS manual-reply verification is unavailable");
+      error.code = "dws_manual_reply_probe_unavailable";
+      throw error;
+    }
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await dws.hasManualReply(input);
+        if (result?.known !== true) {
+          const error = new Error("DWS manual-reply verification is inconclusive");
+          error.code = "dws_manual_reply_probe_unknown";
+          throw error;
+        }
+        state.manualReplyProbe = {
+          ready: true,
+          errorCode: null,
+          updatedAt: now().toISOString(),
+        };
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) await wait(250);
+      }
+    }
+    const code = diagnosticCode(lastError, "dws_manual_reply_probe_failed");
+    state.manualReplyProbe = {
+      ready: false,
+      errorCode: code,
+      updatedAt: now().toISOString(),
+    };
+    diagnose(`dws_sidecar_manual_reply_probe_failed:${code}`);
+    throw lastError;
   };
 
   const remember = (id) => {
@@ -650,7 +704,7 @@ export async function createSidecarRuntime({
           if (takeoverReported.has(conversationId)) continue;
           let manual;
           try {
-            manual = await dws.hasManualReply({
+            manual = await probeManualReply({
               conversationId,
               selfUserId: config.selfUserId,
               after: active.after,
@@ -658,7 +712,6 @@ export async function createSidecarRuntime({
               automatedSendEvidence,
             });
           } catch (error) {
-            errors.push(error);
             continue;
           }
           if (manual?.known === true && manual.replied === true) {
@@ -979,6 +1032,34 @@ export async function createSidecarRuntime({
           success: false,
           outcomeUnknown: true,
           error: "DWS send has an unresolved prior intent",
+        };
+      }
+      let manualReply;
+      try {
+        manualReply = await probeManualReply({
+          conversationId,
+          selfUserId: config.selfUserId,
+          after: active?.after,
+          now: now(),
+          automatedSendEvidence,
+        });
+      } catch {
+        await persistState();
+        return {
+          success: false,
+          staleGeneration: true,
+          manualReplyUnknown: true,
+          sendSuspended: true,
+          error: "DWS manual-reply verification is unavailable",
+        };
+      }
+      if (manualReply.replied === true) {
+        await persistState();
+        return {
+          success: false,
+          staleGeneration: true,
+          manualReplyDetected: true,
+          error: "DWS detected an owner reply before transport",
         };
       }
       const idempotencyKey = idempotencyUuid(sendKey);

@@ -164,6 +164,11 @@ export class FoursdayControlService {
           ? gateway.checkpointGeneration
           : 0,
         checkpointOperation: gateway.checkpointOperation ?? null,
+        manualReplyProbeReady: typeof gateway.manualReplyProbeReady === "boolean"
+          ? gateway.manualReplyProbeReady
+          : null,
+        manualReplyProbeDegraded: gateway.manualReplyProbeDegraded === true,
+        manualReplyProbeErrorCode: gateway.manualReplyProbeErrorCode ?? null,
         modeConsistent: gateway.modeConsistent === true,
         eventWakeEnabled: gateway.eventWakeEnabled === true,
         eventWakeReady: gateway.eventWakeReady === true,

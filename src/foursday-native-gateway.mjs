@@ -193,6 +193,9 @@ export async function inspectFoursdayNativeGateway({
   let checkpointBusy = false;
   let checkpointGeneration = 0;
   let checkpointOperation = null;
+  let manualReplyProbeReady = null;
+  let manualReplyProbeDegraded = false;
+  let manualReplyProbeErrorCode = null;
   let eventWakeEnabled = false;
   let eventWakeReady = false;
   let eventWakeDegraded = false;
@@ -215,6 +218,13 @@ export async function inspectFoursdayNativeGateway({
         : null;
       lastDetectionLatencyMs = Number.isFinite(Number(state.lastDetection?.latencyMs))
         ? Math.max(0, Number(state.lastDetection.latencyMs))
+        : null;
+      manualReplyProbeReady = typeof state.manualReplyProbe?.ready === "boolean"
+        ? state.manualReplyProbe.ready
+        : null;
+      manualReplyProbeDegraded = manualReplyProbeReady === false;
+      manualReplyProbeErrorCode = typeof state.manualReplyProbe?.errorCode === "string"
+        ? state.manualReplyProbe.errorCode.slice(0, 80)
         : null;
       ({
         checkpointHealthy,
@@ -258,6 +268,9 @@ export async function inspectFoursdayNativeGateway({
     checkpointBusy,
     checkpointGeneration,
     checkpointOperation,
+    manualReplyProbeReady,
+    manualReplyProbeDegraded,
+    manualReplyProbeErrorCode,
     eventWakeEnabled,
     eventWakeReady,
     eventWakeDegraded,

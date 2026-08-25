@@ -18,6 +18,7 @@ async function fixture(t) {
   await writeFile(checkpoint, JSON.stringify({
     lastFullSuccessAt: new Date(now).toISOString(),
     lastErrorCount: 0,
+    manualReplyProbe: { ready: true, errorCode: null },
     eventWake: { enabled: true, ready: true, errorCode: null },
     lastWakeSource: "dws_event",
     lastDetection: { latencyMs: 250 },
@@ -100,6 +101,8 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.sendBlocked, false);
   assert.equal(status.checkpointState, "healthy");
   assert.equal(status.checkpointBusy, false);
+  assert.equal(status.manualReplyProbeReady, true);
+  assert.equal(status.manualReplyProbeDegraded, false);
   assert.equal(status.eventWakeReady, true);
   assert.equal(status.eventWakeDegraded, false);
   assert.equal(status.lastWakeSource, "dws_event");
@@ -111,6 +114,28 @@ test("native Gateway status is derived from the official profile and send mode",
   });
   assert.equal(stopped.ready, false);
   assert.equal(stopped.safeStopped, false);
+});
+
+test("native Gateway exposes a degraded manual-reply probe without failing message intake", async (t) => {
+  const value = await fixture(t);
+  const checkpointPath = join(value.root, "dws.json");
+  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+  checkpoint.manualReplyProbe = {
+    ready: false,
+    errorCode: "dws_manual_reply_temporary",
+    updatedAt: new Date().toISOString(),
+  };
+  await writeFile(checkpointPath, JSON.stringify(checkpoint), { mode: 0o600 });
+  const status = await inspectFoursdayNativeGateway({
+    layout: value.layout,
+    run: async () => ({ stdout: "Gateway is running\n" }),
+    now: Date.now() + 1_000,
+  });
+  assert.equal(status.ready, true);
+  assert.equal(status.checkpointState, "healthy");
+  assert.equal(status.manualReplyProbeReady, false);
+  assert.equal(status.manualReplyProbeDegraded, true);
+  assert.equal(status.manualReplyProbeErrorCode, "dws_manual_reply_temporary");
 });
 
 test("native Gateway distinguishes bounded queue work from a stale check", async (t) => {

@@ -63,6 +63,8 @@ async function fixture(t) {
       running: true, checkpointHealthy: true, checkpointState: "busy_but_bounded",
       checkpointBusy: true, modeConsistent: true,
       checkpointGeneration: 9, checkpointOperation: "history_check",
+      manualReplyProbeReady: false, manualReplyProbeDegraded: true,
+      manualReplyProbeErrorCode: "dws_manual_reply_temporary",
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
@@ -78,6 +80,9 @@ test("control service projects tasks, schedules, memory and evidence without pri
   assert.equal(status.gateway.checkpointBusy, true);
   assert.equal(status.gateway.checkpointGeneration, 9);
   assert.equal(status.gateway.checkpointOperation, "history_check");
+  assert.equal(status.gateway.manualReplyProbeReady, false);
+  assert.equal(status.gateway.manualReplyProbeDegraded, true);
+  assert.equal(status.gateway.manualReplyProbeErrorCode, "dws_manual_reply_temporary");
   assert.equal(status.gateway.sendBlocked, false);
   assert.equal(status.gateway.lastWakeSource, "filesystem");
   assert.equal(status.gateway.lastDetectionLatencyMs, 1250);

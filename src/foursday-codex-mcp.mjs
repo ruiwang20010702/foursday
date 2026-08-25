@@ -339,6 +339,9 @@ export async function readFoursdayRuntimeStatus(input, {
       fallbackMs,
       modifiedAt: stateFile.modifiedAt,
     });
+  const manualReplyProbeReady = typeof state.manualReplyProbe?.ready === "boolean"
+    ? state.manualReplyProbe.ready
+    : null;
   return {
     asOf: new Date(currentTime).toISOString(),
     source: "live_profile",
@@ -352,6 +355,11 @@ export async function readFoursdayRuntimeStatus(input, {
     checkpointBusy,
     checkpointGeneration,
     checkpointOperation,
+    manualReplyProbeReady,
+    manualReplyProbeDegraded: manualReplyProbeReady === false,
+    manualReplyProbeErrorCode: typeof state.manualReplyProbe?.errorCode === "string"
+      ? state.manualReplyProbe.errorCode.slice(0, 80)
+      : null,
     eventWakeReady: state.eventWake?.ready === true,
   };
 }
