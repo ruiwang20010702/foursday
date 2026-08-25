@@ -145,9 +145,11 @@ export function appServerSession({
   expectedFact,
   prompt = null,
   timeoutMs = 180_000,
+  spawnCommand = process.execPath,
+  spawnArgs = [proxyPath, "app-server"],
 }) {
   return new Promise((accept, reject) => {
-    const child = spawn(process.execPath, [proxyPath, "app-server"], {
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: workspace,
       env: environment,
       stdio: ["pipe", "pipe", "pipe"],
@@ -211,6 +213,8 @@ export function appServerSession({
           child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: decision })}\n`);
           return;
         }
+        finish(new Error(`Foursday Codex shadow received unsupported server request: ${String(message.method).slice(0, 120)}`));
+        return;
       }
       const params = message.params && typeof message.params === "object" ? message.params : {};
       const nestedTurn = params.turn && typeof params.turn === "object" ? params.turn : {};

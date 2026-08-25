@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  appServerSession,
   runFoursdayCodexShadow,
   shadowNotificationBelongsToTurn,
   shadowServerDecision,
@@ -65,6 +66,29 @@ test("shadow client approves terminal reads but refuses all file changes", () =>
     method: "item/fileChange/requestApproval",
   }), { decision: "decline" });
   assert.equal(shadowServerDecision({ method: "unknown" }), null);
+});
+
+test("shadow client fails fast instead of hanging on an unsupported server request", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-shadow-request-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fakeServer = join(root, "fake-app-server.mjs");
+  await writeFile(fakeServer, [
+    'process.stdin.setEncoding("utf8");',
+    'let sent = false;',
+    'process.stdin.on("data", () => {',
+    '  if (sent) return;',
+    '  sent = true;',
+    '  process.stdout.write(JSON.stringify({ id: "request-1", method: "tool/requestUserInput", params: {} }) + "\\n");',
+    '});',
+  ].join("\n"), { mode: 0o600 });
+  await assert.rejects(appServerSession({
+    environment: {},
+    workspace: root,
+    expectedFact: "",
+    timeoutMs: 2_000,
+    spawnCommand: process.execPath,
+    spawnArgs: [fakeServer],
+  }), /unsupported server request: tool\/requestUserInput/u);
 });
 
 test("shadow verification proves evidence use and an unchanged ephemeral workspace", async (t) => {

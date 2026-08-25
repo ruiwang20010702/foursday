@@ -102,6 +102,8 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexConfigContent, /trust_level = "untrusted"/u);
   assert.match(plan.codexConfigContent, /\[mcp_servers\.foursday\]/u);
   assert.match(plan.codexConfigContent, /foursday-codex-mcp\.mjs/u);
+  assert.match(plan.codexConfigContent, /startup_timeout_sec = 5/u);
+  assert.match(plan.codexConfigContent, /tool_timeout_sec = 10/u);
   assert.match(plan.codexConfigContent, /foursday_runtime_status/u);
   assert.match(plan.codexConfigContent, /FOURSDAY_PROFILE_RELEASE_FILE/u);
   assert.match(plan.codexConfigContent, /foursday_stage_attachment/u);

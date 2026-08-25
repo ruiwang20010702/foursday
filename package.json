@@ -41,6 +41,7 @@
     "runtime:gateway": "node scripts/管理FoursdayGateway.mjs",
     "runtime:accept": "node scripts/生成Foursday影子验收.mjs",
     "runtime:activate": "node scripts/管理FoursdayGateway.mjs activate",
+    "runtime:verify-mcp": "node scripts/验证RuntimeMCP可靠性.mjs",
     "memory:promote": "node scripts/运行个人gbrain记忆晋升.mjs --once",
     "reuse:verify": "node --test test/foursday-cli.test.mjs test/hermes-package.test.mjs test/foursday-hermes-native-install.test.mjs",
     "check": "node scripts/运行代码检查.mjs",

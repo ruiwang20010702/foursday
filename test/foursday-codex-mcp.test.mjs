@@ -113,6 +113,17 @@ test("Codex MCP advertises bounded memory, attachment and live-status tools", as
     "foursday_runtime_status",
   ]);
   assert.ok(listed.result.tools[0].inputSchema.required.includes("contextToken"));
+  assert.deepEqual(listed.result.tools.map((tool) => tool.annotations.readOnlyHint), [
+    false, true, false, true, true,
+  ]);
+  assert.equal(listed.result.tools.every((tool) => tool.annotations.destructiveHint === false), true);
+  assert.equal(listed.result.tools.every((tool) => tool.annotations.idempotentHint === true), true);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.annotations.openWorldHint), [
+    true, false, false, true, false,
+  ]);
+
+  const ping = await handleFoursdayMcpRequest({ jsonrpc: "2.0", id: 21, method: "ping" });
+  assert.deepEqual(ping.result, {});
 });
 
 test("runtime status tool reads live Profile state instead of project memory", async (t) => {
@@ -272,6 +283,32 @@ test("MCP authorization is layered by verified direct, group and cron scope", as
   assert.equal(requested.maxTotalBytes, 12 * 1024);
   assert.equal(memory.sourceId, "default");
   assert.equal(memory.readOnly, true);
+});
+
+test("project memory reuses one verified read-only client inside the MCP process", async (t) => {
+  const value = await fixture(t);
+  const cache = new Map();
+  let created = 0;
+  const options = {
+    environment: value.environment,
+    cwd: value.root,
+    clientCache: cache,
+    createClient: async () => {
+      created += 1;
+      return { id: "cached-read-only-client" };
+    },
+    readMemory: async ({ client }) => ({
+      available: true,
+      pages: [{ slug: "projects/example", title: client.id, content: "Stable context" }],
+    }),
+  };
+  const [first, second] = await Promise.all([
+    readFoursdayProjectMemory({ contextToken: value.token }, options),
+    readFoursdayProjectMemory({ contextToken: value.token }, options),
+  ]);
+  assert.equal(created, 1);
+  assert.equal(first.pages[0].title, "cached-read-only-client");
+  assert.deepEqual(second, first);
 });
 
 test("expired, wrong-workspace and broadly-readable work contexts fail closed", async (t) => {

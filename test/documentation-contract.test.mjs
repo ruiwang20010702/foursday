@@ -30,6 +30,7 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
     "runtime:configure",
     "runtime:gateway",
     "runtime:setup",
+    "runtime:verify-mcp",
   ]);
   assert.equal(packageJson.dependencies["@larksuiteoapi/node-sdk"], undefined);
 });

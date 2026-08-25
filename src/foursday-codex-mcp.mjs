@@ -21,10 +21,17 @@ const stageAttachmentToolName = "foursday_stage_attachment";
 const readProjectMemoryToolName = "foursday_read_project_memory";
 const runtimeStatusToolName = "foursday_runtime_status";
 const fullReleaseSha = /^[a-f0-9]{40}$/u;
+const projectMemoryClientCache = new Map();
 
 export const foursdayCodexTool = Object.freeze({
   name: toolName,
   description: "Queue one verified, low-risk project fact for the owner's personal gbrain.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
   inputSchema: {
     type: "object",
     properties: {
@@ -62,6 +69,12 @@ export const foursdayCodexTool = Object.freeze({
 export const foursdayListAttachmentsTool = Object.freeze({
   name: listAttachmentsToolName,
   description: "List the current DWS message attachments without exposing host paths.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
   inputSchema: {
     type: "object",
     properties: {
@@ -75,6 +88,12 @@ export const foursdayListAttachmentsTool = Object.freeze({
 export const foursdayStageAttachmentTool = Object.freeze({
   name: stageAttachmentToolName,
   description: "Copy one current DWS attachment into the routed project .foursday-inbox for local Codex/Python inspection.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
   inputSchema: {
     type: "object",
     properties: {
@@ -89,6 +108,12 @@ export const foursdayStageAttachmentTool = Object.freeze({
 export const foursdayReadProjectMemoryTool = Object.freeze({
   name: readProjectMemoryToolName,
   description: "Read only the personal-gbrain pages registered for the current routed project.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
   inputSchema: {
     type: "object",
     properties: {
@@ -102,6 +127,12 @@ export const foursdayReadProjectMemoryTool = Object.freeze({
 export const foursdayRuntimeStatusTool = Object.freeze({
   name: runtimeStatusToolName,
   description: "Read the current live Foursday Profile version, mode, send gate and DWS checkpoint. Use this for every current runtime-status question; never answer those from memory or chat history.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
   inputSchema: {
     type: "object",
     properties: {
@@ -316,13 +347,31 @@ export async function readFoursdayProjectMemory(input, {
   now = Date.now(),
   createClient = createHermesPersonalMemoryClient,
   readMemory = readHermesProjectMemoryContext,
+  clientCache = createClient === createHermesPersonalMemoryClient
+    ? projectMemoryClientCache
+    : null,
 } = {}) {
   const context = await attachmentContext(input, { environment, cwd, now });
   const registryPath = environment.FOURSDAY_PROJECT_REGISTRY;
   const configPath = environment.FOURSDAY_PRODUCTION_CONFIG;
   if (!registryPath || !configPath) throw new Error("foursday_mcp_unconfigured");
   const slugs = await registeredProjectMemorySlugs(registryPath, context.projectId);
-  const client = await createClient({ configPath });
+  let client;
+  if (clientCache) {
+    let pendingClient = clientCache.get(configPath);
+    if (!pendingClient) {
+      pendingClient = Promise.resolve(createClient({ configPath }));
+      clientCache.set(configPath, pendingClient);
+    }
+    try {
+      client = await pendingClient;
+    } catch (error) {
+      if (clientCache.get(configPath) === pendingClient) clientCache.delete(configPath);
+      throw error;
+    }
+  } else {
+    client = await createClient({ configPath });
+  }
   const result = await readMemory({ client, slugs, maxTotalBytes: 12 * 1024 });
   return {
     projectId: context.projectId,
@@ -382,12 +431,14 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
   if (!request || request.jsonrpc !== "2.0") return errorResponse(request?.id ?? null, -32600, "Invalid request");
   if (request.method === "initialize") {
     return response(request.id, {
-      protocolVersion: request.params?.protocolVersion ?? "2025-03-26",
+      protocolVersion: request.params?.protocolVersion ?? "2025-06-18",
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: "foursday", version: "0.1.0" },
+      instructions: "Foursday project-scoped work tools. Use only the current connector-issued context token. Read-only tools never require approval; staged files and memory candidates remain bounded, idempotent and non-destructive.",
     });
   }
   if (request.method === "notifications/initialized") return null;
+  if (request.method === "ping") return response(request.id, {});
   if (request.method === "tools/list") {
     return response(request.id, {
       tools: [
