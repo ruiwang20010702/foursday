@@ -10,6 +10,7 @@
 - In enterprise mode, limited explicit history fetches to the owner's self-chat so current-organization coworkers use one verified enterprise scan instead of redundant per-user scans; preserved safe target diagnostics for enterprise failures.
 - Added one bounded retry for an explicitly incomplete enterprise search projection; timeouts, authentication failures, unknown send outcomes, and a second incomplete result still fail closed.
 - Moved enterprise global scans ten seconds behind the live projection edge while preserving overlapping checkpoints, preventing persistent `scan_incomplete` without accepting partial results or adding a long fixed delay.
+- Split broad enterprise history windows into complete two-minute slices and deduplicated by stable message ID, so a ten-minute reconcile no longer exceeds DWS's 500-item page-all boundary.
 
 ## 0.8.0-rc.1 - 2026-08-24
 

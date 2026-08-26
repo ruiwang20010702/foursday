@@ -865,53 +865,68 @@ export class DwsAdapter {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
       throw new Error("DWS enterprise message timeout is invalid");
     }
+    if (end.getTime() - start.getTime() > 60 * 60 * 1_000) {
+      throw new Error("DWS enterprise message range is too broad");
+    }
     const ownerUserId = normalizeDwsIdentity(selfUserId);
-    const searchArgs = [
-      "chat", "message", "search-advanced",
-      "--start", isoWithOffset(start),
-      "--end", isoWithOffset(end),
-      "--limit", "100",
-      "--page-all",
-      "--page-limit", "20",
-      "--max-items", "500",
-    ];
-    let payload;
-    let scanComplete = false;
-    let incompleteReason = "not_complete";
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      payload = await this.run(searchArgs, { timeout: timeoutMs });
-      const result = payload?.result ?? payload ?? {};
-      const failures = result.failures ?? payload?.failures ?? [];
-      const hasMore = result.hasMore ?? payload?.hasMore;
-      const complete = result.complete ?? payload?.complete ?? (hasMore === false);
-      const truncated = [
-        result.truncated, payload?.truncated,
-        result.truncatedByPageLimit, payload?.truncatedByPageLimit,
-        result.truncatedByResultLimit, payload?.truncatedByResultLimit,
-      ].some((value) => value === true);
-      scanComplete = complete === true && hasMore !== true && !truncated &&
-        (!Array.isArray(failures) || failures.length === 0);
-      incompleteReason = Array.isArray(failures) && failures.length > 0
-        ? "failures"
-        : truncated
-          ? "truncated"
-          : hasMore === true
-            ? "has_more"
-            : "not_complete";
-      if (scanComplete) break;
-      if (attempt === 0) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    const payloads = [];
+    const sliceMs = 2 * 60 * 1_000;
+    for (let sliceStart = start.getTime(); sliceStart < end.getTime(); sliceStart += sliceMs) {
+      const sliceEnd = Math.min(end.getTime(), sliceStart + sliceMs);
+      const searchArgs = [
+        "chat", "message", "search-advanced",
+        "--start", isoWithOffset(new Date(sliceStart)),
+        "--end", isoWithOffset(new Date(sliceEnd)),
+        "--limit", "100",
+        "--page-all",
+        "--page-limit", "20",
+        "--max-items", "500",
+      ];
+      let payload;
+      let scanComplete = false;
+      let incompleteReason = "not_complete";
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        payload = await this.run(searchArgs, { timeout: timeoutMs });
+        const result = payload?.result ?? payload ?? {};
+        const failures = result.failures ?? payload?.failures ?? [];
+        const hasMore = result.hasMore ?? payload?.hasMore;
+        const complete = result.complete ?? payload?.complete ?? (hasMore === false);
+        const truncated = [
+          result.truncated, payload?.truncated,
+          result.truncatedByPageLimit, payload?.truncatedByPageLimit,
+          result.truncatedByResultLimit, payload?.truncatedByResultLimit,
+        ].some((value) => value === true);
+        scanComplete = complete === true && hasMore !== true && !truncated &&
+          (!Array.isArray(failures) || failures.length === 0);
+        incompleteReason = Array.isArray(failures) && failures.length > 0
+          ? "failures"
+          : truncated
+            ? "truncated"
+            : hasMore === true
+              ? "has_more"
+              : "not_complete";
+        if (scanComplete) break;
+        if (attempt === 0) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      }
+      if (!scanComplete) {
+        const error = new Error("DWS enterprise message slice was incomplete after one bounded retry");
+        error.code = `dws_enterprise_scan_incomplete_${incompleteReason}`;
+        throw error;
+      }
+      payloads.push(payload);
     }
-    if (!scanComplete) {
-      const error = new Error("DWS enterprise message scan was incomplete after one bounded retry");
-      error.code = `dws_enterprise_scan_incomplete_${incompleteReason}`;
-      throw error;
-    }
-    const messages = collectMessages(payload, null).filter((message) =>
-      message.singleChat === true && message.isSelf !== true &&
-      (!ownerUserId || message.senderUserId !== ownerUserId) &&
-      typeof message.id === "string" && Boolean(message.id) &&
-      typeof message.senderUserId === "string" && Boolean(message.senderUserId)
-    );
+    const seenMessageIds = new Set();
+    const messages = payloads.flatMap((payload) => collectMessages(payload, null)).filter((message) => {
+      if (
+        message.singleChat !== true || message.isSelf === true ||
+        (ownerUserId && message.senderUserId === ownerUserId) ||
+        typeof message.id !== "string" || !message.id ||
+        typeof message.senderUserId !== "string" || !message.senderUserId ||
+        seenMessageIds.has(message.id)
+      ) return false;
+      seenMessageIds.add(message.id);
+      return true;
+    });
     const output = [];
     for (const message of messages.slice(0, 500)) {
       try {

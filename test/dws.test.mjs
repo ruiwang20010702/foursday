@@ -652,7 +652,7 @@ test("enterprise direct scan retries one incomplete projection before failing cl
   };
   assert.deepEqual(await dws.fetchEnterpriseDirect({
     start: new Date("2026-08-26T14:00:00+08:00"),
-    end: new Date("2026-08-26T14:10:00+08:00"),
+    end: new Date("2026-08-26T14:01:00+08:00"),
   }), []);
   assert.equal(attempts, 2);
 });
@@ -666,9 +666,48 @@ test("enterprise direct scan reports the bounded incompleteness reason", async (
   };
   await assert.rejects(dws.fetchEnterpriseDirect({
     start: new Date("2026-08-26T14:00:00+08:00"),
-    end: new Date("2026-08-26T14:10:00+08:00"),
+    end: new Date("2026-08-26T14:01:00+08:00"),
   }), (error) => error.code === "dws_enterprise_scan_incomplete_failures");
   assert.equal(attempts, 2);
+});
+
+test("enterprise direct scan splits broad history into complete two-minute slices", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async (args) => {
+    calls.push(args);
+    return {
+      result: {
+        complete: true,
+        hasMore: false,
+        failures: [],
+        conversationMessagesList: [{
+          singleChat: true,
+          openConversationId: "conversation",
+          messages: [{
+            openMessageId: "same-message",
+            senderUserId: "enterprise-user",
+            senderName: "Employee",
+            createTime: "2026-08-26T14:01:00+08:00",
+            content: "bounded evidence",
+            isSelf: false,
+          }],
+        }],
+      },
+    };
+  };
+  dws.verifyEnterpriseUser = async () => ({
+    userId: "enterprise-user",
+    openDingTalkId: "open-enterprise",
+  });
+  dws.enrichMessageResources = async (rows) => rows;
+  const rows = await dws.fetchEnterpriseDirect({
+    start: new Date("2026-08-26T14:00:00+08:00"),
+    end: new Date("2026-08-26T14:10:00+08:00"),
+  });
+  assert.equal(calls.length, 5);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "same-message");
 });
 
 test("DWS personal event wake waits for ready and forwards only valid event signals", async () => {
