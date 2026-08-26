@@ -164,7 +164,8 @@ async function timedCall(request, threadId, tool, args) {
   });
   const elapsedMs = performance.now() - started;
   if (result?.isError === true) {
-    throw new Error(`Runtime MCP ${tool} returned an error`);
+    const code = String(result?.structuredContent?.error ?? "unknown").slice(0, 120);
+    throw new Error(`Runtime MCP ${tool} returned an error: ${code}`);
   }
   return { elapsedMs, result };
 }
