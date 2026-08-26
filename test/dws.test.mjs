@@ -657,6 +657,20 @@ test("enterprise direct scan retries one incomplete projection before failing cl
   assert.equal(attempts, 2);
 });
 
+test("enterprise direct scan reports the bounded incompleteness reason", async () => {
+  let attempts = 0;
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async () => {
+    attempts += 1;
+    return { result: { complete: false, hasMore: false, failures: [{ code: "source_pending" }] } };
+  };
+  await assert.rejects(dws.fetchEnterpriseDirect({
+    start: new Date("2026-08-26T14:00:00+08:00"),
+    end: new Date("2026-08-26T14:10:00+08:00"),
+  }), (error) => error.code === "dws_enterprise_scan_incomplete_failures");
+  assert.equal(attempts, 2);
+});
+
 test("DWS personal event wake waits for ready and forwards only valid event signals", async () => {
   const child = new EventEmitter();
   child.stdout = new PassThrough();

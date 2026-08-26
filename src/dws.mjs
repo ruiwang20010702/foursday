@@ -877,6 +877,7 @@ export class DwsAdapter {
     ];
     let payload;
     let scanComplete = false;
+    let incompleteReason = "not_complete";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       payload = await this.run(searchArgs, { timeout: timeoutMs });
       const result = payload?.result ?? payload ?? {};
@@ -890,12 +891,19 @@ export class DwsAdapter {
       ].some((value) => value === true);
       scanComplete = complete === true && hasMore !== true && !truncated &&
         (!Array.isArray(failures) || failures.length === 0);
+      incompleteReason = Array.isArray(failures) && failures.length > 0
+        ? "failures"
+        : truncated
+          ? "truncated"
+          : hasMore === true
+            ? "has_more"
+            : "not_complete";
       if (scanComplete) break;
       if (attempt === 0) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
     if (!scanComplete) {
       const error = new Error("DWS enterprise message scan was incomplete after one bounded retry");
-      error.code = "dws_enterprise_scan_incomplete";
+      error.code = `dws_enterprise_scan_incomplete_${incompleteReason}`;
       throw error;
     }
     const messages = collectMessages(payload, null).filter((message) =>
