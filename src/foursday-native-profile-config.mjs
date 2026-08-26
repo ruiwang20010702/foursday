@@ -298,6 +298,11 @@ export async function buildFoursdayNativeProfileConfiguration({
     layout.projectRoot,
     "distribution", "skills", "project-work", "SKILL.md",
   );
+  const explicitDingtalkUsers = scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS");
+  const dingtalkSelfUser = scalar(profileProductionConfig, "FOURSDAY_DINGTALK_SELF_USER");
+  const enterpriseUsersEnabled = scalar(
+    profileProductionConfig, "FOURSDAY_DINGTALK_ENTERPRISE_USERS", true,
+  );
   const environment = {
     FOURSDAY_NODE_PATH: node,
     FOURSDAY_DWS_SIDECAR: join(hostRoot, "hermes-dws-sidecar.mjs"),
@@ -323,13 +328,13 @@ export async function buildFoursdayNativeProfileConfiguration({
     FOURSDAY_REQUIRE_WORK_CONTEXT: "true",
     CODEX_HOME: codexRoot,
     DWS_PATH: dws,
-    DWS_PERSONAL_ALLOWED_USERS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS"),
-    DWS_PERSONAL_FETCH_USERS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS"),
-    DWS_PERSONAL_ENTERPRISE_USERS_ENABLED: scalar(
-      profileProductionConfig, "FOURSDAY_DINGTALK_ENTERPRISE_USERS", true,
-    ),
+    DWS_PERSONAL_ALLOWED_USERS: explicitDingtalkUsers,
+    DWS_PERSONAL_FETCH_USERS: /^(?:1|true|yes)$/iu.test(enterpriseUsersEnabled)
+      ? dingtalkSelfUser
+      : explicitDingtalkUsers,
+    DWS_PERSONAL_ENTERPRISE_USERS_ENABLED: enterpriseUsersEnabled,
     DWS_PERSONAL_ALLOWED_GROUPS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_GROUPS"),
-    DINGTALK_SELF_USER_ID: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_SELF_USER"),
+    DINGTALK_SELF_USER_ID: dingtalkSelfUser,
     DINGTALK_DATA_ROOT: join(layout.userHome, "Library", "Application Support", "DingTalkMac"),
     DWS_PERSONAL_STATE_FILE: join(stateRoot, "dws.json"),
     DWS_PERSONAL_COMMAND_LOCK: join(stateRoot, "dws-command.lock"),

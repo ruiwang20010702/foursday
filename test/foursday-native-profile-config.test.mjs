@@ -78,6 +78,7 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.equal(Object.hasOwn(plan.profileProductionConfig, "AI_EMPLOYEE_PERSONAL_MEMORY_ENABLED"), false);
   assert.equal(plan.profileProductionConfig.FOURSDAY_DATABASE_URL, "keychain://service/database");
   assert.match(plan.envContent, /DWS_PERSONAL_ALLOWED_USERS="trusted-user"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_FETCH_USERS="owner"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_ENTERPRISE_USERS_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_EVENT_WAKE_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_FALLBACK_MS="30000"/u);
@@ -124,6 +125,24 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexRulesContent, /pattern=\[\["rm","\/usr\/bin\/rm".*\]\].*decision="forbidden"/u);
   assert.match(plan.codexRulesContent, /pattern=\[\["git","\/usr\/bin\/git".*\],"restore"\].*decision="forbidden"/u);
   assert.doesNotMatch(plan.envContent, /keychain|database|service\/data/u);
+});
+
+test("explicit-user mode keeps per-user fetch targets while enterprise mode fetches only self", async (t) => {
+  const value = await fixture(t);
+  const production = JSON.parse(await readFile(value.production, "utf8"));
+  production.FOURSDAY_DINGTALK_ENTERPRISE_USERS = false;
+  await writeFile(value.production, JSON.stringify(production), { mode: 0o600 });
+  const plan = await buildFoursdayNativeProfileConfiguration({
+    layout: value.layout,
+    productionConfigPath: value.production,
+    projectRegistryPath: value.registry,
+    nodePath: value.node,
+    dwsPath: value.dws,
+    codexPath: value.codex,
+    pythonPath: value.python,
+  });
+  assert.match(plan.envContent, /DWS_PERSONAL_FETCH_USERS="trusted-user"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_ENTERPRISE_USERS_ENABLED="false"/u);
 });
 
 test("native profile config writes private user-owned files idempotently and requires explicit replace", async (t) => {

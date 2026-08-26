@@ -75,6 +75,11 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     file=sys.stderr,
                     flush=True,
                 )
+                print(
+                    "dws_sidecar_target_failed:enterprise:3:fedcba9876543210:scan_incomplete",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 print(json.dumps({"type": "ready"}), flush=True)
                 for line in sys.stdin:
                     frame = json.loads(line)
@@ -97,7 +102,11 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                 "target:user:2:0123456789abcdef:network_unavailable",
                 bridge._stderr_codes,
             )
-            self.assertEqual(bridge._stderr_codes[-1], "manual_reply_probe:tls_timeout")
+            self.assertIn("manual_reply_probe:tls_timeout", bridge._stderr_codes)
+            self.assertEqual(
+                bridge._stderr_codes[-1],
+                "target:enterprise:3:fedcba9876543210:scan_incomplete",
+            )
             await bridge.stop()
 
     def test_environment_factory_passes_only_bridge_configuration(self):

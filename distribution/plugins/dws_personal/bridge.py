@@ -18,7 +18,7 @@ _SAFE_MANUAL_REPLY_ERROR = re.compile(
     r"^dws_sidecar_manual_reply_probe_failed:([A-Za-z0-9_.-]{1,80})$"
 )
 _SAFE_TARGET_ERROR = re.compile(
-    r"^dws_sidecar_target_failed:(user|group):(\d{1,3}):([a-f0-9]{16}):([A-Za-z0-9_.-]{1,80})$"
+    r"^dws_sidecar_target_failed:(user|group|enterprise):(\d{1,3}):([a-f0-9]{16}):([A-Za-z0-9_.-]{1,80})$"
 )
 
 
