@@ -845,6 +845,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             for record in records
             for attachment in list(record.get("attachments") or [])[:8]
         ][:8]
+        resource_enrichment_unavailable = any(
+            record.get("resourceEnrichmentUnavailable") is True for record in records
+        )
         conversation_id = str(latest["conversationId"])
         user_id = str(latest["senderUserId"])
         open_id = str(latest.get("senderOpenDingTalkId") or "").strip()
@@ -972,12 +975,19 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "bounded host busy, host unavailability, project-scope denial and document read failure."
             if context_token else ""
         )
+        resource_context = (
+            "One or more message attachment details could not be read after a bounded retry. "
+            "Use the visible text, but do not claim to have opened or summarized the missing attachment; "
+            "ask the requester to resend it only when the file is necessary to complete the task."
+            if resource_enrichment_unavailable else ""
+        )
         channel_prompt = "\n\n".join(
             item for item in [
                 route.context,
                 memory_context,
                 runtime_status_context,
                 tool_context,
+                resource_context,
             ] if item
         )
         source = self.build_source(
@@ -1022,6 +1032,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "bundle_wait_ms": bundle_wait_ms,
                 "wake_source": wake_source,
                 "enterprise_verified": latest.get("enterpriseVerified") is True,
+                "resource_enrichment_unavailable": resource_enrichment_unavailable,
             },
         )
         _shadow_evidence({

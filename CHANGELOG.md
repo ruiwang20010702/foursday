@@ -13,6 +13,7 @@
 - Split broad enterprise history windows into complete two-minute slices and deduplicated by stable message ID, so a ten-minute reconcile no longer exceeds DWS's 500-item page-all boundary.
 - Isolated sender-identity admission failures from organization-wide checkpoint health: unverified senders stay outside the Agent Loop and are retried only through the existing overlap window instead of blocking every trusted conversation.
 - Applied the same single bounded retry to idempotent enterprise read-command failures, while authentication failures and a second timeout/command failure still stop checkpoint advancement.
+- Made message-resource detail enrichment best-effort after one retry: text remains available with an explicit unavailable marker, no attachment is fabricated, and media download failures still remain unconsumed for retry.
 
 ## 0.8.0-rc.1 - 2026-08-24
 

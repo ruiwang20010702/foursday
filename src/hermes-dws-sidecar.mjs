@@ -656,6 +656,7 @@ export async function createSidecarRuntime({
         mentionedSelf,
         isSelf: message.isSelf === true,
         enterpriseVerified: message.enterpriseVerified === true,
+        resourceEnrichmentUnavailable: message.resourceEnrichmentUnavailable === true,
         attachments,
         ownerRevision: control.ownerRevision,
         sendGeneration: control.sendGeneration,
