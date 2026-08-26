@@ -55,12 +55,17 @@ function envLine(name, value) {
 export function foursdayCodexConfig({
   nodePath,
   mcpPath,
+  dwsPath,
+  dwsHome,
   projectRoots = [],
   pythonRuntimeRoot = null,
   pythonPath = null,
 } = {}) {
   const node = absoluteExecutable(nodePath, "Codex MCP Node");
   const mcp = absoluteExecutable(mcpPath, "Foursday Codex MCP");
+  const dws = absoluteExecutable(dwsPath, "Foursday MCP DWS");
+  if (!isAbsolute(String(dwsHome ?? ""))) throw new Error("Foursday MCP DWS home must be absolute");
+  const dwsOwnerHome = resolve(String(dwsHome));
   return [
     'default_permissions = "foursday-workspace"',
     'approval_policy = "untrusted"',
@@ -114,8 +119,12 @@ export function foursdayCodexConfig({
     "tool_timeout_sec = 10",
     'env_vars = ["FOURSDAY_PRODUCTION_CONFIG", "FOURSDAY_PROJECT_REGISTRY", "FOURSDAY_WORK_CONTEXT_FILE", "FOURSDAY_PROFILE_RELEASE_FILE", "FOURSDAY_RELEASE_SHA", "FOURSDAY_MODE", "DWS_PERSONAL_SEND_ENABLED", "DWS_PERSONAL_STATE_FILE", "DWS_PERSONAL_FALLBACK_MS"]',
     "required = true",
-    'enabled_tools = ["foursday_remember_project_fact", "foursday_list_attachments", "foursday_stage_attachment", "foursday_read_project_memory", "foursday_runtime_status"]',
+    'enabled_tools = ["foursday_remember_project_fact", "foursday_list_attachments", "foursday_stage_attachment", "foursday_read_project_memory", "foursday_runtime_status", "foursday_list_project_sources", "foursday_read_project_source"]',
     'default_tools_approval_mode = "auto"',
+    "",
+    "[mcp_servers.foursday.env]",
+    `DWS_PATH = ${JSON.stringify(dws)}`,
+    `FOURSDAY_DWS_HOME = ${JSON.stringify(dwsOwnerHome)}`,
     "",
     ...[...new Set(projectRoots)].flatMap((root) => [
       `[projects.${JSON.stringify(absoluteExecutable(root, "Foursday project root"))}]`,
@@ -363,6 +372,8 @@ export async function buildFoursdayNativeProfileConfiguration({
     codexConfigContent: foursdayCodexConfig({
       nodePath: node,
       mcpPath: join(hostRoot, "foursday-codex-mcp.mjs"),
+      dwsPath: dws,
+      dwsHome: layout.userHome,
       projectRoots: [
         ...registry.value.projects.map((project) => project.root),
         join(localRoot, "fallback"),

@@ -195,6 +195,13 @@ export async function verifyRuntimeMcpReliability({
   }
   const productionConfigPath = await privateFile(environment.FOURSDAY_PRODUCTION_CONFIG);
   const productionConfig = JSON.parse(await readFile(productionConfigPath, "utf8"));
+  const projectRegistryPath = await privateFile(environment.FOURSDAY_PROJECT_REGISTRY);
+  const projectRegistry = JSON.parse(await readFile(projectRegistryPath, "utf8"));
+  const sourceProject = projectRegistry?.projects?.find((project) =>
+    Array.isArray(project?.dingtalkSources) && project.dingtalkSources.length > 0
+  ) ?? projectRegistry?.projects?.find((project) => project?.id === "foursday");
+  if (!sourceProject?.id) throw new Error("Runtime MCP validation project registry is invalid");
+  const validationSourceId = sourceProject.dingtalkSources?.[0]?.id ?? null;
   if (/^(?:1|true|yes)$/iu.test(String(productionConfig.FOURSDAY_GBRAIN_WRITE_ENABLED ?? "false"))) {
     throw new Error("Runtime MCP validation requires gbrain writes to remain disabled");
   }
@@ -213,7 +220,7 @@ export async function verifyRuntimeMcpReliability({
       schemaVersion: 1,
       contexts: {
         [token]: {
-          projectId: "foursday",
+          projectId: sourceProject.id,
           workspace,
           projectContext: "Runtime MCP read-only Shadow validation.",
           memoryContext: "",
@@ -258,6 +265,8 @@ export async function verifyRuntimeMcpReliability({
       foursday_list_attachments: [],
       foursday_read_project_memory: [],
       foursday_stage_attachment: [],
+      foursday_list_project_sources: [],
+      ...(validationSourceId ? { foursday_read_project_source: [] } : {}),
     };
     for (let index = 0; index < count; index += 1) {
       const status = await timedCall(request, threadId, "foursday_runtime_status", { contextToken: token });
@@ -280,6 +289,32 @@ export async function verifyRuntimeMcpReliability({
         memory.result?.structuredContent?.readOnly !== true
       ) throw new Error("Runtime MCP project memory read-back is invalid");
       samples.foursday_read_project_memory.push(memory.elapsedMs);
+
+      const sources = await timedCall(request, threadId, "foursday_list_project_sources", {
+        contextToken: token,
+      });
+      if (
+        sources.result?.structuredContent?.readOnly !== true ||
+        !Array.isArray(sources.result?.structuredContent?.sources) ||
+        sources.result.structuredContent.sources.some((source) => "nodeId" in source)
+      ) throw new Error("Runtime MCP project source list read-back is invalid");
+      samples.foursday_list_project_sources.push(sources.elapsedMs);
+
+      if (validationSourceId && index === 0) {
+        const source = await timedCall(request, threadId, "foursday_read_project_source", {
+          contextToken: token,
+          sourceId: validationSourceId,
+          maxChars: 1_000,
+        });
+        if (
+          source.result?.structuredContent?.sourceId !== validationSourceId ||
+          source.result?.structuredContent?.liveSource !== "dingtalk" ||
+          source.result?.structuredContent?.readOnly !== true ||
+          source.result?.structuredContent?.untrustedSourceData !== true ||
+          !/^[a-f0-9]{64}$/u.test(String(source.result?.structuredContent?.contentSha256 ?? ""))
+        ) throw new Error("Runtime MCP project source read-back is invalid");
+        samples.foursday_read_project_source.push(source.elapsedMs);
+      }
 
       const staged = await timedCall(request, threadId, "foursday_stage_attachment", {
         contextToken: token,
@@ -311,7 +346,7 @@ export async function verifyRuntimeMcpReliability({
       schema: "foursday-runtime-mcp-validation/v1",
       verified: true,
       iterations: count,
-      successfulCalls: count * Object.keys(samples).length,
+      successfulCalls: Object.values(samples).reduce((total, values) => total + values.length, 0),
       failedCalls: 0,
       maximumP95Ms: p95Limit,
       metrics,

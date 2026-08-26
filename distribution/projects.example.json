@@ -8,6 +8,14 @@
       "root": "/absolute/path/to/project",
       "gitRemote": "https://github.com/example/project.git",
       "gbrainSlugs": ["projects/example-project"],
+      "dingtalkSources": [
+        {
+          "id": "project_index",
+          "name": "Current project index",
+          "kind": "doc",
+          "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"
+        }
+      ],
       "runInstructions": "Read the project instructions and current evidence before acting."
     }
   ]

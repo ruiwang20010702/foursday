@@ -16,10 +16,11 @@ from urllib.parse import urlsplit
 
 _PROJECT_KEYS = {
     "id", "name", "aliases", "root", "gitRemote",
-    "gbrainSlugs", "runInstructions",
+    "gbrainSlugs", "runInstructions", "dingtalkSources",
 }
 _PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _GBRAIN_SLUG = re.compile(r"^[\w./-]{1,300}$", re.UNICODE)
+_DINGTALK_NODE_ID = re.compile(r"^[A-Za-z0-9]{20,80}$")
 
 
 def _text(value, name: str, maximum: int) -> str:
@@ -92,6 +93,17 @@ def _alias_present(text: str, alias: str) -> bool:
 
 
 @dataclass(frozen=True)
+class DingTalkSource:
+    id: str
+    name: str
+    kind: str
+    node_id: str
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "kind": self.kind, "nodeId": self.node_id}
+
+
+@dataclass(frozen=True)
 class Project:
     id: str
     name: str
@@ -100,6 +112,7 @@ class Project:
     git_remote: Optional[str]
     gbrain_slugs: tuple[str, ...]
     run_instructions: str
+    dingtalk_sources: tuple[DingTalkSource, ...]
 
     @property
     def routing_aliases(self) -> tuple[str, ...]:
@@ -114,6 +127,7 @@ class Project:
             "gitRemote": self.git_remote,
             "gbrainSlugs": list(self.gbrain_slugs),
             "runInstructions": self.run_instructions,
+            "dingtalkSources": [source.to_dict() for source in self.dingtalk_sources],
         }
 
 
@@ -204,6 +218,28 @@ class ProjectRegistry:
                 for slug in gbrain_slugs
             ):
                 raise ValueError("Project gbrain slug is invalid")
+            raw_sources = raw.get("dingtalkSources") or []
+            if not isinstance(raw_sources, list) or len(raw_sources) > 20:
+                raise ValueError("Project DingTalk sources must be a bounded list")
+            dingtalk_sources = []
+            source_ids = set()
+            for raw_source in raw_sources:
+                if not isinstance(raw_source, dict) or set(raw_source) != {"id", "name", "kind", "nodeId"}:
+                    raise ValueError("Project DingTalk source is invalid")
+                source_id = _text(raw_source["id"], "project.dingtalkSources.id", 64)
+                if not _PROJECT_ID.fullmatch(source_id) or source_id in source_ids:
+                    raise ValueError("Project DingTalk source id is invalid or duplicated")
+                source_ids.add(source_id)
+                kind = _text(raw_source["kind"], "project.dingtalkSources.kind", 20)
+                node_id = _text(raw_source["nodeId"], "project.dingtalkSources.nodeId", 80)
+                if kind != "doc" or not _DINGTALK_NODE_ID.fullmatch(node_id):
+                    raise ValueError("Project DingTalk source is invalid")
+                dingtalk_sources.append(DingTalkSource(
+                    id=source_id,
+                    name=_text(raw_source["name"], "project.dingtalkSources.name", 200),
+                    kind=kind,
+                    node_id=node_id,
+                ))
             projects.append(Project(
                 id=project_id,
                 name=_text(raw["name"], "project.name", 200),
@@ -212,6 +248,7 @@ class ProjectRegistry:
                 git_remote=_git_remote(raw.get("gitRemote")),
                 gbrain_slugs=gbrain_slugs,
                 run_instructions=str(raw.get("runInstructions") or "").strip()[:2000],
+                dingtalk_sources=tuple(dingtalk_sources),
             ))
         return cls(projects, fallback_workspace, binding_path=binding_path)
 

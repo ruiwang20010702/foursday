@@ -161,6 +161,8 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
     DWS_PERSONAL_SEND_ENABLED: "false",
     DWS_PERSONAL_STATE_FILE: "/private/dws.json",
     DWS_PERSONAL_FALLBACK_MS: "30000",
+    DWS_PATH: "/private/dws",
+    FOURSDAY_DWS_HOME: "/private/home",
     FOURSDAY_PYTHON_PATH: "/managed/python/bin/python3",
     FOURSDAY_NODE_PATH: "/managed/node/bin/node",
     FOURSDAY_DINGTALK_USERS: "private-user-id",
@@ -181,6 +183,8 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
   assert.equal(environment.FOURSDAY_PYTHON_PATH, undefined);
   assert.equal(environment.FOURSDAY_DINGTALK_USERS, undefined);
   assert.equal(environment.DWS_PERSONAL_ALLOWED_USERS, undefined);
+  assert.equal(environment.DWS_PATH, undefined);
+  assert.equal(environment.FOURSDAY_DWS_HOME, undefined);
   assert.equal(environment.GH_TOKEN, undefined);
   assert.equal(environment.DATABASE_URL, undefined);
 });
@@ -274,6 +278,8 @@ test("real Codex app-server confirms the forced Foursday sandbox and permission 
   await writeFile(join(codexHome, "config.toml"), foursdayCodexConfig({
     nodePath: process.execPath,
     mcpPath: fileURLToPath(new URL("../src/foursday-codex-mcp.mjs", import.meta.url)),
+    dwsPath: process.execPath,
+    dwsHome: root,
   }), { mode: 0o600 });
   await writeFile(join(codexHome, "rules", "foursday.rules"), foursdayCodexRules(), { mode: 0o600 });
   const child = spawn(process.execPath, [

@@ -27,6 +27,12 @@ class ProjectRouterTest(unittest.TestCase):
                         "root": self.vocab,
                         "gitRemote": None,
                         "gbrainSlugs": ["projects/51talk-vocab-2-2"],
+                        "dingtalkSources": [{
+                            "id": "project_index",
+                            "name": "项目说明",
+                            "kind": "doc",
+                            "nodeId": "EXAMPLEPROJECTDOCNODE1234567890",
+                        }],
                         "runInstructions": "优先读取项目说明和当前进度台账。",
                     },
                     {
@@ -55,6 +61,7 @@ class ProjectRouterTest(unittest.TestCase):
         self.assertEqual(route.workspace_path, os.path.realpath(self.vocab))
         self.assertNotIn("requester", route.project.to_dict())
         self.assertNotIn("capabilities", route.project.to_dict())
+        self.assertEqual(route.project.dingtalk_sources[0].id, "project_index")
 
     def test_followup_reuses_session_project_without_repeating_alias(self):
         first = self.registry.route(
@@ -153,6 +160,31 @@ class ProjectRouterTest(unittest.TestCase):
                 }, handle)
             with self.assertRaises(ValueError):
                 ProjectRegistry.load(invalid, fallback_workspace=self.fallback)
+
+    def test_registry_rejects_invalid_dingtalk_sources(self):
+        invalid_sources = [
+            [{"id": "source", "name": "Source", "kind": "write", "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"}],
+            [{"id": "source", "name": "Source", "kind": "doc", "nodeId": "short"}],
+            [
+                {"id": "same", "name": "One", "kind": "doc", "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"},
+                {"id": "same", "name": "Two", "kind": "doc", "nodeId": "EXAMPLEPROJECTDOCNODE0987654321"},
+            ],
+        ]
+        for index, sources in enumerate(invalid_sources):
+            path = os.path.join(self.temp.name, f"invalid-source-{index}.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "schemaVersion": 1,
+                    "projects": [{
+                        "id": "bad",
+                        "name": "Bad",
+                        "aliases": ["bad"],
+                        "root": self.vocab,
+                        "dingtalkSources": sources,
+                    }],
+                }, handle)
+            with self.assertRaises(ValueError):
+                ProjectRegistry.load(path, fallback_workspace=self.fallback)
 
 
 if __name__ == "__main__":

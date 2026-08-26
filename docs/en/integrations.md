@@ -31,3 +31,7 @@ claude plugin install foursday@foursday-local --scope user
 The Codex marketplace entry lives at `.agents/plugins/marketplace.json`; the Claude entry lives at `.claude-plugin/marketplace.json`. Both resolve to thin host plugins and require the same installed `foursday` CLI.
 
 Current examples live in `distribution/plugins/` and `distribution/skills/`.
+
+## Project-bound DingTalk sources
+
+Projects may optionally register up to 20 live DingTalk documents in the private project registry. Codex sees only project-local source IDs through `foursday_list_project_sources` and reads one source through `foursday_read_project_source`; DingTalk node IDs, URLs, DWS credentials and arbitrary search never enter the project shell. Reads are direct-message only, read-only, bounded to eight seconds and 30,000 returned characters, and the document body is always marked as untrusted evidence rather than instructions.

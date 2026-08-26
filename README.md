@@ -56,6 +56,7 @@ Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousRese
 - an isolated `foursday` Profile;
 - DWS personal DingTalk and project-router plugins, with Stream event wake-up, filesystem wake-up and bounded fallback;
 - an isolated Codex home with an App Server policy proxy, workspace sandboxing, forbidden command rules, automatic approval review, and a Foursday MCP;
+- project-bound live DingTalk document reads through that MCP, without exposing DWS, node IDs, URLs, contact search, writes, or cross-project access to the Codex shell;
 - a project-work Skill;
 - small host-side bridges for credentials and personal-memory promotion.
 - one host-neutral Foursday Control MCP, with thin Codex and Claude plugins plus an optional read-only local status page.
