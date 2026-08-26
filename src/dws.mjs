@@ -941,15 +941,11 @@ export class DwsAdapter {
           senderIdentitySource: "enterprise_contact_verified",
           enterpriseVerified: true,
         });
-      } catch (error) {
-        if (![
-          "dws_enterprise_identity_required",
-          "dws_enterprise_identity_unavailable",
-          "dws_contact_identity_required",
-          "dws_contact_identity_unavailable",
-        ].includes(error?.code)) {
-          throw error;
-        }
+      } catch {
+        // Identity is an admission gate for one sender, not availability for the
+        // whole organization. Keep the message out of the Agent Loop; the
+        // Sidecar's overlapping checkpoint window gives transient failures a
+        // bounded retry without letting an unverified sender DoS every target.
       }
     }
     return this.enrichMessageResources(output, { timeoutMs });

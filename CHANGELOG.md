@@ -11,6 +11,7 @@
 - Added one bounded retry for an explicitly incomplete enterprise search projection; timeouts, authentication failures, unknown send outcomes, and a second incomplete result still fail closed.
 - Moved enterprise global scans ten seconds behind the live projection edge while preserving overlapping checkpoints, preventing persistent `scan_incomplete` without accepting partial results or adding a long fixed delay.
 - Split broad enterprise history windows into complete two-minute slices and deduplicated by stable message ID, so a ten-minute reconcile no longer exceeds DWS's 500-item page-all boundary.
+- Isolated sender-identity admission failures from organization-wide checkpoint health: unverified senders stay outside the Agent Loop and are retried only through the existing overlap window instead of blocking every trusted conversation.
 
 ## 0.8.0-rc.1 - 2026-08-24
 

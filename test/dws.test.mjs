@@ -551,6 +551,17 @@ test("enterprise direct scan admits only contact-verified current-organization s
             }],
           }, {
             singleChat: true,
+            openConversationId: "direct-transient-unverified",
+            messages: [{
+              openMessageId: "message-transient-unverified",
+              senderUserId: "transient-user",
+              senderName: "Transient",
+              createTime: "2026-08-26T14:00:04+08:00",
+              content: "身份服务临时失败",
+              isSelf: false,
+            }],
+          }, {
+            singleChat: true,
             openConversationId: "direct-external",
             messages: [{
               openMessageId: "message-external",
@@ -605,6 +616,12 @@ test("enterprise direct scan admits only contact-verified current-organization s
         denied.stderr = '{"code":"PAT_ORG_POLICY_DENIED","data":{"policy":"OPEN_SOURCE_ORG_SCOPE_FORBIDDEN"}}';
         throw denied;
       }
+      if (args.includes("contact") && id === "transient-user") {
+        throw new Error("temporary contact transport failure");
+      }
+      if (args.includes("aisearch") && args.includes("Transient")) {
+        throw new Error("temporary identity search failure");
+      }
       if (args.includes("aisearch")) return { stdout: JSON.stringify({
         result: [{
           orgEmployeeModel: {
@@ -638,7 +655,7 @@ test("enterprise direct scan admits only contact-verified current-organization s
   assert.equal(calls.filter((args) => args.includes("external-user")).length, 1);
   assert.equal(calls.filter((args) => args.includes("owner-user")).length, 0);
   assert.equal(calls.filter((args) => args.includes("policy-user")).length, 1);
-  assert.equal(calls.filter((args) => args.includes("aisearch")).length, 1);
+  assert.equal(calls.filter((args) => args.includes("aisearch")).length, 2);
 });
 
 test("enterprise direct scan retries one incomplete projection before failing closed", async () => {
