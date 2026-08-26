@@ -770,26 +770,27 @@ export class DwsAdapter {
     let enriched = messages;
     for (let offset = 0; offset < ids.length; offset += 50) {
       const chunk = ids.slice(offset, offset + 50);
-      let payload = null;
+      let merged = null;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          payload = await this.run([
+          const payload = await this.run([
             "chat", "+messages-mget",
             "--msg-ids", chunk.join(","),
           ], { timeout: timeoutMs });
+          merged = mergeDwsMessageResourceDetails(enriched, payload);
           break;
         } catch {
           if (attempt === 0) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
         }
       }
-      if (!payload) {
+      if (!merged) {
         const pending = new Set(chunk);
         enriched = enriched.map((message) => pending.has(String(message.id))
           ? { ...message, resourceEnrichmentUnavailable: true }
           : message);
         continue;
       }
-      enriched = mergeDwsMessageResourceDetails(enriched, payload);
+      enriched = merged;
     }
     return enriched;
   }

@@ -212,6 +212,23 @@ test("DWS resource enrichment failure preserves text without inventing an attach
   assert.deepEqual(message.media, []);
 });
 
+test("DWS incomplete resource detail payload uses the same bounded degradation", async () => {
+  let attempts = 0;
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async () => {
+    attempts += 1;
+    return { complete: false, failures: [{ code: "projection_pending" }] };
+  };
+  const [message] = await dws.enrichMessageResources([{
+    id: "file-message",
+    content: "[文件] report.txt fileId: opaque",
+    media: [],
+  }]);
+  assert.equal(attempts, 2);
+  assert.equal(message.resourceEnrichmentUnavailable, true);
+  assert.deepEqual(message.media, []);
+});
+
 test("DWS 解析会话嵌套消息结构", () => {
   const messages = collectMessages(
     {
