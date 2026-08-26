@@ -443,7 +443,8 @@ export async function runFoursdayNativeGatewayAction(action, {
   }
   if (["start-shadow", "activate", "restart"].includes(action)) {
     let status = null;
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+    const readinessAttempts = ["start-shadow", "restart"].includes(action) ? 180 : 60;
+    for (let attempt = 0; attempt < readinessAttempts; attempt += 1) {
       status = await inspect({ layout, run });
       if (status.ready) break;
       await wait(1_000);

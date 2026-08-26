@@ -6,6 +6,7 @@
 - Replaced the flat project/workspace identity with a backward-compatible v2 work-scope registry: Codex can select one executable primary scope plus related scopes and personal-gbrain project evidence, while related context never expands filesystem permission.
 - Added bounded personal-gbrain project discovery, v2 session bindings, parent-scope inheritance, stricter path/source validation, and real Codex App Server regression coverage for evidence-bound scope selection.
 - Hardened checkpoint, manual-reply probe, deferred-reply, event-wake, rendering read-back, attachment, and enterprise-ingress behavior while keeping production writes and gbrain promotion independently gated.
+- Decoupled Sidecar transport readiness from a slow enterprise startup reconcile, kept failed initial scans alive for bounded retry, and extended Shadow/restart health waiting without treating transport connection as checkpoint success.
 
 ## 0.8.0-rc.1 - 2026-08-24
 

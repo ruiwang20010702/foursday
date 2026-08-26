@@ -672,6 +672,7 @@ export async function createSidecarRuntime({
     deferEmit = false,
     wakeSource = "manual",
     reconcileLookbackMs = null,
+    onStarted = null,
   } = {}) => {
     if (running) {
       pending = true;
@@ -695,6 +696,7 @@ export async function createSidecarRuntime({
     let lifecycleFinished = false;
     try {
       await persistState();
+      if (typeof onStarted === "function") await onStarted();
       const end = startedAt;
       const deferredFrames = [];
       const dispatch = deferEmit
@@ -996,17 +998,23 @@ export async function createSidecarRuntime({
         state.sendBlockReason = null;
         state.sendBlockedAt = null;
       }
-      const initialFrames = await check({
-        deferEmit: true,
-        wakeSource: "startup",
-        reconcileLookbackMs: config.initialLookbackMs,
-      });
-      emit({
-        type: "ready",
-        transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
-        targets: config.userIds.length,
-        groups: config.groupIds.length,
-      });
+      let initialFrames = [];
+      try {
+        initialFrames = await check({
+          deferEmit: true,
+          wakeSource: "startup",
+          reconcileLookbackMs: config.initialLookbackMs,
+          onStarted: () => emit({
+            type: "ready",
+            transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
+            targets: config.userIds.length,
+            groups: config.groupIds.length,
+            reconciling: true,
+          }),
+        });
+      } catch (error) {
+        diagnose(`dws_sidecar_initial_reconcile_failed:${String(error?.code ?? error?.name ?? "error")}`);
+      }
       for (const frame of initialFrames) emit(frame);
       await persistState();
       if (

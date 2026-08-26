@@ -61,16 +61,64 @@ test("external global pause preserves the unread message until exact resume", as
     now: () => new Date("2026-08-24T10:00:00+08:00"),
   });
   try {
-    await assert.rejects(
-      runtime.start(),
-      (error) => error.code === "DWS_SIDECAR_TARGETS_UNAVAILABLE",
-    );
+    await runtime.start();
+    assert.equal(frames[0].type, "ready");
+    const failed = JSON.parse(await readFile(join(root, "dws.json"), "utf8"));
+    assert.equal(failed.checkLifecycle.status, "failed");
     await control.apply({ action: "resume_all", expectedRevision: 1 });
     const retry = await runtime.check({ deferEmit: true });
     assert.equal(retry.filter((frame) => frame.record?.id === "dws-1").length, 1);
     const state = JSON.parse(await readFile(join(root, "dws.json"), "utf8").catch(() => "{}"));
     assert.deepEqual(state.recentMessageIds ?? [], []);
   } finally {
+    await runtime.stop();
+  }
+});
+
+test("Hermes DWS sidecar announces transport readiness before a slow startup reconcile", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-slow-start-sidecar-")));
+  const frames = [];
+  let releaseFetch;
+  let enteredFetch;
+  const entered = new Promise((resolve) => { enteredFetch = resolve; });
+  const blocked = new Promise((resolve) => { releaseFetch = resolve; });
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "dws.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws: {
+      async fetchBySender() {
+        enteredFetch();
+        await blocked;
+        return [];
+      },
+      async fetchGroupMentions() { return []; },
+    },
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-26T16:00:00+08:00"),
+  });
+  try {
+    const starting = runtime.start();
+    await entered;
+    assert.equal(frames[0].type, "ready");
+    assert.equal(frames[0].reconciling, true);
+    const running = JSON.parse(await readFile(join(root, "dws.json"), "utf8"));
+    assert.equal(running.checkLifecycle.status, "running");
+    releaseFetch();
+    await starting;
+  } finally {
+    releaseFetch?.();
     await runtime.stop();
   }
 });
@@ -690,10 +738,9 @@ test("failed media download does not consume the message before retry succeeds",
     now: () => new Date("2026-08-18T14:01:00+08:00"),
   });
   try {
-    await assert.rejects(
-      runtime.start(),
-      (error) => error.code === "DWS_SIDECAR_TARGETS_UNAVAILABLE",
-    );
+    await runtime.start();
+    const failed = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.equal(failed.checkLifecycle.status, "failed");
     const retryFrames = await runtime.check({ deferEmit: true });
     const event = retryFrames.find((frame) => frame.record?.id === "dws-1");
     assert.ok(event);
@@ -738,10 +785,9 @@ test("failed control persistence does not consume the message before retry succe
     now: () => new Date("2026-08-24T10:00:00+08:00"),
   });
   try {
-    await assert.rejects(
-      runtime.start(),
-      (error) => error.code === "DWS_SIDECAR_TARGETS_UNAVAILABLE",
-    );
+    await runtime.start();
+    const failed = JSON.parse(await readFile(join(root, "dws.json"), "utf8"));
+    assert.equal(failed.checkLifecycle.status, "failed");
     const retry = await runtime.check({ deferEmit: true });
     const event = retry.find((frame) => frame.record?.id === "dws-1");
     assert.ok(event);
