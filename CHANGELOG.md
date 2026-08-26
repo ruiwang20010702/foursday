@@ -9,6 +9,7 @@
 - Decoupled Sidecar transport readiness from a slow enterprise startup reconcile, kept failed initial scans alive for bounded retry, and extended Shadow/restart health waiting without treating transport connection as checkpoint success.
 - In enterprise mode, limited explicit history fetches to the owner's self-chat so current-organization coworkers use one verified enterprise scan instead of redundant per-user scans; preserved safe target diagnostics for enterprise failures.
 - Added one bounded retry for an explicitly incomplete enterprise search projection; timeouts, authentication failures, unknown send outcomes, and a second incomplete result still fail closed.
+- Moved enterprise global scans ten seconds behind the live projection edge while preserving overlapping checkpoints, preventing persistent `scan_incomplete` without accepting partial results or adding a long fixed delay.
 
 ## 0.8.0-rc.1 - 2026-08-24
 

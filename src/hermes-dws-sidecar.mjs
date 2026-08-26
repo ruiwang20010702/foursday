@@ -726,6 +726,9 @@ export async function createSidecarRuntime({
         const start = new Date(last == null
           ? end.getTime() - config.initialLookbackMs
           : Math.max(0, Math.min(last, safeHistoryBoundary) - 5_000));
+        const targetEnd = target.kind === "enterprise"
+          ? new Date(Math.max(start.getTime() + 1_000, end.getTime() - 10_000))
+          : end;
         let messages;
         if (target.kind === "enterprise") {
           if (typeof dws.fetchEnterpriseDirect !== "function") {
@@ -733,7 +736,7 @@ export async function createSidecarRuntime({
           }
           messages = await dws.fetchEnterpriseDirect({
             start,
-            end,
+            end: targetEnd,
             selfUserId: config.selfUserId,
           });
         } else if (target.kind === "user" && target.id === config.selfUserId) {
