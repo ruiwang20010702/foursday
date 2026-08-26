@@ -318,8 +318,9 @@ export function dwsMessageContentDigest(value) {
   return createHash("sha256").update(normalizedText(value)).digest("hex");
 }
 
-export function dwsMessageContentFingerprint(value) {
-  const canonical = normalizedText(value)
+function canonicalDwsMessageContent(value, { normalizeOrderedLists = false } = {}) {
+  let canonical = String(value ?? "")
+    .replace(/\r\n?/gu, "\n")
     .normalize("NFKC")
     .replaceAll(
       /\[([^\]\n]{1,500})\]\(((?:file:\/\/)?(?:\/|~\/)[^)\n]+)\)/gu,
@@ -327,10 +328,36 @@ export function dwsMessageContentFingerprint(value) {
         const line = String(destination).match(/:(\d+)(?::\d+)?$/u);
         return `[${label}](${line ? `:${line[1]}` : ""})`;
       },
-    )
-    .replaceAll(/(^|\s)\d+\.(?=\s)/gu, (_match, prefix) => `${prefix}1.`)
+    );
+  if (normalizeOrderedLists) {
+    canonical = canonical
+      .replaceAll(
+        /(^|\n)[ \t]*\d+\.[ \t]+/gu,
+        (_match, prefix) => `${prefix}1. `,
+      )
+      .replaceAll(
+        /([。！？；：])\d+\.(?=\s|\p{Script=Han})/gu,
+        (_match, prefix) => `${prefix}1.`,
+      );
+  }
+  return canonical
     .replaceAll(/[`*_~]/gu, "")
     .replaceAll(/\s+/gu, "");
+}
+
+export function dwsMessageUsesOrderedList(value) {
+  return [...String(value ?? "").replace(/\r\n?/gu, "\n").matchAll(
+    /(?:^|\n)[ \t]*\d+\.[ \t]+/gu,
+  )].length >= 2;
+}
+
+export function dwsMessageContentFingerprint(value) {
+  const canonical = canonicalDwsMessageContent(value);
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+export function dwsMessageContentRenderFingerprint(value) {
+  const canonical = canonicalDwsMessageContent(value, { normalizeOrderedLists: true });
   return createHash("sha256").update(canonical).digest("hex");
 }
 
@@ -392,6 +419,20 @@ export function isAutomatedSelfMessage(message, evidence = []) {
   if (explicitAiMarker(message?.raw)) return true;
   const messageTime = epoch(message?.createTime);
   const messageMarkers = new Set([message?.id, ...rawMarkerValues(message?.raw)]);
+  const messageText = normalizedText(message?.content);
+  const messageContentDigest = messageText
+    ? dwsMessageContentDigest(message?.content)
+    : null;
+  const messageContentFingerprint = messageText
+    ? dwsMessageContentFingerprint(message?.content)
+    : null;
+  let messageContentRenderFingerprint = null;
+  const renderedFingerprint = () => {
+    if (messageContentRenderFingerprint == null && messageText) {
+      messageContentRenderFingerprint = dwsMessageContentRenderFingerprint(message?.content);
+    }
+    return messageContentRenderFingerprint;
+  };
   for (const item of evidence) {
     if (item.conversationId !== message?.conversationId) continue;
     const knownMarkers = evidenceMarkerValues(item);
@@ -401,18 +442,32 @@ export function isAutomatedSelfMessage(message, evidence = []) {
     const startedAt = epoch(item.startedAt);
     const contentDigest = String(item.contentDigest ?? "").trim();
     const contentFingerprint = String(item.contentFingerprint ?? "").trim();
+    const contentRenderFingerprint = String(item.contentRenderFingerprint ?? "").trim();
+    const fingerprintVersion = Number(item.fingerprintVersion ?? 1);
+    const strictFingerprintMatches =
+      /^[a-f0-9]{64}$/u.test(contentFingerprint) &&
+      messageContentFingerprint === contentFingerprint;
+    const renderFingerprintMatches = fingerprintVersion >= 2
+      ? (
+          item.orderedListFingerprint === true &&
+          /^[a-f0-9]{64}$/u.test(contentRenderFingerprint) &&
+          renderedFingerprint() === contentRenderFingerprint
+        )
+      : (
+          /^[a-f0-9]{64}$/u.test(contentFingerprint) &&
+          renderedFingerprint() === contentFingerprint
+        );
     if (
       messageTime != null &&
       startedAt != null &&
       messageTime >= startedAt - 5_000 &&
       messageTime <= startedAt + 10 * 60 * 1_000 &&
-      normalizedText(message?.content) !== "" &&
+      messageText !== "" &&
       (
-        normalizedText(message?.content) === normalizedText(item.content) ||
+        messageText === normalizedText(item.content) ||
         (/^[a-f0-9]{64}$/u.test(contentDigest) &&
-          dwsMessageContentDigest(message?.content) === contentDigest) ||
-        (/^[a-f0-9]{64}$/u.test(contentFingerprint) &&
-          dwsMessageContentFingerprint(message?.content) === contentFingerprint)
+          messageContentDigest === contentDigest) ||
+        strictFingerprintMatches || renderFingerprintMatches
       )
     ) {
       return true;

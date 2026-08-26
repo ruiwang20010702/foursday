@@ -1908,6 +1908,9 @@ test("Hermes DWS sidecar verifies Markdown-transformed readback without an AI ma
   assert.equal(receipt.messageId, "rendered-readback-message");
   assert.equal(state.sendBlocked, false);
   assert.equal(Object.values(state.sendLedger)[0].status, "completed");
+  assert.equal(Object.values(state.sendLedger)[0].fingerprintVersion, 2);
+  assert.equal(Object.values(state.sendLedger)[0].orderedListFingerprint, true);
+  assert.match(Object.values(state.sendLedger)[0].contentRenderFingerprint, /^[a-f0-9]{64}$/u);
 });
 
 test("Hermes DWS sidecar resolves an ambiguous receipt through exact readback", async () => {

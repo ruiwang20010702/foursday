@@ -11,6 +11,8 @@ import {
   DwsAdapter,
   dwsMessageContentDigest,
   dwsMessageContentFingerprint,
+  dwsMessageContentRenderFingerprint,
+  dwsMessageUsesOrderedList,
   extractDwsMediaDescriptors,
   isAutomatedSelfMessage,
   mergeDwsMessageResourceDetails,
@@ -344,7 +346,12 @@ test("DWS stripped local-link paths keep one automation fingerprint", () => {
     "1. 并对照 ([技术设计文档](:234))。",
   ].join("\n");
   assert.notEqual(dwsMessageContentDigest(original), dwsMessageContentDigest(rendered));
-  assert.equal(dwsMessageContentFingerprint(original), dwsMessageContentFingerprint(rendered));
+  assert.notEqual(dwsMessageContentFingerprint(original), dwsMessageContentFingerprint(rendered));
+  assert.equal(
+    dwsMessageContentRenderFingerprint(original),
+    dwsMessageContentRenderFingerprint(rendered),
+  );
+  assert.equal(dwsMessageUsesOrderedList(original), true);
   assert.equal(isAutomatedSelfMessage({
     id: "rendered-local-link-message",
     conversationId: "self-conversation",
@@ -355,13 +362,93 @@ test("DWS stripped local-link paths keep one automation fingerprint", () => {
     conversationId: "self-conversation",
     startedAt: "2026-08-25T23:55:53+08:00",
     status: "unknown",
+    fingerprintVersion: 2,
+    orderedListFingerprint: true,
     contentFingerprint: dwsMessageContentFingerprint(original),
+    contentRenderFingerprint: dwsMessageContentRenderFingerprint(original),
   }]), true);
 
   assert.notEqual(
-    dwsMessageContentFingerprint(original),
-    dwsMessageContentFingerprint(rendered.replace("产品需求文档", "另一份文档")),
+    dwsMessageContentRenderFingerprint(original),
+    dwsMessageContentRenderFingerprint(rendered.replace("产品需求文档", "另一份文档")),
   );
+});
+
+test("DWS long ordered lists survive collapsed line boundaries without weakening business numbers", () => {
+  const original = [
+    "1. 当前进度已经核对。",
+    "2. 处理 12,345 条合成记录。",
+    "3. 冻结一版数据合同。",
+  ].join("\n");
+  const rendered = "1. 当前进度已经核对。2.处理 12,345 条合成记录。3.冻结一版数据合同。";
+  assert.equal(dwsMessageUsesOrderedList(original), true);
+  assert.equal(dwsMessageContentFingerprint(original), dwsMessageContentFingerprint(rendered));
+  assert.equal(
+    dwsMessageContentRenderFingerprint(original),
+    dwsMessageContentRenderFingerprint(rendered),
+  );
+  assert.notEqual(
+    dwsMessageContentRenderFingerprint("共处理 2. 个业务批次"),
+    dwsMessageContentRenderFingerprint("共处理 3. 个业务批次"),
+  );
+  assert.notEqual(
+    dwsMessageContentRenderFingerprint(original),
+    dwsMessageContentRenderFingerprint(rendered.replace("12,345", "12,346")),
+  );
+});
+
+test("DWS dual fingerprints stay bounded for long replies", () => {
+  const value = Array.from({ length: 5_000 }, (_item, index) =>
+    `${index + 1}. 合成长文本第 ${index + 10_000} 条。`
+  ).join("\n");
+  const startedAt = performance.now();
+  assert.match(dwsMessageContentFingerprint(value), /^[a-f0-9]{64}$/u);
+  assert.match(dwsMessageContentRenderFingerprint(value), /^[a-f0-9]{64}$/u);
+  const elapsedMs = performance.now() - startedAt;
+  assert.ok(elapsedMs < 1_000, `fingerprinting took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test("DWS self-message matching fingerprints one long message across a full ledger", () => {
+  const content = Array.from({ length: 1_000 }, (_item, index) =>
+    `${index + 1}. 合成长回复第 ${index + 20_000} 条。`
+  ).join("\n");
+  const evidence = Array.from({ length: 1_000 }, (_item, index) => ({
+    conversationId: "self-conversation",
+    startedAt: "2026-08-26T09:39:49+08:00",
+    fingerprintVersion: 2,
+    orderedListFingerprint: true,
+    contentFingerprint: `${String(index).padStart(64, "0")}`.slice(-64),
+    contentRenderFingerprint: index === 999
+      ? dwsMessageContentRenderFingerprint(content)
+      : `${String(index + 1).padStart(64, "0")}`.slice(-64),
+  }));
+  const startedAt = performance.now();
+  assert.equal(isAutomatedSelfMessage({
+    id: "long-rendered-message",
+    conversationId: "self-conversation",
+    createTime: "2026-08-26T09:40:01+08:00",
+    content,
+    raw: {},
+  }, evidence), true);
+  const elapsedMs = performance.now() - startedAt;
+  assert.ok(elapsedMs < 1_000, `ledger matching took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test("legacy ordered-list fingerprints still identify already-sent rendered messages", () => {
+  const original = "1. 第一项。\n2. 第二项。";
+  const rendered = "1. 第一项。2.第二项。";
+  assert.equal(isAutomatedSelfMessage({
+    id: "legacy-rendered-message",
+    conversationId: "self-conversation",
+    createTime: "2026-08-26T09:40:01+08:00",
+    content: rendered,
+    raw: {},
+  }, [{
+    conversationId: "self-conversation",
+    startedAt: "2026-08-26T09:39:49+08:00",
+    status: "unknown",
+    contentFingerprint: dwsMessageContentRenderFingerprint(original),
+  }]), true);
 });
 
 test("DWS CLI calls are serialized so the local data lock cannot race", async () => {

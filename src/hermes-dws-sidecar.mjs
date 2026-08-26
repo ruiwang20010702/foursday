@@ -7,6 +7,8 @@ import {
   DwsAdapter,
   dwsMessageContentDigest,
   dwsMessageContentFingerprint,
+  dwsMessageContentRenderFingerprint,
+  dwsMessageUsesOrderedList,
   isAutomatedSelfMessage,
 } from "./dws.mjs";
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
@@ -1224,6 +1226,7 @@ export async function createSidecarRuntime({
       finishDeferredReply(null);
       const idempotencyKey = idempotencyUuid(sendKey);
       const startedAt = now().toISOString();
+      const orderedListFingerprint = dwsMessageUsesOrderedList(payload?.content);
       const intent = {
         status: "sending",
         conversationId,
@@ -1231,6 +1234,11 @@ export async function createSidecarRuntime({
         idempotencyKey,
         contentDigest: dwsMessageContentDigest(payload?.content),
         contentFingerprint: dwsMessageContentFingerprint(payload?.content),
+        fingerprintVersion: 2,
+        ...(orderedListFingerprint ? {
+          orderedListFingerprint: true,
+          contentRenderFingerprint: dwsMessageContentRenderFingerprint(payload?.content),
+        } : {}),
       };
       sendLedger.set(sendKey, intent);
       rememberAutomatedSend(intent);
