@@ -111,6 +111,7 @@ function idempotencyUuid(key) {
 }
 
 function epoch(value) {
+  if (value == null || String(value).trim() === "") return null;
   const parsed = new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : null;
 }

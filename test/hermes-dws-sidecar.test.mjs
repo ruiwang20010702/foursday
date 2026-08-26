@@ -374,6 +374,7 @@ test("enterprise mode scans verified organization direct messages without explic
     enterpriseCalls += 1;
     assert.ok(start instanceof Date);
     assert.ok(end instanceof Date);
+    assert.equal(end.getTime() - start.getTime() <= 120_000, true);
     assert.equal(end.getTime(), new Date("2026-08-26T14:00:50+08:00").getTime());
     assert.equal(selfUserId, "owner-user");
     return [{
