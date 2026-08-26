@@ -866,7 +866,7 @@ export class DwsAdapter {
       throw new Error("DWS enterprise message timeout is invalid");
     }
     const ownerUserId = normalizeDwsIdentity(selfUserId);
-    const payload = await this.run([
+    const searchArgs = [
       "chat", "message", "search-advanced",
       "--start", isoWithOffset(start),
       "--end", isoWithOffset(end),
@@ -874,21 +874,27 @@ export class DwsAdapter {
       "--page-all",
       "--page-limit", "20",
       "--max-items", "500",
-    ], { timeout: timeoutMs });
-    const result = payload?.result ?? payload ?? {};
-    const failures = result.failures ?? payload?.failures ?? [];
-    const hasMore = result.hasMore ?? payload?.hasMore;
-    const complete = result.complete ?? payload?.complete ?? (hasMore === false);
-    const truncated = [
-      result.truncated, payload?.truncated,
-      result.truncatedByPageLimit, payload?.truncatedByPageLimit,
-      result.truncatedByResultLimit, payload?.truncatedByResultLimit,
-    ].some((value) => value === true);
-    if (
-      complete !== true || hasMore === true || truncated ||
-      (Array.isArray(failures) && failures.length > 0)
-    ) {
-      const error = new Error("DWS enterprise message scan was incomplete");
+    ];
+    let payload;
+    let scanComplete = false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      payload = await this.run(searchArgs, { timeout: timeoutMs });
+      const result = payload?.result ?? payload ?? {};
+      const failures = result.failures ?? payload?.failures ?? [];
+      const hasMore = result.hasMore ?? payload?.hasMore;
+      const complete = result.complete ?? payload?.complete ?? (hasMore === false);
+      const truncated = [
+        result.truncated, payload?.truncated,
+        result.truncatedByPageLimit, payload?.truncatedByPageLimit,
+        result.truncatedByResultLimit, payload?.truncatedByResultLimit,
+      ].some((value) => value === true);
+      scanComplete = complete === true && hasMore !== true && !truncated &&
+        (!Array.isArray(failures) || failures.length === 0);
+      if (scanComplete) break;
+      if (attempt === 0) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    if (!scanComplete) {
+      const error = new Error("DWS enterprise message scan was incomplete after one bounded retry");
       error.code = "dws_enterprise_scan_incomplete";
       throw error;
     }

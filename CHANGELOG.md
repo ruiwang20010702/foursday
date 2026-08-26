@@ -8,6 +8,7 @@
 - Hardened checkpoint, manual-reply probe, deferred-reply, event-wake, rendering read-back, attachment, and enterprise-ingress behavior while keeping production writes and gbrain promotion independently gated.
 - Decoupled Sidecar transport readiness from a slow enterprise startup reconcile, kept failed initial scans alive for bounded retry, and extended Shadow/restart health waiting without treating transport connection as checkpoint success.
 - In enterprise mode, limited explicit history fetches to the owner's self-chat so current-organization coworkers use one verified enterprise scan instead of redundant per-user scans; preserved safe target diagnostics for enterprise failures.
+- Added one bounded retry for an explicitly incomplete enterprise search projection; timeouts, authentication failures, unknown send outcomes, and a second incomplete result still fail closed.
 
 ## 0.8.0-rc.1 - 2026-08-24
 

@@ -641,6 +641,22 @@ test("enterprise direct scan admits only contact-verified current-organization s
   assert.equal(calls.filter((args) => args.includes("aisearch")).length, 1);
 });
 
+test("enterprise direct scan retries one incomplete projection before failing closed", async () => {
+  let attempts = 0;
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async () => {
+    attempts += 1;
+    return attempts === 1
+      ? { result: { complete: false, hasMore: true, failures: [{ code: "projection_pending" }] } }
+      : { result: { complete: true, hasMore: false, failures: [], conversationMessagesList: [] } };
+  };
+  assert.deepEqual(await dws.fetchEnterpriseDirect({
+    start: new Date("2026-08-26T14:00:00+08:00"),
+    end: new Date("2026-08-26T14:10:00+08:00"),
+  }), []);
+  assert.equal(attempts, 2);
+});
+
 test("DWS personal event wake waits for ready and forwards only valid event signals", async () => {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
