@@ -688,6 +688,35 @@ test("enterprise direct scan reports the bounded incompleteness reason", async (
   assert.equal(attempts, 2);
 });
 
+test("enterprise direct scan retries one transient read-command failure", async () => {
+  let attempts = 0;
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary read transport failure");
+    return { result: { complete: true, hasMore: false, failures: [], conversationMessagesList: [] } };
+  };
+  assert.deepEqual(await dws.fetchEnterpriseDirect({
+    start: new Date("2026-08-26T14:00:00+08:00"),
+    end: new Date("2026-08-26T14:01:00+08:00"),
+  }), []);
+  assert.equal(attempts, 2);
+});
+
+test("enterprise direct scan never retries an authentication failure", async () => {
+  let attempts = 0;
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async () => {
+    attempts += 1;
+    throw new Error("unauthorized authentication failure");
+  };
+  await assert.rejects(dws.fetchEnterpriseDirect({
+    start: new Date("2026-08-26T14:00:00+08:00"),
+    end: new Date("2026-08-26T14:01:00+08:00"),
+  }), /unauthorized/u);
+  assert.equal(attempts, 1);
+});
+
 test("enterprise direct scan splits broad history into complete two-minute slices", async () => {
   const calls = [];
   const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });

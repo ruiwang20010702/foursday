@@ -886,7 +886,21 @@ export class DwsAdapter {
       let scanComplete = false;
       let incompleteReason = "not_complete";
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        payload = await this.run(searchArgs, { timeout: timeoutMs });
+        try {
+          payload = await this.run(searchArgs, { timeout: timeoutMs });
+        } catch (error) {
+          const marker = `${String(error?.stdout ?? "")} ${String(error?.stderr ?? "")} ${String(error?.message ?? "")}`;
+          if (/auth|ciphertext_key_mismatch|unauthorized|forbidden/iu.test(marker)) throw error;
+          if (attempt === 0) {
+            await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+            continue;
+          }
+          const failed = new Error("DWS enterprise message read failed after one bounded retry");
+          failed.code = /timeout|timed out|ETIMEDOUT/iu.test(marker)
+            ? "dws_enterprise_scan_request_timeout"
+            : "dws_enterprise_scan_command_failed";
+          throw failed;
+        }
         const result = payload?.result ?? payload ?? {};
         const failures = result.failures ?? payload?.failures ?? [];
         const hasMore = result.hasMore ?? payload?.hasMore;
