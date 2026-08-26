@@ -119,6 +119,7 @@ export function loadConfig({ production = false } = {}) {
     databaseSsl: boolean("FOURSDAY_DATABASE_SSL", false),
     databasePoolMax: positiveInteger("FOURSDAY_DATABASE_POOL_MAX", 10, { maximum: 50 }),
     targetUserIds: commaSeparated("FOURSDAY_DINGTALK_USERS"),
+    enterpriseUsersEnabled: boolean("FOURSDAY_DINGTALK_ENTERPRISE_USERS", true),
     targetGroupIds: commaSeparated("FOURSDAY_DINGTALK_GROUPS"),
     selfUserId: process.env.FOURSDAY_DINGTALK_SELF_USER?.trim() || null,
     dwsPath: process.env.FOURSDAY_DWS_PATH?.trim() || join(homedir(), ".local", "bin", "dws"),

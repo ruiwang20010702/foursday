@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tempfile
@@ -75,7 +76,26 @@ class ProjectRouterTest(unittest.TestCase):
         self.assertEqual(first.project.id, "vocab_2_2")
         self.assertEqual(followup.status, "bound")
         self.assertEqual(followup.project.id, "vocab_2_2")
-        self.assertEqual(followup.workspace_path, first.workspace_path)
+
+    def test_codex_project_selection_hash_is_reloaded_on_next_turn(self):
+        binding_path = os.path.join(self.temp.name, "routes-selected.json")
+        registry = ProjectRegistry.load(
+            self.registry_path,
+            fallback_workspace=self.fallback,
+            binding_path=binding_path,
+        )
+        session_key = "direct-link:enterprise-user"
+        with open(binding_path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "schemaVersion": 1,
+                "bindings": {
+                    hashlib.sha256(session_key.encode("utf-8")).hexdigest(): "vocab_2_2",
+                },
+            }, handle)
+        os.chmod(binding_path, 0o600)
+        selected = registry.route(text="继续处理这份文档", session_key=session_key)
+        self.assertEqual(selected.status, "bound")
+        self.assertEqual(selected.project.id, "vocab_2_2")
 
     def test_project_name_inside_a_file_path_does_not_hijack_bound_session(self):
         first = self.registry.route(
@@ -125,6 +145,13 @@ class ProjectRouterTest(unittest.TestCase):
         )
         self.assertEqual(followup.status, "bound")
         self.assertEqual(followup.project.id, "vocab_2_2")
+        with open(binding_path, "r", encoding="utf-8") as handle:
+            persisted = json.load(handle)["bindings"]
+        self.assertNotIn("direct-1:teacher-nana", persisted)
+        self.assertIn(
+            hashlib.sha256("direct-1:teacher-nana".encode("utf-8")).hexdigest(),
+            persisted,
+        )
 
     def test_ambiguous_or_unknown_message_never_guesses_project(self):
         ambiguous_path = os.path.join(self.temp.name, "ambiguous.json")
@@ -165,6 +192,7 @@ class ProjectRouterTest(unittest.TestCase):
         invalid_sources = [
             [{"id": "source", "name": "Source", "kind": "write", "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"}],
             [{"id": "source", "name": "Source", "kind": "doc", "nodeId": "short"}],
+            [{"id": "provided_1", "name": "Reserved", "kind": "doc", "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"}],
             [
                 {"id": "same", "name": "One", "kind": "doc", "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"},
                 {"id": "same", "name": "Two", "kind": "doc", "nodeId": "EXAMPLEPROJECTDOCNODE0987654321"},
@@ -185,6 +213,64 @@ class ProjectRouterTest(unittest.TestCase):
                 }, handle)
             with self.assertRaises(ValueError):
                 ProjectRegistry.load(path, fallback_workspace=self.fallback)
+
+    def test_v2_work_scopes_inherit_one_workspace_and_related_binding(self):
+        path = os.path.join(self.temp.name, "work-scopes.json")
+        binding_path = os.path.join(self.temp.name, "work-scope-routes.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "schemaVersion": 2,
+                "workspaces": [{
+                    "id": "vocab_repo",
+                    "root": self.vocab,
+                    "gitRemote": None,
+                    "runInstructions": "Read the ledger.",
+                }],
+                "scopes": [{
+                    "id": "vocab_2_2",
+                    "name": "单词 2.2",
+                    "aliases": ["单词2.2"],
+                    "workspaceId": "vocab_repo",
+                    "gbrainSlugs": ["projects/51t-word-2-2"],
+                }, {
+                    "id": "vocab_2_2_content",
+                    "name": "单词 2.2 内容生产",
+                    "aliases": ["应用题生产"],
+                    "parentId": "vocab_2_2",
+                    "gbrainSlugs": ["projects/51t-word-2-2-content-production"],
+                }],
+            }, handle, ensure_ascii=False)
+        session_key = "direct:worker"
+        with open(binding_path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "schemaVersion": 2,
+                "bindings": {
+                    hashlib.sha256(session_key.encode("utf-8")).hexdigest(): {
+                        "primaryScopeId": "vocab_2_2_content",
+                        "relatedScopeIds": ["vocab_2_2"],
+                        "relatedGbrainSlugs": ["projects/51t-word-2-2-learning-report"],
+                        "evidenceSourceIds": [],
+                        "rationale": "Content production is primary; learning report is related.",
+                        "updatedAt": "2026-08-26T00:00:00Z",
+                    },
+                },
+            }, handle)
+        os.chmod(binding_path, 0o600)
+        registry = ProjectRegistry.load(
+            path,
+            fallback_workspace=self.fallback,
+            binding_path=binding_path,
+        )
+        route = registry.route(text="继续处理", session_key=session_key)
+        self.assertEqual(route.status, "bound")
+        self.assertEqual(route.project.id, "vocab_2_2_content")
+        self.assertEqual(route.project.workspace_id, "vocab_repo")
+        self.assertEqual(route.project.lineage, ("vocab_2_2", "vocab_2_2_content"))
+        self.assertEqual(route.workspace_path, os.path.realpath(self.vocab))
+        self.assertEqual([item.id for item in route.related_projects], ["vocab_2_2"])
+        self.assertIn("projects/51t-word-2-2", route.project.gbrain_slugs)
+        self.assertIn("projects/51t-word-2-2-content-production", route.project.gbrain_slugs)
+        self.assertIn("Related gbrain project pages", route.context)
 
 
 if __name__ == "__main__":

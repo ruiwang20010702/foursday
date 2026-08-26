@@ -17,6 +17,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isSecretReference, secretConfigKeys } from "./secret-provider.mjs";
 import { productionConfigKeys } from "./production-config-file.mjs";
+import { normalizeWorkScopeRegistry } from "./foursday-work-scope-registry.mjs";
 
 const execFileAsync = promisify(execFile);
 const memoryPromoterJobName = "foursday-memory-promoter";
@@ -116,10 +117,10 @@ export function foursdayCodexConfig({
     `command = ${JSON.stringify(node)}`,
     `args = [${JSON.stringify(mcp)}]`,
     "startup_timeout_sec = 5",
-    "tool_timeout_sec = 10",
-    'env_vars = ["FOURSDAY_PRODUCTION_CONFIG", "FOURSDAY_PROJECT_REGISTRY", "FOURSDAY_WORK_CONTEXT_FILE", "FOURSDAY_PROFILE_RELEASE_FILE", "FOURSDAY_RELEASE_SHA", "FOURSDAY_MODE", "DWS_PERSONAL_SEND_ENABLED", "DWS_PERSONAL_STATE_FILE", "DWS_PERSONAL_FALLBACK_MS"]',
+    "tool_timeout_sec = 30",
+    'env_vars = ["FOURSDAY_PRODUCTION_CONFIG", "FOURSDAY_PROJECT_REGISTRY", "FOURSDAY_ROUTE_STATE_FILE", "FOURSDAY_WORK_CONTEXT_FILE", "FOURSDAY_PROFILE_RELEASE_FILE", "FOURSDAY_RELEASE_SHA", "FOURSDAY_MODE", "DWS_PERSONAL_SEND_ENABLED", "DWS_PERSONAL_STATE_FILE", "DWS_PERSONAL_FALLBACK_MS", "DWS_PERSONAL_COMMAND_LOCK", "DWS_PERSONAL_ENTERPRISE_USERS_ENABLED"]',
     "required = true",
-    'enabled_tools = ["foursday_remember_project_fact", "foursday_list_attachments", "foursday_stage_attachment", "foursday_read_project_memory", "foursday_runtime_status", "foursday_list_project_sources", "foursday_read_project_source"]',
+    'enabled_tools = ["foursday_remember_project_fact", "foursday_list_attachments", "foursday_stage_attachment", "foursday_read_project_memory", "foursday_runtime_status", "foursday_list_project_sources", "foursday_read_project_source", "foursday_list_projects", "foursday_select_project", "foursday_discover_work_scopes", "foursday_select_work_scope"]',
     'default_tools_approval_mode = "auto"',
     "",
     "[mcp_servers.foursday.env]",
@@ -255,9 +256,7 @@ export async function buildFoursdayNativeProfileConfiguration({
 } = {}) {
   const production = await privateJson(productionConfigPath, "Foursday production config");
   const registry = await privateJson(projectRegistryPath, "Foursday project registry");
-  if (registry.value.schemaVersion !== 1 || !Array.isArray(registry.value.projects)) {
-    throw new Error("Foursday project registry is invalid");
-  }
+  const workScopeRegistry = normalizeWorkScopeRegistry(registry.value);
   for (const key of Object.keys(production.value)) {
     if (key.startsWith("FOURSDAY_") && !productionConfigKeys.has(key)) {
       throw new Error(`Unsupported Foursday production config key: ${key}`);
@@ -326,10 +325,14 @@ export async function buildFoursdayNativeProfileConfiguration({
     DWS_PATH: dws,
     DWS_PERSONAL_ALLOWED_USERS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS"),
     DWS_PERSONAL_FETCH_USERS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_USERS"),
+    DWS_PERSONAL_ENTERPRISE_USERS_ENABLED: scalar(
+      profileProductionConfig, "FOURSDAY_DINGTALK_ENTERPRISE_USERS", true,
+    ),
     DWS_PERSONAL_ALLOWED_GROUPS: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_GROUPS"),
     DINGTALK_SELF_USER_ID: scalar(profileProductionConfig, "FOURSDAY_DINGTALK_SELF_USER"),
     DINGTALK_DATA_ROOT: join(layout.userHome, "Library", "Application Support", "DingTalkMac"),
     DWS_PERSONAL_STATE_FILE: join(stateRoot, "dws.json"),
+    DWS_PERSONAL_COMMAND_LOCK: join(stateRoot, "dws-command.lock"),
     DWS_PERSONAL_MEDIA_ROOT: join(stateRoot, "media"),
     // A bounded overlap keeps restarts lossless without replaying old conversations.
     DWS_PERSONAL_INITIAL_LOOKBACK_MS: "600000",
@@ -375,7 +378,7 @@ export async function buildFoursdayNativeProfileConfiguration({
       dwsPath: dws,
       dwsHome: layout.userHome,
       projectRoots: [
-        ...registry.value.projects.map((project) => project.root),
+        ...workScopeRegistry.workspaces.map((workspace) => workspace.root),
         join(localRoot, "fallback"),
       ],
       pythonRuntimeRoot,

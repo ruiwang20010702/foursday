@@ -161,6 +161,8 @@ export async function inspectFoursdayNativeGateway({
   const envDocument = await privateEnv(join(layout.profileDirectory, ".env"));
   const mode = envDocument.values.get("FOURSDAY_MODE") ?? "unknown";
   const configuredSendEnabled = envDocument.values.get("DWS_PERSONAL_SEND_ENABLED") === "true";
+  const enterpriseUsersEnabled =
+    envDocument.values.get("DWS_PERSONAL_ENTERPRISE_USERS_ENABLED") === "true";
   let stdout = "";
   let running = false;
   let serviceEnabled = null;
@@ -274,6 +276,8 @@ export async function inspectFoursdayNativeGateway({
     installed: true,
     profile: "foursday",
     mode,
+    accessPolicy: enterpriseUsersEnabled ? "enterprise" : "explicit_users",
+    enterpriseUsersEnabled,
     sendEnabled,
     sendBlocked,
     running,

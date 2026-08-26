@@ -166,7 +166,7 @@ async function readBackSentMessage({ dws, route, conversationId, evidence }) {
 
 function emptyState() {
   return {
-    lastUsers: {}, lastGroups: {}, recentMessageIds: [],
+    lastUsers: {}, lastGroups: {}, lastEnterpriseAt: null, recentMessageIds: [],
     recipients: {}, activeConversations: {}, takeoverReported: [],
     controlStates: {},
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
@@ -206,6 +206,9 @@ async function loadState(path) {
     return {
       lastUsers: parsed?.lastUsers && typeof parsed.lastUsers === "object" ? parsed.lastUsers : {},
       lastGroups: parsed?.lastGroups && typeof parsed.lastGroups === "object" ? parsed.lastGroups : {},
+      lastEnterpriseAt: typeof parsed?.lastEnterpriseAt === "string"
+        ? parsed.lastEnterpriseAt
+        : null,
       recentMessageIds: Array.isArray(parsed?.recentMessageIds)
         ? parsed.recentMessageIds.map(String).filter(Boolean).slice(-5_000)
         : [],
@@ -315,6 +318,9 @@ export function sidecarConfig(environment = process.env) {
       environment.DWS_PERSONAL_FETCH_USERS ??
       environment.DWS_PERSONAL_ALLOWED_USERS,
     ),
+    enterpriseUsersEnabled: String(
+      environment.DWS_PERSONAL_ENTERPRISE_USERS_ENABLED ?? "false",
+    ).toLowerCase() === "true",
     groupIds: csv(environment.DWS_PERSONAL_ALLOWED_GROUPS),
     selfUserId: String(environment.DINGTALK_SELF_USER_ID ?? "").trim() || null,
     stateFile: stateFile ? resolve(stateFile) : null,
@@ -550,6 +556,7 @@ export async function createSidecarRuntime({
           conversationId,
           participantUserId: senderUserId,
           chatType,
+          enterpriseVerified: message.enterpriseVerified === true,
           createTime: message.withdrawnAt
             ? new Date(message.withdrawnAt).toISOString()
             : createTime,
@@ -628,6 +635,7 @@ export async function createSidecarRuntime({
         ? Math.max(0, Number(message.detectionLatencyMs))
         : null,
       wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
+      enterpriseVerified: message.enterpriseVerified === true,
     });
     controlStates.set(conversationId, control);
     state.controlStates = Object.fromEntries(controlStates);
@@ -647,6 +655,7 @@ export async function createSidecarRuntime({
         chatType,
         mentionedSelf,
         isSelf: message.isSelf === true,
+        enterpriseVerified: message.enterpriseVerified === true,
         attachments,
         ownerRevision: control.ownerRevision,
         sendGeneration: control.sendGeneration,
@@ -694,10 +703,17 @@ export async function createSidecarRuntime({
       const targets = [
         ...config.userIds.map((id) => ({ kind: "user", id })),
         ...config.groupIds.map((id) => ({ kind: "group", id })),
+        ...(config.enterpriseUsersEnabled ? [{ kind: "enterprise", id: "current_org" }] : []),
       ];
       const results = await Promise.allSettled(targets.map(async (target) => {
-        const checkpoints = target.kind === "user" ? state.lastUsers : state.lastGroups;
-        const last = epoch(checkpoints[target.id]);
+        const checkpoints = target.kind === "user"
+          ? state.lastUsers
+          : target.kind === "group"
+            ? state.lastGroups
+            : null;
+        const last = epoch(target.kind === "enterprise"
+          ? state.lastEnterpriseAt
+          : checkpoints[target.id]);
         const historySettleMs = Number.isFinite(Number(config.historySettleMs))
           ? Math.max(0, Number(config.historySettleMs))
           : 120_000;
@@ -709,7 +725,16 @@ export async function createSidecarRuntime({
           ? end.getTime() - config.initialLookbackMs
           : Math.max(0, Math.min(last, safeHistoryBoundary) - 5_000));
         let messages;
-        if (target.kind === "user" && target.id === config.selfUserId) {
+        if (target.kind === "enterprise") {
+          if (typeof dws.fetchEnterpriseDirect !== "function") {
+            throw new Error("DWS enterprise message scan is unavailable");
+          }
+          messages = await dws.fetchEnterpriseDirect({
+            start,
+            end,
+            selfUserId: config.selfUserId,
+          });
+        } else if (target.kind === "user" && target.id === config.selfUserId) {
           const lookbackMs = Math.min(
             24 * 60 * 60 * 1_000,
             Math.max(60_000, end.getTime() - start.getTime()),
@@ -766,7 +791,7 @@ export async function createSidecarRuntime({
                 detectionLatencyMs,
                 wakeSource,
               },
-              target.kind === "user" ? "direct" : "group",
+              target.kind === "group" ? "group" : "direct",
               target.kind === "group",
               dispatch,
             );
@@ -780,15 +805,23 @@ export async function createSidecarRuntime({
           }
         }
         if (targetFailed) continue;
-        const checkpoints = target.kind === "user" ? state.lastUsers : state.lastGroups;
-        const last = epoch(checkpoints[target.id]) ?? 0;
+        const checkpoints = target.kind === "user"
+          ? state.lastUsers
+          : target.kind === "group"
+            ? state.lastGroups
+            : null;
+        const last = epoch(target.kind === "enterprise"
+          ? state.lastEnterpriseAt
+          : checkpoints[target.id]) ?? 0;
         const historySettleMs = Number.isFinite(Number(config.historySettleMs))
           ? Math.max(0, Number(config.historySettleMs))
           : 120_000;
-        checkpoints[target.id] = new Date(Math.max(
+        const nextCheckpoint = new Date(Math.max(
           last,
           end.getTime() - historySettleMs,
         )).toISOString();
+        if (target.kind === "enterprise") state.lastEnterpriseAt = nextCheckpoint;
+        else checkpoints[target.id] = nextCheckpoint;
       }
       if (config.selfUserId && typeof dws.hasManualReply === "function") {
         for (const [conversationId, active] of activeConversations) {
@@ -833,6 +866,7 @@ export async function createSidecarRuntime({
                 conversationId,
                 participantUserId: active.participantUserId,
                 chatType: active.chatType,
+                enterpriseVerified: active.enterpriseVerified === true,
                 sourceMessageId: active.sourceMessageId ?? null,
                 ownerMessageId,
                 ownerContent: String(manual.message?.content ?? "").slice(0, 20_000),
@@ -870,6 +904,7 @@ export async function createSidecarRuntime({
               conversationId,
               participantUserId: active.participantUserId,
               chatType: active.chatType,
+              enterpriseVerified: active.enterpriseVerified === true,
               sourceMessageId: active.sourceMessageId ?? null,
               ownerMessageId: event.id,
               ownerContent: event.note,

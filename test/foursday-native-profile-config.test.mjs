@@ -38,6 +38,7 @@ async function fixture(t) {
     FOURSDAY_DATABASE_URL: "keychain://service/database",
     FOURSDAY_DATA_KEY: "keychain://service/data",
     FOURSDAY_DINGTALK_USERS: "trusted-user",
+    FOURSDAY_DINGTALK_ENTERPRISE_USERS: true,
     FOURSDAY_DINGTALK_GROUPS: "trusted-group",
     FOURSDAY_DINGTALK_SELF_USER: "owner",
   }), { mode: 0o600 });
@@ -77,12 +78,14 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.equal(Object.hasOwn(plan.profileProductionConfig, "AI_EMPLOYEE_PERSONAL_MEMORY_ENABLED"), false);
   assert.equal(plan.profileProductionConfig.FOURSDAY_DATABASE_URL, "keychain://service/database");
   assert.match(plan.envContent, /DWS_PERSONAL_ALLOWED_USERS="trusted-user"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_ENTERPRISE_USERS_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_EVENT_WAKE_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_FALLBACK_MS="30000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_HISTORY_SETTLE_MS="120000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_QUIET_MS="8000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS="20000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEND_ENABLED="false"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_COMMAND_LOCK=.*dws-command\.lock/u);
   assert.match(plan.envContent, /CODEX_HOME=/u);
   assert.match(plan.envContent, /FOURSDAY_PYTHON_PATH=.*python-runtime/u);
   assert.match(plan.envContent, /FOURSDAY_CONTROL_FILE=.*control\.json/u);
@@ -103,14 +106,18 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexConfigContent, /\[mcp_servers\.foursday\]/u);
   assert.match(plan.codexConfigContent, /foursday-codex-mcp\.mjs/u);
   assert.match(plan.codexConfigContent, /startup_timeout_sec = 5/u);
-  assert.match(plan.codexConfigContent, /tool_timeout_sec = 10/u);
+  assert.match(plan.codexConfigContent, /tool_timeout_sec = 30/u);
   assert.match(plan.codexConfigContent, /foursday_runtime_status/u);
   assert.match(plan.codexConfigContent, /FOURSDAY_PROFILE_RELEASE_FILE/u);
   assert.match(plan.codexConfigContent, /foursday_stage_attachment/u);
   assert.match(plan.codexConfigContent, /foursday_list_project_sources/u);
   assert.match(plan.codexConfigContent, /foursday_read_project_source/u);
+  assert.match(plan.codexConfigContent, /foursday_list_projects/u);
+  assert.match(plan.codexConfigContent, /foursday_select_project/u);
+  assert.match(plan.codexConfigContent, /FOURSDAY_ROUTE_STATE_FILE/u);
   assert.match(plan.codexConfigContent, /\[mcp_servers\.foursday\.env\][\s\S]*DWS_PATH/u);
   assert.match(plan.codexConfigContent, /FOURSDAY_DWS_HOME/u);
+  assert.match(plan.codexConfigContent, /DWS_PERSONAL_COMMAND_LOCK/u);
   assert.doesNotMatch(plan.codexConfigContent, /EXAMPLEPROJECTDOCNODE/u);
   assert.match(plan.codexRulesContent, /pattern=\[\["git","\/usr\/bin\/git".*\],"push"\].*decision="forbidden"/u);
   assert.match(plan.codexRulesContent, /pattern=\[\["git","\/usr\/bin\/git".*\],"add","-A"\].*decision="forbidden"/u);

@@ -7,6 +7,7 @@ import { PersonalGbrainCandidateStore } from "./personal-gbrain-candidate-store.
 import { verifyPersonalGbrainCandidateEvidence } from "./personal-gbrain-candidate.mjs";
 import { createPostgresPool } from "./postgres.mjs";
 import { applyProductionConfigFile } from "./production-config-file.mjs";
+import { legacyProjectsFromWorkScopes } from "./foursday-work-scope-registry.mjs";
 
 async function privateJson(path, label) {
   const absolute = resolve(path);
@@ -22,10 +23,8 @@ async function privateJson(path, label) {
 }
 
 function projectFromRegistry(registry, projectId) {
-  if (registry.schemaVersion !== 1 || !Array.isArray(registry.projects)) {
-    throw new Error("Hermes project registry is invalid");
-  }
-  const matches = registry.projects.filter((project) => project?.id === projectId);
+  const matches = legacyProjectsFromWorkScopes(registry)
+    .filter((project) => project?.id === projectId);
   if (matches.length !== 1 || typeof matches[0].root !== "string") {
     throw new Error("Hermes memory candidate project is not registered");
   }

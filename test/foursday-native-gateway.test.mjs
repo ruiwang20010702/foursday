@@ -27,6 +27,7 @@ async function fixture(t) {
     'DWS_PERSONAL_SEND_ENABLED="false"',
     `DWS_PERSONAL_STATE_FILE=${JSON.stringify(checkpoint)}`,
     'DWS_PERSONAL_FALLBACK_MS="300000"',
+    'DWS_PERSONAL_ENTERPRISE_USERS_ENABLED="true"',
     'FOURSDAY_MODE="shadow"',
     "",
   ].join("\n"), { mode: 0o600 });
@@ -97,6 +98,8 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.installed, true);
   assert.equal(status.serviceEnabled, true);
   assert.equal(status.mode, "shadow");
+  assert.equal(status.accessPolicy, "enterprise");
+  assert.equal(status.enterpriseUsersEnabled, true);
   assert.equal(status.sendEnabled, false);
   assert.equal(status.sendBlocked, false);
   assert.equal(status.checkpointState, "healthy");

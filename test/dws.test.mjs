@@ -475,6 +475,38 @@ test("DWS CLI calls are serialized so the local data lock cannot race", async ()
   assert.deepEqual(order, ["first", "second", "third"]);
 });
 
+test("separate DWS adapter instances share the same private command lock", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dws-adapter-lock-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, "dws-command.lock");
+  let active = 0;
+  let maximumActive = 0;
+  const order = [];
+  const commandRunner = async (_command, args) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    order.push(`${args[0]}:start`);
+    await new Promise((accept) => setTimeout(accept, 20));
+    order.push(`${args[0]}:end`);
+    active -= 1;
+    return { stdout: "{}" };
+  };
+  const options = {
+    dwsPath: "/safe/bin/dws",
+    commandRunner,
+    environment: { HOME: root, DWS_PERSONAL_COMMAND_LOCK: lock },
+  };
+  const first = new DwsAdapter(options);
+  const second = new DwsAdapter(options);
+  await Promise.all([first.run(["first"]), second.run(["second"])]);
+  assert.equal(maximumActive, 1);
+  assert.equal(
+    JSON.stringify(order) === JSON.stringify(["first:start", "first:end", "second:start", "second:end"]) ||
+    JSON.stringify(order) === JSON.stringify(["second:start", "second:end", "first:start", "first:end"]),
+    true,
+  );
+});
+
 test("a failed DWS CLI call does not block the following queued call", async () => {
   let calls = 0;
   const dws = new DwsAdapter({
@@ -487,6 +519,126 @@ test("a failed DWS CLI call does not block the following queued call", async () 
   });
   await assert.rejects(dws.run(["first"]), /data lock busy/u);
   assert.deepEqual(await dws.run(["second"]), { success: true });
+});
+
+test("enterprise direct scan admits only contact-verified current-organization senders", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args) => {
+      calls.push(args);
+      if (args.includes("search-advanced")) return { stdout: JSON.stringify({
+        result: {
+          hasMore: false,
+          failures: [],
+          conversationMessagesList: [{
+            singleChat: true,
+            openConversationId: "direct-employee",
+            messages: [{
+              openMessageId: "message-employee-1",
+              senderUserId: "employee-user",
+              senderName: "Employee",
+              createTime: "2026-08-26T14:00:01+08:00",
+              content: "请核对项目进度",
+              isSelf: false,
+            }, {
+              openMessageId: "message-employee-2",
+              senderUserId: "employee-user",
+              senderName: "Employee",
+              createTime: "2026-08-26T14:00:02+08:00",
+              content: "补充一条",
+              isSelf: false,
+            }],
+          }, {
+            singleChat: true,
+            openConversationId: "direct-external",
+            messages: [{
+              openMessageId: "message-external",
+              senderUserId: "external-user",
+              senderName: "External",
+              createTime: "2026-08-26T14:00:03+08:00",
+              content: "外部联系人消息",
+              isSelf: false,
+            }],
+          }, {
+            singleChat: false,
+            openConversationId: "group-1",
+            messages: [{
+              openMessageId: "message-group",
+              senderUserId: "employee-user",
+              createTime: "2026-08-26T14:00:04+08:00",
+              content: "群消息",
+            }],
+          }, {
+            singleChat: true,
+            openConversationId: "direct-policy-unverified",
+            messages: [{
+              openMessageId: "message-policy-unverified",
+              senderUserId: "policy-user",
+              createTime: "2026-08-26T14:00:04+08:00",
+              content: "无显示名且组织接口拒绝",
+              isSelf: false,
+            }],
+          }, {
+            singleChat: true,
+            openConversationId: "direct-owner-outbound",
+            messages: [{
+              openMessageId: "message-owner-outbound",
+              senderUserId: "owner-user",
+              senderName: "Owner",
+              createTime: "2026-08-26T14:00:05+08:00",
+              content: "Owner发出的消息",
+              isSelf: false,
+            }],
+          }],
+        },
+      }) };
+      const id = args[args.indexOf("--ids") + 1];
+      if (args.includes("contact") && id === "employee-user") {
+        const denied = new Error("organization contact policy denied");
+        denied.code = 4;
+        throw denied;
+      }
+      if (args.includes("contact") && id === "policy-user") {
+        const denied = new Error("organization contact policy denied");
+        denied.code = 4;
+        denied.stderr = '{"code":"PAT_ORG_POLICY_DENIED","data":{"policy":"OPEN_SOURCE_ORG_SCOPE_FORBIDDEN"}}';
+        throw denied;
+      }
+      if (args.includes("aisearch")) return { stdout: JSON.stringify({
+        result: [{
+          orgEmployeeModel: {
+            userId: "employee-user",
+            openDingTalkId: "open-employee",
+          },
+        }],
+      }) };
+      return { stdout: JSON.stringify({
+        result: [],
+      }) };
+    },
+  });
+  const messages = await dws.fetchEnterpriseDirect({
+    start: new Date("2026-08-26T14:00:00+08:00"),
+    end: new Date("2026-08-26T14:01:00+08:00"),
+    selfUserId: "owner-user",
+  });
+  assert.equal(messages.length, 2);
+  assert.equal(messages.every((message) => message.senderUserId === "employee-user"), true);
+  assert.equal(messages.every((message) => message.senderOpenDingTalkId === "open-employee"), true);
+  assert.equal(messages.every((message) => message.enterpriseVerified === true), true);
+  assert.equal(messages.every((message) => message.singleChat === true), true);
+  const search = calls.find((args) => args.includes("search-advanced"));
+  assert.ok(search.includes("--start"));
+  assert.ok(search.includes("--end"));
+  assert.ok(search.includes("--page-all"));
+  assert.equal(search.includes("--user"), false);
+  assert.equal(search.includes("--query"), false);
+  assert.equal(calls.filter((args) => args.includes("employee-user")).length, 1);
+  assert.equal(calls.filter((args) => args.includes("external-user")).length, 1);
+  assert.equal(calls.filter((args) => args.includes("owner-user")).length, 0);
+  assert.equal(calls.filter((args) => args.includes("policy-user")).length, 1);
+  assert.equal(calls.filter((args) => args.includes("aisearch")).length, 1);
 });
 
 test("DWS personal event wake waits for ready and forwards only valid event signals", async () => {

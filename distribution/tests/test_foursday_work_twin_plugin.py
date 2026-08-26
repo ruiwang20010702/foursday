@@ -26,6 +26,8 @@ class FoursdayWorkTwinHookTests(unittest.TestCase):
                     "sourcePrincipalHandle": "b" * 64,
                     "sourceSessionHash": "c" * 64,
                     "sourceScope": "direct",
+                    "requesterRole": "trusted",
+                    "providedDingtalkSources": [],
                     "ownerRevision": 0,
                     "sendGeneration": 0,
                     "expiresAt": 2_000,

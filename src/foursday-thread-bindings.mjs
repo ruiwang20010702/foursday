@@ -38,12 +38,21 @@ async function privateRoot(root) {
 }
 
 function normalizeScope(context, permissionVersion) {
+  const primaryScopeId = String(context.primaryScopeId ?? context.projectId ?? "");
+  const relatedScopeIds = [...new Set(context.relatedScopeIds ?? [])].map(String);
+  const relatedGbrainSlugs = [...new Set(context.relatedGbrainSlugs ?? [])].map(String);
   if (
     !context ||
     !digest.test(String(context.hermesSessionHash ?? "")) ||
     !digest.test(String(context.sourceSessionHash ?? "")) ||
     !digest.test(String(context.sourcePrincipalHash ?? "")) ||
-    !projectIdPattern.test(String(context.projectId ?? "")) ||
+    !projectIdPattern.test(primaryScopeId) ||
+    relatedScopeIds.length > 8 || relatedScopeIds.some((value) =>
+      !projectIdPattern.test(value) || value === primaryScopeId
+    ) ||
+    relatedGbrainSlugs.length > 12 || relatedGbrainSlugs.some((value) =>
+      !/^projects\/[A-Za-z0-9._/-]{1,291}$/u.test(value)
+    ) ||
     typeof context.workspace !== "string" || !isAbsolute(context.workspace) ||
     !digest.test(String(permissionVersion ?? ""))
   ) throw new Error("Foursday thread binding scope is invalid");
@@ -51,7 +60,10 @@ function normalizeScope(context, permissionVersion) {
     hermesSessionHash: context.hermesSessionHash,
     sourceSessionHash: context.sourceSessionHash,
     sourcePrincipalHash: context.sourcePrincipalHash,
-    projectId: context.projectId,
+    projectId: primaryScopeId,
+    primaryScopeId,
+    relatedScopeIds,
+    relatedGbrainSlugs,
     workspace: resolve(context.workspace),
     permissionVersion,
   };
@@ -62,7 +74,7 @@ function scopeKey(scope) {
     scope.hermesSessionHash,
     scope.sourceSessionHash,
     scope.sourcePrincipalHash,
-    scope.projectId,
+    scope.primaryScopeId,
     scope.workspace,
     scope.permissionVersion,
   ].join("\0"));
@@ -151,7 +163,14 @@ export class FoursdayThreadBindingStore {
     const key = scopeKey(scope);
     const document = await readBinding(join(this.absoluteRoot, `${key}.json`));
     if (!document) return null;
-    if (document.key !== key || JSON.stringify(document.scope) !== JSON.stringify(scope)) {
+    if (
+      document.key !== key ||
+      document.scope.hermesSessionHash !== scope.hermesSessionHash ||
+      document.scope.sourceSessionHash !== scope.sourceSessionHash ||
+      document.scope.sourcePrincipalHash !== scope.sourcePrincipalHash ||
+      document.scope.workspace !== scope.workspace ||
+      document.scope.permissionVersion !== scope.permissionVersion
+    ) {
       throw new Error("Foursday thread binding scope mismatch");
     }
     if (
@@ -179,7 +198,13 @@ export class FoursdayThreadBindingStore {
     return this.#withLock("store", async () => {
       const path = join(this.absoluteRoot, `${key}.json`);
       const prior = await readBinding(path);
-      if (prior && (prior.key !== key || JSON.stringify(prior.scope) !== JSON.stringify(scope))) {
+      if (prior && (
+        prior.key !== key || prior.scope.hermesSessionHash !== scope.hermesSessionHash ||
+        prior.scope.sourceSessionHash !== scope.sourceSessionHash ||
+        prior.scope.sourcePrincipalHash !== scope.sourcePrincipalHash ||
+        prior.scope.workspace !== scope.workspace ||
+        prior.scope.permissionVersion !== scope.permissionVersion
+      )) {
         throw new Error("Foursday thread binding scope mismatch");
       }
       if (prior && prior.codexThreadId !== String(codexThreadId)) {
@@ -224,7 +249,7 @@ export class FoursdayThreadBindingStore {
     return this.#withLock("store", async () => {
       const path = join(this.absoluteRoot, `${key}.json`);
       const prior = await readBinding(path);
-      if (!prior || prior.key !== key || JSON.stringify(prior.scope) !== JSON.stringify(scope)) {
+      if (!prior || prior.key !== key || prior.scope.workspace !== scope.workspace) {
         throw new Error("Foursday thread binding scope mismatch");
       }
       const known = new Set([prior.codexThreadId, ...(prior.forkThreadIds ?? [])]);

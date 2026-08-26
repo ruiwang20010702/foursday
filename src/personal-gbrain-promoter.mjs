@@ -5,6 +5,7 @@ import {
   retirePersonalGbrainPromotion,
 } from "./personal-gbrain-writer.mjs";
 import { verifyPersonalGbrainCandidateEvidence } from "./personal-gbrain-candidate.mjs";
+import { legacyProjectsFromWorkScopes } from "./foursday-work-scope-registry.mjs";
 
 async function loadPrivateRegistry(path) {
   const absolute = resolve(path);
@@ -13,14 +14,19 @@ async function loadPrivateRegistry(path) {
     throw new Error("Hermes project registry must be a private regular file");
   }
   const registry = JSON.parse(await readFile(absolute, "utf8"));
-  if (registry.schemaVersion !== 1 || !Array.isArray(registry.projects)) {
-    throw new Error("Hermes project registry is invalid");
-  }
+  if (
+    !(registry.schemaVersion === 1 && Array.isArray(registry.projects)) &&
+    registry.schemaVersion !== 2
+  ) throw new Error("Hermes project registry is invalid");
+  if (registry.schemaVersion === 2) legacyProjectsFromWorkScopes(registry);
   return registry;
 }
 
 function projectRoot(registry, projectId) {
-  const matches = registry.projects.filter((project) => project?.id === projectId);
+  const projects = registry.schemaVersion === 1
+    ? registry.projects
+    : legacyProjectsFromWorkScopes(registry);
+  const matches = projects.filter((project) => project?.id === projectId);
   if (matches.length !== 1 || typeof matches[0].root !== "string") {
     const error = new Error("Personal gbrain candidate project is no longer registered");
     error.code = "PROJECT_UNREGISTERED";

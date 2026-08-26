@@ -119,6 +119,7 @@ function validationEnvironment(environment, profile, contexts) {
     LC_ALL: process.env.LC_ALL || "C.UTF-8",
     FOURSDAY_PRODUCTION_CONFIG: environment.FOURSDAY_PRODUCTION_CONFIG,
     FOURSDAY_PROJECT_REGISTRY: environment.FOURSDAY_PROJECT_REGISTRY,
+    FOURSDAY_ROUTE_STATE_FILE: environment.FOURSDAY_ROUTE_STATE_FILE,
     FOURSDAY_WORK_CONTEXT_FILE: contexts,
     FOURSDAY_PROFILE_RELEASE_FILE: environment.FOURSDAY_PROFILE_RELEASE_FILE,
     FOURSDAY_RELEASE_SHA: environment.FOURSDAY_RELEASE_SHA,
@@ -126,6 +127,8 @@ function validationEnvironment(environment, profile, contexts) {
     DWS_PERSONAL_SEND_ENABLED: environment.DWS_PERSONAL_SEND_ENABLED,
     DWS_PERSONAL_STATE_FILE: environment.DWS_PERSONAL_STATE_FILE,
     DWS_PERSONAL_FALLBACK_MS: environment.DWS_PERSONAL_FALLBACK_MS,
+    DWS_PERSONAL_COMMAND_LOCK: environment.DWS_PERSONAL_COMMAND_LOCK,
+    DWS_PERSONAL_ENTERPRISE_USERS_ENABLED: environment.DWS_PERSONAL_ENTERPRISE_USERS_ENABLED,
   };
   for (const [name, value] of Object.entries(output)) {
     if (typeof value !== "string" || value === "") delete output[name];
@@ -172,13 +175,13 @@ async function timedCall(request, threadId, tool, args) {
 
 export async function verifyRuntimeMcpReliability({
   iterations = 20,
-  timeoutMs = 12_000,
+  timeoutMs = 35_000,
   maximumP95Ms = 2_000,
   profileDirectory = defaultProfile,
   mcpPath = join(projectRoot, "src", "foursday-codex-mcp.mjs"),
 } = {}) {
   const count = boundedInteger(iterations, 20, 1, 100);
-  const requestTimeoutMs = boundedInteger(timeoutMs, 12_000, 1_000, 60_000);
+  const requestTimeoutMs = boundedInteger(timeoutMs, 35_000, 1_000, 60_000);
   const p95Limit = boundedInteger(maximumP95Ms, 2_000, 100, 10_000);
   const profile = await realpath(profileDirectory);
   const envPath = await privateFile(join(profile, ".env"));
@@ -228,6 +231,8 @@ export async function verifyRuntimeMcpReliability({
           sourcePrincipalHandle: "a".repeat(64),
           sourceSessionHash: "b".repeat(64),
           sourceScope: "direct",
+          requesterRole: "owner",
+          providedDingtalkSources: [],
           attachments: [{ path: attachment, name: "validation.txt", mimeType: "text/plain" }],
           expiresAt: Math.floor(Date.now() / 1000) + 900,
         },
@@ -245,7 +250,7 @@ export async function verifyRuntimeMcpReliability({
       "app-server",
       "-c", argsOverride,
       "-c", "mcp_servers.foursday.startup_timeout_sec=5",
-      "-c", "mcp_servers.foursday.tool_timeout_sec=10",
+      "-c", "mcp_servers.foursday.tool_timeout_sec=30",
     ], {
       cwd: workspace,
       env: childEnvironment,
@@ -274,7 +279,9 @@ export async function verifyRuntimeMcpReliability({
       if (
         status.result?.structuredContent?.source !== "live_profile" ||
         status.result?.structuredContent?.mode !== "shadow" ||
-        status.result?.structuredContent?.sendEnabled !== false
+        status.result?.structuredContent?.sendEnabled !== false ||
+        status.result?.structuredContent?.enterpriseUsersEnabled !==
+          (String(environment.DWS_PERSONAL_ENTERPRISE_USERS_ENABLED ?? "false") === "true")
       ) throw new Error("Runtime MCP status read-back is invalid");
       samples.foursday_runtime_status.push(status.elapsedMs);
 

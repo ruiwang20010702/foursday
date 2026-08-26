@@ -43,6 +43,10 @@ class NodeProjectMemoryProvider:
     async def context_for_route(self, route) -> str:
         project = getattr(route, "project", None)
         slugs = list(getattr(project, "gbrain_slugs", ()) or ())
+        for related in list(getattr(route, "related_projects", ()) or ())[:8]:
+            slugs.extend(list(getattr(related, "gbrain_slugs", ()) or ()))
+        slugs.extend(list(getattr(route, "related_gbrain_slugs", ()) or ())[:12])
+        slugs = list(dict.fromkeys(slugs))[:32]
         if not project or not slugs:
             return ""
         memory_home = str(
@@ -64,7 +68,7 @@ class NodeProjectMemoryProvider:
         request = json.dumps({
             "configPath": self.config_path,
             "slugs": slugs,
-            "maxTotalBytes": 12 * 1024,
+            "maxTotalBytes": 24 * 1024,
         }, ensure_ascii=False).encode() + b"\n"
         try:
             stdout, _stderr = await asyncio.wait_for(

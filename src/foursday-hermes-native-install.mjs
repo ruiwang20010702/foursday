@@ -374,7 +374,10 @@ function distributionManifest({ version, hermesVersion }) {
     "    description: Private exact project registry path",
     "    required: true",
     "  - name: DWS_PERSONAL_ALLOWED_USERS",
-    "    description: Trusted DingTalk staff IDs",
+    "    description: Owner and explicit DingTalk staff ID exceptions",
+    "    required: true",
+    "  - name: DWS_PERSONAL_ENTERPRISE_USERS_ENABLED",
+    "    description: Admit stable users verified in the current DingTalk organization",
     "    required: true",
     "",
   ].join("\n");

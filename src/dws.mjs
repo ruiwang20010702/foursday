@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { createInterface } from "node:readline";
 import { adapterContractVersion, assertNormalizedMessage } from "./adapter-contracts.mjs";
 import { safeCodexEnvironment } from "./codex-environment.mjs";
+import { withDwsCommandLock } from "./dws-command-lock.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -493,6 +494,7 @@ export class DwsAdapter {
     this.commandRunner = commandRunner;
     this.processSpawner = processSpawner;
     this.environment = environment;
+    this.commandLockPath = String(environment.DWS_PERSONAL_COMMAND_LOCK ?? "").trim() || null;
     this.userIdentityCache = new Map();
     this.commandQueue = Promise.resolve();
   }
@@ -604,15 +606,19 @@ export class DwsAdapter {
   async run(args, options = {}) {
     const execute = async () => {
       const { env: ignoredEnvironment, ...commandOptions } = options;
-      const { stdout } = await this.commandRunner(
-        this.dwsPath,
-        [...args, ...(this.dwsMock ? ["--mock"] : []), "--format", "json"],
-        {
-          maxBuffer: 8 * 1024 * 1024,
-          timeout: 60_000,
-          ...commandOptions,
-          env: safeCodexEnvironment(this.dwsPath, this.environment),
-        },
+      const { stdout } = await withDwsCommandLock(
+        this.commandLockPath,
+        () => this.commandRunner(
+          this.dwsPath,
+          [...args, ...(this.dwsMock ? ["--mock"] : []), "--format", "json"],
+          {
+            maxBuffer: 8 * 1024 * 1024,
+            timeout: 60_000,
+            ...commandOptions,
+            env: safeCodexEnvironment(this.dwsPath, this.environment),
+          },
+        ),
+        { timeoutMs: 65_000 },
       );
       return JSON.parse(stdout);
     };
@@ -828,6 +834,96 @@ export class DwsAdapter {
     }
     this.userIdentityCache.set(userId, openDingTalkId);
     return openDingTalkId;
+  }
+
+  async verifyEnterpriseUser(expectedUserId, displayName = null) {
+    const userId = normalizeDwsIdentity(expectedUserId);
+    if (!userId) {
+      const error = new Error("DWS enterprise identity requires a user ID");
+      error.code = "dws_enterprise_identity_required";
+      throw error;
+    }
+    try {
+      const openDingTalkId = await this.resolveUserOpenDingTalkId(userId, displayName);
+      return { userId, openDingTalkId };
+    } catch (error) {
+      const marker = `${String(error?.stdout ?? "")} ${String(error?.stderr ?? "")}`;
+      if (/PAT_ORG_POLICY_DENIED|OPEN_SOURCE_ORG_SCOPE_FORBIDDEN/u.test(marker)) {
+        const unavailable = new Error("DWS sender is not a verified current-enterprise user");
+        unavailable.code = "dws_enterprise_identity_unavailable";
+        throw unavailable;
+      }
+      throw error;
+    }
+  }
+
+  async fetchEnterpriseDirect({ start, end, selfUserId = null, timeoutMs = 60_000 } = {}) {
+    if (!(start instanceof Date) || !Number.isFinite(start.getTime()) ||
+        !(end instanceof Date) || !Number.isFinite(end.getTime()) || start >= end) {
+      throw new Error("DWS enterprise message range is invalid");
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
+      throw new Error("DWS enterprise message timeout is invalid");
+    }
+    const ownerUserId = normalizeDwsIdentity(selfUserId);
+    const payload = await this.run([
+      "chat", "message", "search-advanced",
+      "--start", isoWithOffset(start),
+      "--end", isoWithOffset(end),
+      "--limit", "100",
+      "--page-all",
+      "--page-limit", "20",
+      "--max-items", "500",
+    ], { timeout: timeoutMs });
+    const result = payload?.result ?? payload ?? {};
+    const failures = result.failures ?? payload?.failures ?? [];
+    const hasMore = result.hasMore ?? payload?.hasMore;
+    const complete = result.complete ?? payload?.complete ?? (hasMore === false);
+    const truncated = [
+      result.truncated, payload?.truncated,
+      result.truncatedByPageLimit, payload?.truncatedByPageLimit,
+      result.truncatedByResultLimit, payload?.truncatedByResultLimit,
+    ].some((value) => value === true);
+    if (
+      complete !== true || hasMore === true || truncated ||
+      (Array.isArray(failures) && failures.length > 0)
+    ) {
+      const error = new Error("DWS enterprise message scan was incomplete");
+      error.code = "dws_enterprise_scan_incomplete";
+      throw error;
+    }
+    const messages = collectMessages(payload, null).filter((message) =>
+      message.singleChat === true && message.isSelf !== true &&
+      (!ownerUserId || message.senderUserId !== ownerUserId) &&
+      typeof message.id === "string" && Boolean(message.id) &&
+      typeof message.senderUserId === "string" && Boolean(message.senderUserId)
+    );
+    const output = [];
+    for (const message of messages.slice(0, 500)) {
+      try {
+        const identity = await this.verifyEnterpriseUser(
+          message.senderUserId,
+          message.senderName,
+        );
+        output.push({
+          ...message,
+          senderUserId: identity.userId,
+          senderOpenDingTalkId: identity.openDingTalkId,
+          senderIdentitySource: "enterprise_contact_verified",
+          enterpriseVerified: true,
+        });
+      } catch (error) {
+        if (![
+          "dws_enterprise_identity_required",
+          "dws_enterprise_identity_unavailable",
+          "dws_contact_identity_required",
+          "dws_contact_identity_unavailable",
+        ].includes(error?.code)) {
+          throw error;
+        }
+      }
+    }
+    return this.enrichMessageResources(output, { timeoutMs });
   }
 
   async fetchBySender({ senderUserId, start, end }) {

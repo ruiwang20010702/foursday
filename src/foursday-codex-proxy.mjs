@@ -10,8 +10,23 @@ import {
   FoursdayThreadBindingStore,
   foursdayPermissionVersion,
 } from "./foursday-thread-bindings.mjs";
+import { normalizeWorkScopeRegistry } from "./foursday-work-scope-registry.mjs";
 
 const contextMarker = /\n\n<!-- foursday-context:(fctx_[a-f0-9]{64}) -->\s*$/u;
+const dingtalkDocumentLink = /https:\/\/alidocs\.dingtalk\.com\/i\/nodes\/([A-Za-z0-9]{20,80})(?:\?[A-Za-z0-9%&=._~-]{0,1000})?/giu;
+
+function redactDingtalkDocumentLinks(text, sources) {
+  const sourceByNode = new Map((sources ?? []).map((source) => [
+    String(source.nodeId ?? ""),
+    String(source.sourceId ?? ""),
+  ]));
+  return String(text ?? "").replace(dingtalkDocumentLink, (_match, nodeId) => {
+    const sourceId = sourceByNode.get(nodeId);
+    return sourceId
+      ? `[DingTalk document source: ${sourceId}]`
+      : "[Unbound DingTalk document link]";
+  });
+}
 
 const highRiskPatterns = Object.freeze([
   /(?:^|[\s/])git\s+(?:[^\n]*\s)?push(?:\s|$)/iu,
@@ -168,16 +183,20 @@ export async function prepareFoursdayTurnContext(message, {
   const original = String(input[index].text ?? "");
   const match = original.match(contextMarker);
   const token = match?.[1];
-  const cleanText = original.replace(contextMarker, "").trim();
+  const visibleText = original.replace(contextMarker, "").trim();
   const context = await loadFoursdayWorkContext({
     path: environment.FOURSDAY_WORK_CONTEXT_FILE,
     token,
     cwd,
     now,
   });
+  const cleanText = redactDingtalkDocumentLinks(
+    visibleText,
+    context.providedDingtalkSources,
+  );
   input[index].text = [
     "<foursday_task_authority trust=\"connector-verified\" scope=\"project-reversible\">",
-    "Autonomously complete reversible work inside the routed project. Ask the requester only for irreducible business meaning, priority, content, or acceptance. Stop at the owner gate for push, merge, release, production, cross-project access, personal high-authority connectors, login-state browser actions, arbitrary shell network, secrets, payments, contracts, HR, irreversible deletion, or permission expansion.",
+    "Autonomously complete reversible work inside the selected primary workspace. Ask the requester only for irreducible business meaning, priority, content, or acceptance. Related scopes add context but never filesystem permission. Stop at the owner gate for push, merge, release, production, personal high-authority connectors, login-state browser actions, arbitrary shell network, secrets, payments, contracts, HR, irreversible deletion, or permission expansion.",
     "</foursday_task_authority>",
     "<foursday_project_context trust=\"owner-configured\">",
     context.projectContext.trim(),
@@ -232,13 +251,11 @@ async function loadAllowedRoots(environment) {
   } finally {
     await handle.close();
   }
-  if (document?.schemaVersion !== 1 || !Array.isArray(document.projects) || document.projects.length > 1_000) {
-    throw new Error("Foursday project registry is invalid");
-  }
+  const registry = normalizeWorkScopeRegistry(document);
   const roots = new Set();
-  for (const project of document.projects) {
-    if (!isAbsolute(project?.root)) throw new Error("Foursday project root is invalid");
-    roots.add(await realpath(project.root));
+  for (const workspace of registry.workspaces) {
+    if (!isAbsolute(workspace?.root)) throw new Error("Foursday project root is invalid");
+    roots.add(await realpath(workspace.root));
   }
   const fallback = String(environment.FOURSDAY_FALLBACK_WORKSPACE ?? "").trim();
   if (fallback) roots.add(await realpath(fallback));
@@ -298,6 +315,7 @@ export function codexProcessEnvironment(source, realCodex, configuredCodex = rea
   for (const name of [
     "FOURSDAY_PRODUCTION_CONFIG",
     "FOURSDAY_PROJECT_REGISTRY",
+    "FOURSDAY_ROUTE_STATE_FILE",
     "FOURSDAY_WORK_CONTEXT_FILE",
     "FOURSDAY_PROFILE_RELEASE_FILE",
     "FOURSDAY_RELEASE_SHA",
@@ -305,6 +323,8 @@ export function codexProcessEnvironment(source, realCodex, configuredCodex = rea
     "DWS_PERSONAL_SEND_ENABLED",
     "DWS_PERSONAL_STATE_FILE",
     "DWS_PERSONAL_FALLBACK_MS",
+    "DWS_PERSONAL_COMMAND_LOCK",
+    "DWS_PERSONAL_ENTERPRISE_USERS_ENABLED",
   ]) {
     if (typeof source[name] === "string" && source[name] !== "") environment[name] = source[name];
   }

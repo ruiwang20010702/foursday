@@ -139,23 +139,32 @@ def _scheduled_work_context(
         or registry_metadata.st_size > 1024 * 1024
     ):
         raise RuntimeError("Foursday scheduled project registry is unsafe")
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
-    projects = registry.get("projects") if registry.get("schemaVersion") == 1 else None
-    project = next(
-        (item for item in projects or [] if isinstance(item, dict) and item.get("id") == matched.group(1)),
-        None,
+    from project_router.registry import ProjectRegistry
+
+    fallback_workspace = str(os.getenv("FOURSDAY_FALLBACK_WORKSPACE", "")).strip()
+    if not fallback_workspace:
+        raw_registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        if raw_registry.get("schemaVersion") == 1:
+            fallback_workspace = str((raw_registry.get("projects") or [{}])[0].get("root") or "")
+        elif raw_registry.get("schemaVersion") == 2:
+            fallback_workspace = str((raw_registry.get("workspaces") or [{}])[0].get("root") or "")
+    registry = ProjectRegistry.load(
+        str(registry_path),
+        fallback_workspace=fallback_workspace,
     )
-    if not isinstance(project, dict):
+    project = next((item for item in registry.projects if item.id == matched.group(1)), None)
+    if project is None:
         raise RuntimeError("Foursday scheduled project is unavailable")
-    workspace = Path(_pin_workspace(project.get("root")))
+    workspace = Path(_pin_workspace(project.root))
     timestamp = int(time.time()) if now is None else int(now)
     token = f"fctx_{secrets.token_hex(32)}"
-    slugs = ", ".join(str(value) for value in list(project.get("gbrainSlugs") or [])[:20]) or "none"
+    slugs = ", ".join(str(value) for value in list(project.gbrain_slugs or ())[:32]) or "none"
     project_context = (
-        f"Foursday project route: {str(project.get('name') or project['id'])} ({project['id']}).\n"
+        f"Foursday primary work scope: {project.name} ({project.id}).\n"
+        f"Scope lineage: {' > '.join(project.lineage or (project.id,))}\n"
         f"Workspace: {workspace}\n"
         f"gbrain pages: {slugs}\n"
-        f"Run instructions: {str(project.get('runInstructions') or 'Read project instructions first.')[:2000]}"
+        f"Run instructions: {str(project.run_instructions or 'Read project instructions first.')[:2000]}"
     )
     parent = context_path.parent.resolve(strict=True)
     parent_metadata = parent.lstat()
@@ -185,7 +194,10 @@ def _scheduled_work_context(
                 contexts.items(), key=lambda item: int(item[1].get("expiresAt", 0)), reverse=True,
             )[:31])
         contexts[token] = {
-            "projectId": str(project["id"]),
+            "projectId": str(project.id),
+            "primaryScopeId": str(project.id),
+            "relatedScopeIds": [],
+            "relatedGbrainSlugs": [],
             "workspace": str(workspace),
             "projectContext": project_context[:8000],
             "memoryContext": "",
@@ -196,6 +208,8 @@ def _scheduled_work_context(
             "sourcePrincipalHash": hashlib.sha256(b"foursday-owner-scheduled").hexdigest(),
             "platform": "cron",
             "sourceScope": "cron",
+            "requesterRole": "system",
+            "providedDingtalkSources": [],
             "ownerRevision": 0,
             "sendGeneration": 0,
             "attachments": [],

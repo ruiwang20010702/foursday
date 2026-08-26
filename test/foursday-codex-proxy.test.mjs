@@ -154,6 +154,7 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
     CODEX_HOME: "/home/foursday/codex",
     FOURSDAY_PRODUCTION_CONFIG: "/private/config.json",
     FOURSDAY_PROJECT_REGISTRY: "/private/projects.json",
+    FOURSDAY_ROUTE_STATE_FILE: "/private/routes.json",
     FOURSDAY_WORK_CONTEXT_FILE: "/private/contexts.json",
     FOURSDAY_PROFILE_RELEASE_FILE: "/private/release.json",
     FOURSDAY_RELEASE_SHA: "a".repeat(40),
@@ -161,6 +162,8 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
     DWS_PERSONAL_SEND_ENABLED: "false",
     DWS_PERSONAL_STATE_FILE: "/private/dws.json",
     DWS_PERSONAL_FALLBACK_MS: "30000",
+    DWS_PERSONAL_COMMAND_LOCK: "/private/dws-command.lock",
+    DWS_PERSONAL_ENTERPRISE_USERS_ENABLED: "true",
     DWS_PATH: "/private/dws",
     FOURSDAY_DWS_HOME: "/private/home",
     FOURSDAY_PYTHON_PATH: "/managed/python/bin/python3",
@@ -172,11 +175,14 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
   }, "/usr/local/bin/codex");
   assert.equal(environment.HOME, "/home/foursday");
   assert.equal(environment.FOURSDAY_PROJECT_REGISTRY, "/private/projects.json");
+  assert.equal(environment.FOURSDAY_ROUTE_STATE_FILE, "/private/routes.json");
   assert.equal(environment.FOURSDAY_PROFILE_RELEASE_FILE, "/private/release.json");
   assert.equal(environment.FOURSDAY_RELEASE_SHA, "a".repeat(40));
   assert.equal(environment.FOURSDAY_MODE, "shadow");
   assert.equal(environment.DWS_PERSONAL_SEND_ENABLED, "false");
   assert.equal(environment.DWS_PERSONAL_STATE_FILE, "/private/dws.json");
+  assert.equal(environment.DWS_PERSONAL_COMMAND_LOCK, "/private/dws-command.lock");
+  assert.equal(environment.DWS_PERSONAL_ENTERPRISE_USERS_ENABLED, "true");
   assert.equal(environment.PYTHON, "/managed/python/bin/python3");
   assert.equal(environment.PATH.split(":")[0], "/managed/node/bin");
   assert.equal(environment.FOURSDAY_NODE_PATH, undefined);
@@ -213,6 +219,8 @@ test("turn context token becomes project and personal-memory context without rea
         sourcePrincipalHandle: "b".repeat(64),
         sourceSessionHash: "c".repeat(64),
         sourceScope: "direct",
+        requesterRole: "owner",
+        providedDingtalkSources: [],
         ownerIntervention: "task_correction",
         attachments: [
           { path: imagePath, mimeType: "image/png", name: "input.png" },
@@ -248,6 +256,60 @@ test("turn context token becomes project and personal-memory context without rea
   assert.deepEqual(result.params.input[1], { type: "localImage", path: imagePath });
   assert.equal(result.params.input.length, 2);
   assert.match(text, /spoofed\.png.*use-foursday_stage_attachment-mcp/u);
+});
+
+test("turn context replaces DingTalk URLs with connector-bound source IDs", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-turn-link-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const token = `fctx_${"f".repeat(64)}`;
+  const nodeId = "OWNERPROVIDEDDOCNODE123456789012";
+  const contextPath = join(root, "contexts.json");
+  await writeFile(contextPath, `${JSON.stringify({
+    schemaVersion: 1,
+    contexts: {
+      [token]: {
+        projectId: "example",
+        workspace: root,
+        projectContext: "Project: Example",
+        memoryContext: "",
+        sourcePrincipalHandle: "b".repeat(64),
+        sourceSessionHash: "c".repeat(64),
+        sourceScope: "direct",
+        requesterRole: "owner",
+        providedDingtalkSources: [{
+          sourceId: "provided_1",
+          kind: "doc",
+          nodeId,
+          messageHash: "d".repeat(64),
+          requesterRole: "owner",
+        }],
+        attachments: [],
+        expiresAt: Math.floor(Date.now() / 1000) + 60,
+      },
+    },
+  })}\n`, { mode: 0o600 });
+  const result = await injectFoursdayTurnContext({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "turn/start",
+    params: {
+      threadId: "thread",
+      input: [{
+        type: "text",
+        text: `读取 https://alidocs.dingtalk.com/i/nodes/${nodeId}?utm_scene=team_space 和 https://alidocs.dingtalk.com/i/nodes/UNBOUNDPROVIDEDDOCNODE1234567890\n\n<!-- foursday-context:${token} -->`,
+      }],
+    },
+  }, {
+    environment: {
+      FOURSDAY_WORK_CONTEXT_FILE: contextPath,
+      FOURSDAY_REQUIRE_WORK_CONTEXT: "true",
+    },
+    cwd: root,
+  });
+  const text = result.params.input[0].text;
+  assert.match(text, /DingTalk document source: provided_1/u);
+  assert.match(text, /Unbound DingTalk document link/u);
+  assert.doesNotMatch(text, /alidocs\.dingtalk\.com|OWNERPROVIDEDDOCNODE|UNBOUNDPROVIDEDDOCNODE/u);
 });
 
 test("real Codex app-server confirms the forced Foursday sandbox and permission profile", async (t) => {
@@ -403,6 +465,8 @@ test("proxy resumes the bound Codex thread after a fresh Hermes app-server proce
           hermesTurnHash: "b".repeat(64),
           sourcePrincipalHash: "c".repeat(64),
           sourceScope: "direct",
+          requesterRole: "owner",
+          providedDingtalkSources: [],
           platform: "dws_personal",
           ownerRevision: 0,
           sendGeneration: 0,

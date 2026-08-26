@@ -3,6 +3,7 @@ import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { inspectFoursdayNativeGateway } from "./foursday-native-gateway.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
+import { legacyProjectsFromWorkScopes } from "./foursday-work-scope-registry.mjs";
 
 const digest = /^[a-f0-9]{64}$/u;
 
@@ -30,13 +31,12 @@ async function privateJson(path, { optional = false, maximum = 1024 * 1024 } = {
 
 async function projectRegistry(path) {
   const document = await privateJson(path);
-  if (document?.schemaVersion !== 1 || !Array.isArray(document.projects) || document.projects.length > 1_000) {
-    throw new Error("Foursday project registry is invalid");
-  }
-  return document.projects.map((project) => ({
+  return legacyProjectsFromWorkScopes(document).map((project) => ({
     id: String(project.id ?? "").slice(0, 64),
     name: String(project.name ?? "").slice(0, 200),
     root: String(project.root ?? ""),
+    parentId: project.parentId ?? null,
+    workspaceId: project.workspaceId ?? project.id,
     gbrainSlugs: Array.isArray(project.gbrainSlugs)
       ? project.gbrainSlugs.slice(0, 20).map((value) => String(value).slice(0, 300))
       : [],
@@ -154,6 +154,8 @@ export class FoursdayControlService {
       gateway: {
         installed: gateway.installed === true,
         mode: gateway.mode,
+        accessPolicy: gateway.accessPolicy ?? "explicit_users",
+        enterpriseUsersEnabled: gateway.enterpriseUsersEnabled === true,
         sendEnabled: gateway.sendEnabled === true,
         sendBlocked: gateway.sendBlocked === true,
         running: gateway.running === true,
@@ -245,6 +247,8 @@ export class FoursdayControlService {
       projects: projects.map((project) => ({
         projectId: project.id,
         projectName: project.name,
+        parentId: project.parentId,
+        workspaceId: project.workspaceId,
         pages: project.gbrainSlugs,
       })),
     };

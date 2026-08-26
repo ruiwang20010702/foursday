@@ -7,8 +7,8 @@ The current public version is `v0.8.0-rc.1`. Source validation, a GitHub release
 ```mermaid
 flowchart LR
     M["DWS Stream wake<br/>filesystem / 30s fallback"] --> A["History read + Foursday Gateway + session"]
-    A --> R["Foursday trust + project router"]
-    G["Personal gbrain"] --> C["Private context"]
+    A --> R["Foursday trust + work-scope router"]
+    G["Personal gbrain project graph"] --> C["Private context"]
     R --> C
     C --> X["Codex Agent Loop"]
     X --> W["Real project workspace"]
@@ -44,9 +44,11 @@ Codex and Claude are the primary operator hosts. Their thin plugins call one loc
 
 ## Codex-first capability boundary
 
-The target split is deliberately asymmetric. Hermes owns channel ingress, platform sessions, cron/event triggers, and delivery. Codex owns task threads and safe resume/fork, same-project subagents, shell/Python, controlled web and image tools, approved MCP servers, Skills, working memory, project execution, verification, and the final answer. Foursday owns stable identity, project/CWD binding, the task authority envelope, owner intervention, high-risk exits, delivery receipts, and evidence-gated promotion into personal gbrain.
+The target split is deliberately asymmetric. Hermes owns channel ingress, platform sessions, cron/event triggers, and delivery. Codex owns task threads, work-scope selection, safe resume/fork, workspace-bounded subagents, shell/Python, controlled web and image tools, approved MCP servers, Skills, working memory, project execution, verification, and the final answer. Foursday owns stable identity, real-workspace binding, the task authority envelope, owner intervention, high-risk exits, delivery receipts, and evidence-gated promotion into personal gbrain.
 
-An authorized request grants the reversible work needed to finish its goal; Foursday does not ask for approval before every tool call. Business meaning, priority, content, and acceptance questions return to the requester. Production, cross-project access, personal high-authority MCPs, secrets, privilege expansion, and irreversible actions return to the owner. Owner messages freeze stale outbound generations before being classified as communication takeover, task correction, task takeover, resume, or unrelated conversation.
+The v2 private registry separates executable `workspaces` from business `scopes`. A scope may inherit a parent workspace and exact gbrain pages, while open-ended relationships are discovered from personal gbrain by Codex. Each task binds one primary executable scope and may retain several related scopes/pages. Related context never grants additional filesystem access, and the selection may be revised on later evidence.
+
+An authorized request grants the reversible work needed to finish its goal; Foursday does not ask for approval before every tool call. Codex may select another registered workspace for ordinary reversible work on the next turn. Business meaning, priority, content, and acceptance questions return to the requester. Production, unregistered workspaces, personal high-authority MCPs, secrets, privilege expansion, and irreversible actions return to the owner.
 
 The Foursday Profile fixes Hermes busy input to `queue`. Text fragments that arrive after a Codex turn has started are merged into the next turn instead of being redirected into a turn that still owns an older delivery generation. The old answer remains suppressed; the queued turn rebinds delivery from its final event metadata, so only an answer that owns the latest `ownerRevision/sendGeneration` can become visible.
 

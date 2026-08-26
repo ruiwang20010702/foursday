@@ -21,9 +21,9 @@ Trusted message → personal context → real workspace → verified work → na
 
 Foursday is an AI work twin for people who want an agent to work inside their real projects—not a chatbot that needs a new workflow for every question.
 
-For an allowlisted contact, Foursday can:
+For a direct-message sender whose stable identity is verified in the current DingTalk organization, Foursday can:
 
-- understand the conversation and route it to the right project;
+- read an exact shared DingTalk link in an isolated intake, let Codex choose a primary work scope and related projects from evidence, and bind the next turn to the real workspace;
 - read authorized pages from your personal gbrain;
 - use Codex inside the real workspace;
 - search, calculate, edit files, run tests, and recover from failures;
@@ -37,8 +37,8 @@ Push, merge, deployment, production writes, irreversible deletion, payment, cont
 ```mermaid
 flowchart LR
     M["Personal DingTalk / messaging channels"] --> T["Foursday Gateway + session"]
-    T --> R["Foursday trust + project router"]
-    G["Personal gbrain"] --> C["Private context"]
+    T --> R["Foursday trust + work-scope router"]
+    G["Personal gbrain project graph"] --> C["Private context"]
     R --> C
     C --> X["Codex Agent Loop"]
     X --> W["Real project workspace"]
@@ -54,9 +54,9 @@ flowchart LR
 Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousResearch/hermes-agent) control plane internally; Codex is the only work-planning and reply-generating loop. Foursday ships:
 
 - an isolated `foursday` Profile;
-- DWS personal DingTalk and project-router plugins, with Stream event wake-up, filesystem wake-up and bounded fallback;
+- DWS personal DingTalk and work-scope router plugins, with Stream event wake-up, filesystem wake-up and bounded fallback;
 - an isolated Codex home with an App Server policy proxy, workspace sandboxing, forbidden command rules, automatic approval review, and a Foursday MCP;
-- project-bound live DingTalk document reads through that MCP, without exposing DWS, node IDs, URLs, contact search, writes, or cross-project access to the Codex shell;
+- scope-bound live DingTalk reads through that MCP: common sources may be registered, while exact links from verified current-enterprise direct-message senders become short-lived `provided_N` sources outside the model. DWS, node IDs, URLs, contact/global search, writes, and paths outside the current primary workspace remain unavailable to the Codex shell;
 - a project-work Skill;
 - small host-side bridges for credentials and personal-memory promotion.
 - one host-neutral Foursday Control MCP, with thin Codex and Claude plugins plus an optional read-only local status page.
@@ -67,11 +67,23 @@ Profile behavior, routed project details, and personal-memory context are explic
 
 The previous custom Agent Runtime, capability manifests, approval UI, managed Gateway, compatibility installer, and duplicated documentation were removed. Git history remains the recovery path.
 
+## Open work scopes, constrained execution
+
+Foursday does not require every business relationship to be encoded in a manifest. Its private registry contains only the minimum needed to execute safely: real workspaces, repository pointers, aliases, optional parent scopes, and exact gbrain page pointers. Personal gbrain supplies the broader and changing project graph.
+
+For each task, Codex may choose:
+
+- one executable primary scope;
+- zero or more related registered scopes;
+- zero or more related personal-gbrain project pages.
+
+Parent scopes provide inherited context, while related scopes never expand filesystem permission. Codex can revise the selection on later evidence; it asks a person only when unresolved business meaning would materially change the outcome. Registry v1 remains readable, while new installations use the workspace/scope-separated v2 format in [`distribution/projects.example.json`](./distribution/projects.example.json).
+
 ## Next capability boundary
 
-Foursday uses a Codex-first capability model: Hermes owns message ingress, sessions, cron/event triggers, and delivery; Codex owns thread resume/fork, subagents, shell/Python, web, images, approved MCPs, isolated skills/working memory, project execution, and the final answer. Foursday binds identity, project, workspace, authority, human intervention, receipts, and stable-fact promotion without adding a second work graph or agent loop.
+Foursday uses a Codex-first capability model: Hermes owns message ingress, sessions, cron/event triggers, and delivery; Codex owns thread resume/fork, subagents, shell/Python, web, images, approved MCPs, isolated skills/working memory, project execution, scope selection, and the final answer. Foursday binds identity, primary workspace, authority, human intervention, receipts, and stable-fact promotion. Its lightweight work-scope graph is routing context for Codex, not a second executor or Agent Loop.
 
-Inside an authorized project, reversible work runs autonomously. Business meaning and acceptance questions go to the requester; production, cross-project access, personal high-authority connectors, secrets, and irreversible actions go to the owner. An owner reply first advances `ownerRevision/sendGeneration`, invalidates stale outbound text, and is then classified as communication takeover, task correction, task takeover, resume, or an unrelated message. Busy text is queued rather than redirected: the Gateway freezes the latest version actually consumed when the main handler returns, and only the final processing-root reply may adopt that snapshot. Intermediate, empty, old, cross-conversation, post-return, or takeover-stale replies remain ineligible to send. The current source candidate implements this contract; real sending and production activation remain separate release gates.
+Inside a selected registered workspace, reversible work runs autonomously. Safety is enforced at identity, workspace, consequence, and delivery boundaries rather than through a capability checklist. The personal default allowlist is the current DingTalk organization: each direct-message sender must resolve to the same stable user ID through the current-organization contact chain; external or unresolved identities are dropped. Any verified enterprise sender may grant one context-bound read by providing an exact DingTalk document link. Codex may select another registered workspace for ordinary reversible work on the next turn. Business meaning and acceptance questions go to the requester; production, unregistered workspace access, personal high-authority connectors, secrets, and irreversible actions go to the owner. Real sending and production activation remain separate release gates.
 
 ## Install
 

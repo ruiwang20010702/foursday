@@ -1,12 +1,19 @@
 {
-  "schemaVersion": 1,
-  "projects": [
+  "schemaVersion": 2,
+  "workspaces": [
+    {
+      "id": "example_repo",
+      "root": "/absolute/path/to/project",
+      "gitRemote": "https://github.com/example/project.git",
+      "runInstructions": "Read the project instructions and current evidence before acting."
+    }
+  ],
+  "scopes": [
     {
       "id": "example_project",
       "name": "Example Project",
       "aliases": ["example", "示例项目"],
-      "root": "/absolute/path/to/project",
-      "gitRemote": "https://github.com/example/project.git",
+      "workspaceId": "example_repo",
       "gbrainSlugs": ["projects/example-project"],
       "dingtalkSources": [
         {
@@ -15,8 +22,14 @@
           "kind": "doc",
           "nodeId": "EXAMPLEPROJECTDOCNODE1234567890"
         }
-      ],
-      "runInstructions": "Read the project instructions and current evidence before acting."
+      ]
+    },
+    {
+      "id": "example_workstream",
+      "name": "Example Workstream",
+      "aliases": ["example subproject", "示例子项目"],
+      "parentId": "example_project",
+      "gbrainSlugs": ["projects/example-workstream"]
     }
   ]
 }

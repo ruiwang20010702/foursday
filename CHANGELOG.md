@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added current-organization direct-message admission, context-bound DingTalk document links, shared DWS command locking, and explicit busy/unavailable/read-failed diagnostics without exposing DWS to the Codex shell.
+- Replaced the flat project/workspace identity with a backward-compatible v2 work-scope registry: Codex can select one executable primary scope plus related scopes and personal-gbrain project evidence, while related context never expands filesystem permission.
+- Added bounded personal-gbrain project discovery, v2 session bindings, parent-scope inheritance, stricter path/source validation, and real Codex App Server regression coverage for evidence-bound scope selection.
+- Hardened checkpoint, manual-reply probe, deferred-reply, event-wake, rendering read-back, attachment, and enterprise-ingress behavior while keeping production writes and gbrain promotion independently gated.
+
 ## 0.8.0-rc.1 - 2026-08-24
 
 - Added one revision-fenced Foursday Control service for privacy-safe status, tasks, schedules, project-memory scope, evidence, pause, takeover, correction, and resume.

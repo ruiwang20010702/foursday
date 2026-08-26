@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, Optional
+from types import SimpleNamespace
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -84,10 +85,44 @@ _CURRENT_RUNTIME_STATUS = re.compile(
     re.IGNORECASE,
 )
 _FULL_RELEASE_SHA = re.compile(r"^[a-f0-9]{40}$")
+_DINGTALK_DOCUMENT_LINK = re.compile(
+    r"https://alidocs\.dingtalk\.com/i/nodes/([A-Za-z0-9]{20,80})(?:\?[A-Za-z0-9%&=._~-]{0,1000})?",
+    re.IGNORECASE,
+)
 
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _provided_dingtalk_sources(
+    text: Any,
+    *,
+    message_ids: list[str],
+    requester_role: str,
+) -> list[dict[str, str]]:
+    if requester_role not in {"owner", "trusted"}:
+        raise RuntimeError("Foursday requester role is invalid")
+    message_hash = hashlib.sha256(
+        "\x00".join(str(value) for value in message_ids).encode("utf-8")
+    ).hexdigest()
+    output = []
+    seen = set()
+    for match in _DINGTALK_DOCUMENT_LINK.finditer(str(text or "")):
+        node_id = match.group(1)
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        output.append({
+            "sourceId": f"provided_{len(output) + 1}",
+            "kind": "doc",
+            "nodeId": node_id,
+            "messageHash": message_hash,
+            "requesterRole": requester_role,
+        })
+        if len(output) >= 4:
+            break
+    return output
 
 
 def _dingtalk_plain_text(value: Any) -> str:
@@ -173,6 +208,7 @@ _TURN_CONSUMED_DELIVERY_VERSION: contextvars.ContextVar[
 def _work_context_token(
     *,
     project: Any,
+    workspace: Optional[str] = None,
     session_key: str,
     project_context: str,
     memory_context: str,
@@ -181,6 +217,10 @@ def _work_context_token(
     send_generation: int = 0,
     owner_intervention: Optional[str] = None,
     source_scope: str = "direct",
+    requester_role: str = "trusted",
+    provided_dingtalk_sources: Optional[list[dict[str, str]]] = None,
+    related_projects: Optional[list[Any]] = None,
+    related_gbrain_slugs: Optional[list[str]] = None,
 ) -> str:
     if owner_intervention not in {None, "task_correction", "resume_requested"}:
         raise RuntimeError("Foursday owner intervention is invalid")
@@ -191,9 +231,58 @@ def _work_context_token(
         raise RuntimeError("Foursday delivery revision is invalid")
     if source_scope not in {"direct", "group"}:
         raise RuntimeError("Foursday source scope is invalid")
+    if requester_role not in {"owner", "trusted"}:
+        raise RuntimeError("Foursday requester role is invalid")
+    raw_sources = list(provided_dingtalk_sources or [])
+    if len(raw_sources) > 4 or (source_scope != "direct" and raw_sources):
+        raise RuntimeError("Foursday provided DingTalk sources are invalid")
+    safe_sources = []
+    seen_source_ids = set()
+    seen_nodes = set()
+    for item in raw_sources:
+        if not isinstance(item, dict) or set(item) != {
+            "sourceId", "kind", "nodeId", "messageHash", "requesterRole",
+        }:
+            raise RuntimeError("Foursday provided DingTalk source is invalid")
+        source_id = str(item.get("sourceId") or "")
+        node_id = str(item.get("nodeId") or "")
+        item_role = str(item.get("requesterRole") or "")
+        message_hash = str(item.get("messageHash") or "")
+        if (
+            not re.fullmatch(r"provided_[1-4]", source_id)
+            or source_id in seen_source_ids
+            or not re.fullmatch(r"[A-Za-z0-9]{20,80}", node_id)
+            or node_id in seen_nodes
+            or item.get("kind") != "doc"
+            or item_role != requester_role
+            or not re.fullmatch(r"[a-f0-9]{64}", message_hash)
+        ):
+            raise RuntimeError("Foursday provided DingTalk source is invalid")
+        seen_source_ids.add(source_id)
+        seen_nodes.add(node_id)
+        safe_sources.append({
+            "sourceId": source_id,
+            "kind": "doc",
+            "nodeId": node_id,
+            "messageHash": message_hash,
+            "requesterRole": requester_role,
+        })
     configured = str(os.getenv("FOURSDAY_WORK_CONTEXT_FILE", "")).strip()
-    if not configured or project is None:
+    if not configured or (project is None and not safe_sources):
         return ""
+    project_id = str(getattr(project, "id", "") or "shared_link")
+    related_scope_ids = [
+        str(getattr(item, "id", "")) for item in list(related_projects or [])[:8]
+        if str(getattr(item, "id", ""))
+    ]
+    related_memory = [
+        str(value) for value in list(related_gbrain_slugs or [])[:12]
+        if re.fullmatch(r"projects/[A-Za-z0-9._/-]{1,291}", str(value))
+        and "//" not in str(value) and ".." not in str(value).split("/")
+    ]
+    project_root = str(getattr(project, "root", "") or workspace or "").strip()
+    if not project_root:
+        raise RuntimeError("Foursday dynamic-link fallback workspace is unavailable")
     path = Path(configured).expanduser()
     if not path.is_absolute():
         raise RuntimeError("Foursday work context path must be absolute")
@@ -246,8 +335,11 @@ def _work_context_token(
                 "name": str(item.get("name") or canonical.name)[:255],
             })
         contexts[token] = {
-            "projectId": str(project.id),
-            "workspace": str(project.root),
+            "projectId": project_id,
+            "primaryScopeId": None if project_id == "shared_link" else project_id,
+            "relatedScopeIds": list(dict.fromkeys(related_scope_ids)),
+            "relatedGbrainSlugs": list(dict.fromkeys(related_memory)),
+            "workspace": project_root,
             "projectContext": str(project_context or "")[:8_000],
             "memoryContext": str(memory_context or "")[:16_000],
             "sourcePrincipalHandle": secrets.token_hex(32),
@@ -256,6 +348,8 @@ def _work_context_token(
             "sendGeneration": int(send_generation),
             "ownerIntervention": owner_intervention,
             "sourceScope": source_scope,
+            "requesterRole": requester_role,
+            "providedDingtalkSources": safe_sources,
             "attachments": safe_attachments,
             "expiresAt": now + 15 * 60,
         }
@@ -384,6 +478,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._allow_all = bool(extra.get("allow_all")) or (
             str(os.getenv("DWS_PERSONAL_ALLOW_ALL_USERS", "")).lower() == "true"
         )
+        self._enterprise_users_enabled = bool(extra.get("enterprise_users")) or (
+            str(os.getenv("DWS_PERSONAL_ENTERPRISE_USERS_ENABLED", "")).lower() == "true"
+        )
         self._toolsets = list(extra.get("toolsets") or ["coding"])
         self._bundle_quiet_ms = _milliseconds(
             extra.get("bundle_quiet_ms")
@@ -411,6 +508,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._pending: dict[str, list[dict]] = {}
         self._bundle_tasks: dict[str, asyncio.Task] = {}
         self._latest_delivery_versions: dict[str, dict[str, Any]] = {}
+        self._provided_source_sessions: dict[str, tuple[float, list[dict[str, str]]]] = {}
         self._control_ack_tasks: set[asyncio.Task] = set()
         self._startup_release_task: Optional[asyncio.Task] = None
 
@@ -575,8 +673,12 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._seen.add(message_id)
         return True
 
-    def _user_allowed(self, user_id: str) -> bool:
-        return self._allow_all or bool(user_id and user_id in self._allowed_users)
+    def _user_allowed(self, user_id: str, enterprise_verified: bool = False) -> bool:
+        return (
+            self._allow_all
+            or bool(user_id and user_id in self._allowed_users)
+            or bool(self._enterprise_users_enabled and user_id and enterprise_verified)
+        )
 
     async def _emit_control(self, record: Dict[str, Any]) -> None:
         conversation_id = str(record.get("conversationId") or "").strip()
@@ -585,7 +687,10 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         if (
             not conversation_id
             or not participant_id
-            or not self._user_allowed(participant_id)
+            or not self._user_allowed(
+                participant_id,
+                enterprise_verified=record.get("enterpriseVerified") is True,
+            )
             or chat_type not in {"direct", "group"}
         ):
             return
@@ -744,10 +849,46 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         user_id = str(latest["senderUserId"])
         open_id = str(latest.get("senderOpenDingTalkId") or "").strip()
         chat_type = str(latest["chatType"])
+        self_user_id = str(os.getenv("DINGTALK_SELF_USER_ID", "")).strip()
+        requester_role = (
+            "owner"
+            if chat_type == "direct" and self_user_id and user_id == self_user_id
+            else "trusted"
+        )
+        provided_sources = (
+            _provided_dingtalk_sources(
+                content,
+                message_ids=message_ids,
+                requester_role=requester_role,
+            )
+            if chat_type == "direct"
+            else []
+        )
         timestamp = datetime.fromisoformat(
             str(latest.get("createTime") or "").replace("Z", "+00:00")
         )
-        route = self._router.route(text=content, session_key=f"{conversation_id}:{user_id}")
+        session_key = f"{conversation_id}:{user_id}"
+        if provided_sources:
+            bound_selection = getattr(self._router, "bound_selection", None)
+            previous_selection = bound_selection(session_key) if callable(bound_selection) else None
+            previous_scope = (
+                str(previous_selection.get("primaryScopeId") or "")
+                if previous_selection else "none"
+            )
+            route = SimpleNamespace(
+                status="link_intake",
+                project=None,
+                workspace_path=str(self._router.fallback_workspace),
+                context=(
+                    "A verified enterprise sender provided one or more exact DingTalk documents. "
+                    "Read those provided sources in the isolated fallback, then let Codex classify "
+                    "the project from the request, document evidence, prior Thread and project list. "
+                    f"The prior primary scope was {previous_scope}; it is context, not a constraint. "
+                    "The sender identity is never project evidence."
+                ),
+            )
+        else:
+            route = self._router.route(text=content, session_key=session_key)
         runtime_status_required = bool(_CURRENT_RUNTIME_STATUS.search(content))
         runtime_status_context = ""
         if runtime_status_required:
@@ -768,7 +909,26 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 memory_status = "available" if memory_context else "empty"
             except Exception:
                 memory_status = "unavailable"
-        session_key = f"{conversation_id}:{user_id}"
+        current_time = time.time()
+        self._provided_source_sessions = {
+            key: value for key, value in self._provided_source_sessions.items()
+            if value[0] > current_time
+        }
+        if provided_sources:
+            self._provided_source_sessions[session_key] = (
+                current_time + 15 * 60,
+                [dict(source) for source in provided_sources],
+            )
+        elif session_key in self._provided_source_sessions:
+            provided_sources = [
+                dict(source) for source in self._provided_source_sessions[session_key][1]
+            ]
+        if len(self._provided_source_sessions) > 1_000:
+            self._provided_source_sessions = dict(sorted(
+                self._provided_source_sessions.items(),
+                key=lambda item: item[1][0],
+                reverse=True,
+            )[:1_000])
         latest_delivery_version = {
             "conversationId": conversation_id,
             "messageId": message_ids[-1],
@@ -785,6 +945,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             self._latest_delivery_versions.pop(next(iter(self._latest_delivery_versions)))
         context_token = _work_context_token(
             project=getattr(route, "project", None),
+            workspace=getattr(route, "workspace_path", None),
             session_key=session_key,
             project_context=route.context,
             memory_context=memory_context,
@@ -797,10 +958,18 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 else None
             ),
             source_scope=chat_type,
+            requester_role=requester_role,
+            provided_dingtalk_sources=provided_sources,
+            related_projects=list(getattr(route, "related_projects", ()) or ()),
+            related_gbrain_slugs=list(getattr(route, "related_gbrain_slugs", ()) or ()),
         )
         tool_context = (
             "Foursday work context token: " + context_token +
-            ". Pass it only as contextToken to Foursday MCP tools. Never quote it in a reply."
+            ". Pass it only as contextToken to Foursday MCP tools. Never quote it in a reply. "
+            "DingTalk document links captured from this message are available through "
+            "foursday_list_project_sources and foursday_read_project_source. Never probe, "
+            "install or call dws from the Codex shell; use the MCP error code to distinguish "
+            "bounded host busy, host unavailability, project-scope denial and document read failure."
             if context_token else ""
         )
         channel_prompt = "\n\n".join(
@@ -852,6 +1021,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "detection_latency_ms": detection_latency_ms,
                 "bundle_wait_ms": bundle_wait_ms,
                 "wake_source": wake_source,
+                "enterprise_verified": latest.get("enterpriseVerified") is True,
             },
         )
         _shadow_evidence({
@@ -900,8 +1070,11 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             or not user_id
             or (not content and not attachments)
             or chat_type not in {"direct", "group"}
+            or not self._user_allowed(
+                user_id,
+                enterprise_verified=record.get("enterpriseVerified") is True,
+            )
             or not self._remember(message_id)
-            or not self._user_allowed(user_id)
         ):
             return
         if chat_type == "group":

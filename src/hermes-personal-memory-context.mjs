@@ -18,7 +18,7 @@ function configuredBoolean(value) {
 }
 
 function validateSlugs(slugs) {
-  if (!Array.isArray(slugs) || slugs.length > 10) {
+  if (!Array.isArray(slugs) || slugs.length > 32) {
     throw new Error("Hermes project memory slugs must be a bounded list");
   }
   return [...new Set(slugs.map((value) => String(value ?? "").trim()))]

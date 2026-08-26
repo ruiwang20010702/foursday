@@ -3,6 +3,15 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export const foursdayContextTokenPattern = /^fctx_[a-f0-9]{64}$/u;
+const providedSourceId = /^provided_[1-4]$/u;
+const dingtalkNodeId = /^[A-Za-z0-9]{20,80}$/u;
+const sha256 = /^[a-f0-9]{64}$/u;
+
+function validProjectGbrainSlug(value) {
+  const slug = String(value ?? "");
+  return /^projects\/[A-Za-z0-9._/-]{1,291}$/u.test(slug) &&
+    !slug.includes("//") && !slug.split("/").includes("..");
+}
 
 export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now() } = {}) {
   if (!foursdayContextTokenPattern.test(String(token ?? ""))) {
@@ -34,8 +43,52 @@ export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now
     !Number.isSafeInteger(context.expiresAt) ||
     context.expiresAt * 1000 <= now
   ) throw new Error("work_context_expired");
+  const primaryScopeId = context.primaryScopeId == null
+    ? (context.projectId === "shared_link" ? null : context.projectId)
+    : String(context.primaryScopeId);
+  const relatedScopeIds = context.relatedScopeIds ?? [];
+  const relatedGbrainSlugs = context.relatedGbrainSlugs ?? [];
+  if (
+    (primaryScopeId != null && !/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(primaryScopeId)) ||
+    !Array.isArray(relatedScopeIds) || relatedScopeIds.length > 8 ||
+    relatedScopeIds.some((value) =>
+      !/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(String(value)) || value === primaryScopeId
+    ) ||
+    !Array.isArray(relatedGbrainSlugs) || relatedGbrainSlugs.length > 12 ||
+    relatedGbrainSlugs.some((value) => !validProjectGbrainSlug(value))
+  ) throw new Error("work_context_scope_graph_invalid");
   if (!["direct", "group", "cron"].includes(context.sourceScope)) {
     throw new Error("work_context_scope_invalid");
+  }
+  if (
+    !["owner", "trusted", "system"].includes(context.requesterRole) ||
+    (context.sourceScope === "cron") !== (context.requesterRole === "system")
+  ) throw new Error("work_context_requester_invalid");
+  const rawProvidedSources = context.providedDingtalkSources ?? [];
+  if (
+    !Array.isArray(rawProvidedSources) || rawProvidedSources.length > 4 ||
+    (context.sourceScope !== "direct" && rawProvidedSources.length > 0)
+  ) throw new Error("work_context_project_sources_invalid");
+  const providedDingtalkSources = [];
+  const sourceIds = new Set();
+  const nodeIds = new Set();
+  for (const source of rawProvidedSources) {
+    if (
+      !source || typeof source !== "object" || Array.isArray(source) ||
+      Object.keys(source).some((key) => ![
+        "sourceId", "kind", "nodeId", "messageHash", "requesterRole",
+      ].includes(key)) ||
+      !providedSourceId.test(String(source.sourceId ?? "")) ||
+      sourceIds.has(source.sourceId) ||
+      source.kind !== "doc" ||
+      !dingtalkNodeId.test(String(source.nodeId ?? "")) ||
+      nodeIds.has(source.nodeId) ||
+      !sha256.test(String(source.messageHash ?? "")) ||
+      source.requesterRole !== context.requesterRole
+    ) throw new Error("work_context_project_sources_invalid");
+    sourceIds.add(source.sourceId);
+    nodeIds.add(source.nodeId);
+    providedDingtalkSources.push({ ...source });
   }
   const rawAttachments = context.attachments ?? [];
   if (!Array.isArray(rawAttachments) || rawAttachments.length > 8) {
@@ -86,5 +139,13 @@ export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now
     realpath(cwd),
   ]);
   if (workspace !== current) throw new Error("work_context_workspace_mismatch");
-  return { ...context, workspace, attachments };
+  return {
+    ...context,
+    primaryScopeId,
+    relatedScopeIds: [...new Set(relatedScopeIds.map(String))],
+    relatedGbrainSlugs: [...new Set(relatedGbrainSlugs.map(String))],
+    workspace,
+    attachments,
+    providedDingtalkSources,
+  };
 }

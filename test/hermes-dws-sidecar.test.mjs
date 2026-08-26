@@ -182,6 +182,10 @@ class FakeDws {
     return [];
   }
 
+  async fetchEnterpriseDirect() {
+    return [];
+  }
+
   async sendMessage(input) {
     this.sent.push(input);
     if (this.transportFailure) throw new Error("transport outcome unknown");
@@ -307,6 +311,65 @@ test("self allowlist reads only the dedicated direct conversation", async () => 
     const retry = await runtime.check({ deferEmit: true });
     assert.equal(retry.some((frame) =>
       frame.record?.id === "automated-self-message"), false);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("enterprise mode scans verified organization direct messages without explicit user IDs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-enterprise-direct-"));
+  const frames = [];
+  const dws = new FakeDws();
+  dws.fetchBySender = async () => [];
+  let enterpriseCalls = 0;
+  dws.fetchEnterpriseDirect = async ({ start, end, selfUserId }) => {
+    enterpriseCalls += 1;
+    assert.ok(start instanceof Date);
+    assert.ok(end instanceof Date);
+    assert.equal(selfUserId, "owner-user");
+    return [{
+      id: "enterprise-message-1",
+      senderUserId: "enterprise-user",
+      senderOpenDingTalkId: "open-enterprise",
+      senderName: "Enterprise user",
+      conversationId: "enterprise-conversation",
+      content: "请处理这个项目问题",
+      createTime: "2026-08-26T14:00:30+08:00",
+      isSelf: false,
+      isWithdrawn: false,
+      enterpriseVerified: true,
+      media: [],
+    }];
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["owner-user"],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-26T14:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    const event = frames.find((frame) => frame.record?.id === "enterprise-message-1");
+    assert.ok(event);
+    assert.equal(event.record.enterpriseVerified, true);
+    assert.equal(event.record.chatType, "direct");
+    const state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.match(state.lastEnterpriseAt, /^2026-/u);
+    assert.equal(enterpriseCalls, 1);
   } finally {
     await runtime.stop();
   }

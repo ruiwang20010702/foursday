@@ -16,6 +16,7 @@ from dws_personal.adapter import (
     DwsPersonalAdapter,
     _TURN_CONSUMED_DELIVERY_VERSION,
     _TURN_DELIVERY_VERSION,
+    _provided_dingtalk_sources,
     _shadow_evidence,
 )
 from project_router.runtime_context import current_routed_principal_id
@@ -116,7 +117,12 @@ class FakeRoute:
 class FakeRouter:
     def __init__(self, workspace):
         self.workspace = workspace
+        self.fallback_workspace = workspace
         self.calls = []
+        self.cleared = []
+
+    def clear_binding(self, session_key):
+        self.cleared.append(session_key)
 
     def route(self, *, text, session_key):
         self.calls.append({"text": text, "session_key": session_key})
@@ -224,6 +230,8 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts[token_match.group(0)]["projectId"], "vocab_2_2")
         self.assertIn("单词 2.2", contexts[token_match.group(0)]["projectContext"])
         self.assertEqual(contexts[token_match.group(0)]["memoryContext"], "")
+        self.assertEqual(contexts[token_match.group(0)]["requesterRole"], "trusted")
+        self.assertEqual(contexts[token_match.group(0)]["providedDingtalkSources"], [])
         self.assertRegex(contexts[token_match.group(0)]["sourcePrincipalHandle"], r"^[a-f0-9]{64}$")
         self.assertNotIn("trusted-user", json.dumps(contexts))
         self.assertEqual(Path(context_path).stat().st_mode & 0o077, 0)
@@ -233,6 +241,181 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.workspaces), 1)
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
+
+    async def test_owner_message_links_become_private_ephemeral_sources(self):
+        context_path = str((Path(self.temp.name) / "state-owner-link" / "work-contexts.json").resolve())
+        link = "https://alidocs.dingtalk.com/i/nodes/OWNERPROVIDEDDOCNODE123456789012?utm_scene=team_space"
+        with patch.dict(os.environ, {
+            "FOURSDAY_WORK_CONTEXT_FILE": context_path,
+            "DINGTALK_SELF_USER_ID": "trusted-user",
+        }):
+            await self.bridge.emit({
+                "id": "owner-link-message",
+                "senderUserId": "trusted-user",
+                "senderName": "Owner",
+                "senderOpenDingTalkId": "open-owner",
+                "conversationId": "owner-self-chat",
+                "content": f"请读取这份正本：{link}",
+                "createTime": "2026-08-26T12:14:45+08:00",
+                "chatType": "direct",
+                "mentionedSelf": False,
+                "isSelf": False,
+            })
+        await asyncio.sleep(0)
+        event = self.events[-1]
+        token = re.search(r"fctx_[a-f0-9]{64}", event.channel_prompt).group(0)
+        context = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"][token]
+        self.assertEqual(context["projectId"], "shared_link")
+        self.assertEqual(context["requesterRole"], "owner")
+        self.assertEqual(len(context["providedDingtalkSources"]), 1)
+        source = context["providedDingtalkSources"][0]
+        self.assertEqual(source["sourceId"], "provided_1")
+        self.assertEqual(source["nodeId"], "OWNERPROVIDEDDOCNODE123456789012")
+        self.assertEqual(source["requesterRole"], "owner")
+        self.assertRegex(source["messageHash"], r"^[a-f0-9]{64}$")
+        self.assertNotIn("utm_scene", json.dumps(context))
+        self.assertNotIn("alidocs.dingtalk.com", json.dumps(context))
+        self.assertIn("Never probe, install or call dws", event.channel_prompt)
+        self.assertNotIn("owner-self-chat:trusted-user", self.router.cleared)
+        self.assertIn("prior primary scope was none", event.channel_prompt)
+
+    async def test_enterprise_verified_sender_enters_without_explicit_user_allowlist(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["owner-user"],
+                "enterprise_users": True,
+                "bundle_quiet_ms": 0,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        self.events = []
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        context_path = str((Path(self.temp.name) / "state-enterprise" / "work-contexts.json").resolve())
+        base = {
+            "senderUserId": "enterprise-user",
+            "senderName": "Enterprise user",
+            "senderOpenDingTalkId": "open-enterprise",
+            "conversationId": "enterprise-direct",
+            "content": "请读取 https://alidocs.dingtalk.com/i/nodes/ENTERPRISEDOCNODE123456789012345",
+            "createTime": "2026-08-26T14:00:00+08:00",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        }
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
+            await self.bridge.emit({**base, "id": "unverified-enterprise", "enterpriseVerified": False})
+            await self.bridge.emit({**base, "id": "verified-enterprise", "enterpriseVerified": True})
+        await asyncio.sleep(0)
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].source.user_id, "enterprise-user")
+        self.assertEqual(self.events[0].metadata["enterprise_verified"], True)
+        token = re.search(r"fctx_[a-f0-9]{64}", self.events[0].channel_prompt).group(0)
+        context = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"][token]
+        self.assertEqual(context["projectId"], "shared_link")
+        self.assertEqual(context["requesterRole"], "trusted")
+        self.assertEqual(context["providedDingtalkSources"][0]["sourceId"], "provided_1")
+        self.assertEqual(context["providedDingtalkSources"][0]["nodeId"], "ENTERPRISEDOCNODE123456789012345")
+
+    async def test_enterprise_link_only_message_uses_isolated_unrouted_context(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        router = SimpleNamespace(
+            fallback_workspace=self.temp.name,
+            clear_binding=lambda _session_key: None,
+            route=lambda **_kwargs: FakeRoute(
+                workspace_path=self.temp.name,
+                context="No project was identified. Read only the provided source before asking for a project.",
+                project=None,
+            ),
+        )
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["owner-user"],
+                "enterprise_users": True,
+                "bundle_quiet_ms": 0,
+            }),
+            bridge=self.bridge,
+            router=router,
+        )
+        self.events = []
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        context_path = str((Path(self.temp.name) / "state-unrouted-link" / "work-contexts.json").resolve())
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
+            await self.bridge.emit({
+                "id": "enterprise-link-only",
+                "senderUserId": "enterprise-user",
+                "senderName": "Enterprise user",
+                "senderOpenDingTalkId": "open-enterprise",
+                "conversationId": "enterprise-new-conversation",
+                "content": "https://alidocs.dingtalk.com/i/nodes/ENTERPRISEDOCNODE123456789012345",
+                "createTime": "2026-08-26T14:05:00+08:00",
+                "chatType": "direct",
+                "mentionedSelf": False,
+                "isSelf": False,
+                "enterpriseVerified": True,
+            })
+        await asyncio.sleep(0)
+        self.assertEqual(len(self.events), 1)
+        token = re.search(r"fctx_[a-f0-9]{64}", self.events[0].channel_prompt).group(0)
+        context = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"][token]
+        self.assertEqual(context["projectId"], "shared_link")
+        self.assertEqual(Path(context["workspace"]).resolve(), Path(self.temp.name).resolve())
+        self.assertEqual(context["providedDingtalkSources"][0]["sourceId"], "provided_1")
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
+            await self.bridge.emit({
+                "id": "enterprise-link-followup",
+                "senderUserId": "enterprise-user",
+                "senderName": "Enterprise user",
+                "senderOpenDingTalkId": "open-enterprise",
+                "conversationId": "enterprise-new-conversation",
+                "content": "继续概括这份文档",
+                "createTime": "2026-08-26T14:05:30+08:00",
+                "chatType": "direct",
+                "mentionedSelf": False,
+                "isSelf": False,
+                "enterpriseVerified": True,
+            })
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(self.events), 2)
+        followup_token = re.search(
+            r"fctx_[a-f0-9]{64}", self.events[-1].channel_prompt,
+        ).group(0)
+        followup_context = json.loads(
+            Path(context_path).read_text(encoding="utf-8")
+        )["contexts"][followup_token]
+        self.assertEqual(
+            followup_context["providedDingtalkSources"][0]["nodeId"],
+            "ENTERPRISEDOCNODE123456789012345",
+        )
+
+    def test_link_extraction_is_exact_bounded_and_deduplicated(self):
+        link = "https://alidocs.dingtalk.com/i/nodes/OWNERPROVIDEDDOCNODE123456789012"
+        sources = _provided_dingtalk_sources(
+            f"{link}?a=1 {link}?a=2 https://example.com/i/nodes/OTHERDOCNODE1234567890123456",
+            message_ids=["message-1"],
+            requester_role="owner",
+        )
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["nodeId"], "OWNERPROVIDEDDOCNODE123456789012")
+        self.assertEqual(sources[0]["requesterRole"], "owner")
+        many = " ".join(
+            f"https://alidocs.dingtalk.com/i/nodes/BOUNDEDDOCUMENTNODE1234567890{index}"
+            for index in range(8)
+        )
+        bounded = _provided_dingtalk_sources(
+            many,
+            message_ids=["message-2"],
+            requester_role="trusted",
+        )
+        self.assertEqual(len(bounded), 4)
+        self.assertEqual([item["sourceId"] for item in bounded], [
+            "provided_1", "provided_2", "provided_3", "provided_4",
+        ])
 
     async def test_current_runtime_status_injects_live_snapshot_and_skips_stale_memory(self):
         await self.adapter.disconnect()

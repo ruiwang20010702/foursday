@@ -111,6 +111,8 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "FOURSDAY_DWS_SIDECAR": str(sidecar),
                     "DWS_PATH": "/absolute/dws",
                     "DWS_PERSONAL_ALLOWED_USERS": "trusted",
+                    "DWS_PERSONAL_ENTERPRISE_USERS_ENABLED": "true",
+                    "DWS_PERSONAL_COMMAND_LOCK": str(Path(root, "dws-command.lock")),
                     "DWS_PERSONAL_EVENT_WAKE_ENABLED": "true",
                     "DWS_PERSONAL_HISTORY_SETTLE_MS": "120000",
                     "DWS_PERSONAL_OUTBOUND_QUIET_MS": "8000",
@@ -128,6 +130,8 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["HOME"], root)
             self.assertEqual(bridge.environment["FOURSDAY_CONTROL_FILE"], str(Path(root, "control.json")))
             self.assertEqual(bridge.environment["DWS_PERSONAL_EVENT_WAKE_ENABLED"], "true")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_ENTERPRISE_USERS_ENABLED"], "true")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_COMMAND_LOCK"], str(Path(root, "dws-command.lock")))
             self.assertEqual(bridge.environment["DWS_PERSONAL_HISTORY_SETTLE_MS"], "120000")
             self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_QUIET_MS"], "8000")
             self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS"], "20000")

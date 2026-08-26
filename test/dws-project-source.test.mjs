@@ -3,7 +3,10 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fetchDwsProjectDocument } from "../src/dws-project-source.mjs";
+import {
+  fetchDwsProjectDocument,
+  inspectDwsProjectNode,
+} from "../src/dws-project-source.mjs";
 
 async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dws-source-")));
@@ -74,5 +77,63 @@ test("DWS project source fails closed for incomplete, mismatched or malformed re
     nodeId: value.nodeId,
     environment: { FOURSDAY_DWS_HOME: value.root },
     run: async () => { throw new Error("private backend detail"); },
+  }), (error) => error.message === "project_source_read_failed");
+});
+
+test("DWS project inspection returns bounded freshness and ancestry metadata", async (t) => {
+  const value = await fixture(t);
+  let observed;
+  const result = await inspectDwsProjectNode({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    environment: { FOURSDAY_DWS_HOME: value.root, DINGTALK_SECRET: "must-not-leak" },
+    run: async (command, args, options) => {
+      observed = { command, args, options };
+      return { stdout: JSON.stringify({
+        complete: true,
+        status: "success",
+        ok: true,
+        data: { document: {
+          success: true,
+          nodeId: value.nodeId,
+          nodeType: "file",
+          name: "Current PRD",
+          workspaceId: "EXAMPLEWORKSPACE01",
+          folderId: "EXAMPLEPROJECTFOLDER1234567890",
+          createTime: 1_785_000_000_000,
+          updateTime: 1_787_000_000_000,
+        } },
+      }) };
+    },
+  });
+  assert.deepEqual(observed.args, [
+    "doc", "+inspect", "--node", value.nodeId,
+    "--format", "json", "--timeout", "8",
+  ]);
+  assert.equal(observed.options.timeout, 8_000);
+  assert.equal("DINGTALK_SECRET" in observed.options.env, false);
+  assert.equal(result.nodeId, value.nodeId);
+  assert.equal(result.nodeType, "file");
+  assert.equal(result.title, "Current PRD");
+  assert.equal(result.workspaceId, "EXAMPLEWORKSPACE01");
+  assert.equal(result.folderId, "EXAMPLEPROJECTFOLDER1234567890");
+  assert.match(result.updatedAt, /^2026-/u);
+});
+
+test("DWS host failures and document failures remain distinct", async (t) => {
+  const value = await fixture(t);
+  const unavailable = new Error("spawn failed");
+  unavailable.code = "ENOENT";
+  await assert.rejects(inspectDwsProjectNode({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    environment: { FOURSDAY_DWS_HOME: value.root },
+    run: async () => { throw unavailable; },
+  }), (error) => error.message === "project_source_host_unavailable");
+  await assert.rejects(inspectDwsProjectNode({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    environment: { FOURSDAY_DWS_HOME: value.root },
+    run: async () => { throw new Error("private document error"); },
   }), (error) => error.message === "project_source_read_failed");
 });

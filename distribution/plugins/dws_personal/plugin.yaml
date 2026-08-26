@@ -4,8 +4,9 @@ kind: platform
 version: 0.1.0
 description: >
   Foursday personal DingTalk gateway adapter backed by the local DWS bridge.
-  It admits only configured contacts and groups and sends through the owner's
-  personal DingTalk account rather than a DingTalk robot.
+  It admits current-enterprise direct-message senders after stable identity
+  verification, keeps groups explicitly configured, and sends through the
+  owner's personal DingTalk account rather than a DingTalk robot.
 author: Foursday
 optional_env:
   - name: DWS_PATH
@@ -17,8 +18,12 @@ optional_env:
     prompt: "DingTalk data root"
     password: false
   - name: DWS_PERSONAL_ALLOWED_USERS
-    description: "Comma-separated DingTalk staff IDs allowed to use Foursday"
-    prompt: "Allowed DingTalk users"
+    description: "Optional explicit DingTalk staff IDs, normally only the owner or exceptions"
+    prompt: "Explicit DingTalk users"
+    password: false
+  - name: DWS_PERSONAL_ENTERPRISE_USERS_ENABLED
+    description: "Admit direct-message senders whose stable user ID is verified in the current organization"
+    prompt: "Enable current-enterprise users"
     password: false
   - name: DWS_PERSONAL_FETCH_USERS
     description: "Optional comma-separated polling targets; defaults to the allowlist"
@@ -35,6 +40,10 @@ optional_env:
   - name: DWS_PERSONAL_STATE_FILE
     description: "Absolute private checkpoint file for dedupe and session recovery"
     prompt: "DWS checkpoint file"
+    password: false
+  - name: DWS_PERSONAL_COMMAND_LOCK
+    description: "Absolute private cross-process DWS command lock directory"
+    prompt: "DWS command lock"
     password: false
   - name: DWS_PERSONAL_BUNDLE_QUIET_MS
     description: "Short-message quiet window, default 3000 and maximum 8000"
