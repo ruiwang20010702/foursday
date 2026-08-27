@@ -1535,7 +1535,7 @@ test("self-chat fragments stay as input while explicit intervention still takes 
     conversationId: "self-conversation",
     content: "请帮我核对Foursday项目",
     createTime: "2026-08-24T10:00:00+08:00",
-    isSelf: true,
+    isSelf: false,
     isWithdrawn: false,
     media: [],
   }];
@@ -1606,7 +1606,7 @@ test("semantic self-chat takeover freezes the old reply before Codex classificat
     conversationId: "self-conversation",
     content: "请核对Foursday项目",
     createTime: "2026-08-24T10:00:00+08:00",
-    isSelf: true,
+    isSelf: false,
     isWithdrawn: false,
     media: [],
   }];
@@ -1655,7 +1655,7 @@ test("semantic self-chat takeover freezes the old reply before Codex classificat
       conversationId: "self-conversation",
       content: "我现在接管这轮沟通，请停止本轮AI回复",
       createTime: "2026-08-24T10:00:30+08:00",
-      isSelf: true,
+      isSelf: false,
       isWithdrawn: false,
       media: [],
     }];

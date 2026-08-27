@@ -931,7 +931,7 @@ export async function createSidecarRuntime({
     const externalControl = controlStore ? await controlStore.snapshot() : null;
     const externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
     const priorActive = activeConversations.get(conversationId) ?? null;
-    const ownerSelfMessage = message.isSelf === true && senderUserId === config.selfUserId;
+    const ownerSelfMessage = Boolean(config.selfUserId && senderUserId === config.selfUserId);
     const selfInterventionCandidate = Boolean(
       ownerSelfMessage && priorActive && ownerInterventionCandidate(message.content),
     );
