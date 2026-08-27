@@ -126,6 +126,15 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "DWS_PERSONAL_HISTORY_SETTLE_MS": "120000",
                     "DWS_PERSONAL_OUTBOUND_QUIET_MS": "8000",
                     "DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS": "20000",
+                    "DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED": "true",
+                    "DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS": "30000",
+                    "FOURSDAY_CODEX_PATH": "/absolute/codex",
+                    "CODEX_HOME": str(Path(root, "codex-home")),
+                    "FOURSDAY_PROJECT_REGISTRY": str(Path(root, "projects.json")),
+                    "FOURSDAY_FALLBACK_WORKSPACE": str(Path(root, "fallback")),
+                    "FOURSDAY_PROFILE_INSTRUCTIONS_FILE": str(Path(root, "SOUL.md")),
+                    "FOURSDAY_PROJECT_SKILL_FILE": str(Path(root, "SKILL.md")),
+                    "FOURSDAY_PYTHON_PATH": "/absolute/python",
                     "FOURSDAY_DWS_HOME": root,
                     "FOURSDAY_CONTROL_FILE": str(Path(root, "control.json")),
                     "DATABASE_URL": "must-not-cross",
@@ -144,6 +153,10 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["DWS_PERSONAL_HISTORY_SETTLE_MS"], "120000")
             self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_QUIET_MS"], "8000")
             self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS"], "20000")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED"], "true")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS"], "30000")
+            self.assertEqual(bridge.environment["FOURSDAY_CODEX_PATH"], "/absolute/codex")
+            self.assertEqual(bridge.environment["CODEX_HOME"], str(Path(root, "codex-home")))
             self.assertNotIn("FOURSDAY_DWS_HOME", bridge.environment)
             self.assertNotIn("DATABASE_URL", bridge.environment)
             self.assertNotIn("AI_EMPLOYEE_DATA_KEY", bridge.environment)

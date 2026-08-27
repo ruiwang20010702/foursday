@@ -34,6 +34,7 @@ const hostEntrypoints = Object.freeze([
   "src/hermes-memory-candidate-sidecar.mjs",
   "src/foursday-codex-mcp.mjs",
   "src/foursday-codex-proxy.mjs",
+  "src/foursday-owner-intervention.mjs",
   "src/personal-gbrain-promoter.mjs",
 ]);
 const optionalNodeDependencyPaths = Object.freeze([

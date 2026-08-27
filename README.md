@@ -59,6 +59,7 @@ Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousRese
 - scope-bound live DingTalk reads through that MCP: common sources may be registered, while exact links from verified current-enterprise direct-message senders become short-lived `provided_N` sources outside the model. DWS, node IDs, URLs, contact/global search, writes, and paths outside the current primary workspace remain unavailable to the Codex shell;
 - a project-work Skill;
 - small host-side bridges for credentials and personal-memory promotion.
+- an owner-intervention fence that invalidates stale delivery first, then asks a no-tool Codex classification turn for one bounded control intent; the connector—not the model—applies the revisioned state change;
 - one host-neutral Foursday Control MCP, with thin Codex and Claude plugins plus an optional read-only local status page.
 
 The installation gate verifies that the pinned runtime bypasses its own foreground tool loop in `codex_app_server` mode. Foursday also disables upstream built-in memory, memory/skill nudges, background review, automatic title generation, and the curator; durable learning goes only through the Foursday MCP and personal-gbrain promotion path.

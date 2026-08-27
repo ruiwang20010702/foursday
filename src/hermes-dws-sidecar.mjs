@@ -15,6 +15,10 @@ import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
 import { isMainModule } from "./main-module.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
 import { normalizeDwsCheckLifecycle } from "./dws-checkpoint-health.mjs";
+import {
+  ownerInterventionCandidate,
+  resolveOwnerIntervention,
+} from "./foursday-owner-intervention.mjs";
 
 function csv(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))];
@@ -484,6 +488,15 @@ export function sidecarConfig(environment = process.env) {
       0,
       60_000,
     ),
+    semanticInterventionEnabled: String(
+      environment.DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED ?? "false",
+    ).toLowerCase() === "true",
+    semanticInterventionTimeoutMs: boundedInteger(
+      environment.DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS,
+      30_000,
+      5_000,
+      60_000,
+    ),
     sendEnabled: String(environment.DWS_PERSONAL_SEND_ENABLED ?? "false").toLowerCase() === "true",
   };
 }
@@ -499,6 +512,8 @@ export async function createSidecarRuntime({
   controlStore = config.controlFile
     ? new FoursdayControlStore({ path: config.controlFile })
     : null,
+  semanticInterventionClassifier = resolveOwnerIntervention,
+  classifierEnvironment = process.env,
 } = {}) {
   if (config.outboundQuietMs > config.outboundMaxQuietMs) {
     throw new Error("DWS outbound quiet window exceeds its maximum");
@@ -807,6 +822,85 @@ export async function createSidecarRuntime({
     return true;
   };
 
+  const recentTaskText = new Map();
+  const classifyIntervention = async (text, { selfChat, taskActive, conversationId }) => {
+    if (config.semanticInterventionEnabled === true) {
+      try {
+        return await semanticInterventionClassifier(text, {
+          selfChat,
+          taskActive,
+          recentTaskText: recentTaskText.get(conversationId) ?? "",
+          environment: classifierEnvironment,
+          timeoutMs: config.semanticInterventionTimeoutMs,
+        });
+      } catch {
+        return {
+          intent: "communication_takeover",
+          source: "conservative_fallback",
+          confidence: 0,
+        };
+      }
+    }
+    return {
+      intent: classifyOwnerIntervention(text, { active: taskActive, explicitOnly: selfChat }),
+      source: "legacy_fallback",
+      confidence: 1,
+    };
+  };
+
+  const dispatchIntervention = async ({
+    conversationId,
+    active,
+    ownerMessageId,
+    ownerContent,
+    createTime,
+    frozenControl,
+    classification,
+    emitFrame = emit,
+  }) => {
+    const control = {
+      ...frozenControl,
+      ownerRevision: Number(frozenControl.ownerRevision ?? 0) + 1,
+      lastOwnerMessageId: ownerMessageId,
+    };
+    controlStates.set(conversationId, control);
+    state.controlStates = Object.fromEntries(controlStates);
+    takeoverReported.add(conversationId);
+    state.takeoverReported = [...takeoverReported];
+    await persistState();
+    emitFrame({
+      type: "event",
+      record: {
+        control: classification.intent,
+        id: `takeover:${hash(conversationId)}:${epoch(createTime) ?? clock()}`,
+        conversationId,
+        participantUserId: active.participantUserId,
+        chatType: active.chatType,
+        enterpriseVerified: active.enterpriseVerified === true,
+        sourceMessageId: active.sourceMessageId ?? null,
+        ownerMessageId,
+        ownerContent: String(ownerContent ?? "").slice(0, 20_000),
+        ownerRevision: control.ownerRevision,
+        sendGeneration: control.sendGeneration,
+        createTime: new Date(createTime).toISOString(),
+        classificationSource: String(classification.source ?? "unknown").slice(0, 40),
+        classificationConfidence: Number.isFinite(Number(classification.confidence))
+          ? Math.max(0, Math.min(1, Number(classification.confidence)))
+          : null,
+      },
+    });
+    if (controlStore) {
+      await controlStore.recordIntervention({
+        taskId: taskId(conversationId, active.participantUserId),
+        type: classification.intent,
+        ownerRevision: control.ownerRevision,
+        sendGeneration: control.sendGeneration,
+        occurredAt: createTime,
+      });
+    }
+    return control;
+  };
+
   const emitMessage = async (message, chatType, mentionedSelf, emitFrame = emit) => {
     const id = String(message.id ?? "").trim();
     const conversationId = String(message.conversationId ?? "").trim();
@@ -836,6 +930,56 @@ export async function createSidecarRuntime({
     const stableTaskId = taskId(conversationId, senderUserId);
     const externalControl = controlStore ? await controlStore.snapshot() : null;
     const externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
+    const priorActive = activeConversations.get(conversationId) ?? null;
+    const ownerSelfMessage = message.isSelf === true && senderUserId === config.selfUserId;
+    const selfInterventionCandidate = Boolean(
+      ownerSelfMessage && priorActive && ownerInterventionCandidate(message.content),
+    );
+    if (
+      externalControl?.global?.state === "paused" ||
+      ["paused", "taken_over"].includes(externalTask?.state)
+    ) {
+      if (!selfInterventionCandidate) {
+        const error = new Error("Foursday control paused this task");
+        error.code = "FOURSDAY_CONTROL_PAUSED";
+        throw error;
+      }
+    }
+    const localControl = normalizedControlState(controlStates.get(conversationId));
+    const priorControl = {
+      ownerRevision: Math.max(localControl.ownerRevision, externalTask?.ownerRevision ?? 0),
+      sendGeneration: Math.max(localControl.sendGeneration, externalTask?.sendGeneration ?? 0),
+      lastOwnerMessageId: localControl.lastOwnerMessageId,
+    };
+    const control = {
+      ...priorControl,
+      sendGeneration: Number(priorControl.sendGeneration ?? 0) + 1,
+    };
+    if (selfInterventionCandidate) {
+      controlStates.set(conversationId, control);
+      state.controlStates = Object.fromEntries(controlStates);
+      const classification = await classifyIntervention(message.content, {
+        selfChat: true,
+        taskActive: !["paused", "taken_over"].includes(externalTask?.state),
+        conversationId,
+      });
+      if (classification.intent !== "unrelated_owner_message") {
+        if (!remember(id)) return;
+        await dispatchIntervention({
+          conversationId,
+          active: priorActive,
+          ownerMessageId: id,
+          ownerContent: message.content,
+          createTime,
+          frozenControl: control,
+          classification,
+          emitFrame,
+        });
+        return;
+      }
+      controlStates.set(conversationId, priorControl);
+      state.controlStates = Object.fromEntries(controlStates);
+    }
     if (
       externalControl?.global?.state === "paused" ||
       ["paused", "taken_over"].includes(externalTask?.state)
@@ -866,16 +1010,6 @@ export async function createSidecarRuntime({
         });
       }
     }
-    const localControl = normalizedControlState(controlStates.get(conversationId));
-    const priorControl = {
-      ownerRevision: Math.max(localControl.ownerRevision, externalTask?.ownerRevision ?? 0),
-      sendGeneration: Math.max(localControl.sendGeneration, externalTask?.sendGeneration ?? 0),
-      lastOwnerMessageId: localControl.lastOwnerMessageId,
-    };
-    const control = {
-      ...priorControl,
-      sendGeneration: Number(priorControl.sendGeneration ?? 0) + 1,
-    };
     if (controlStore) {
       await controlStore.observeTask({
         taskId: stableTaskId,
@@ -911,6 +1045,8 @@ export async function createSidecarRuntime({
     takeoverReported.delete(conversationId);
     state.takeoverReported = [...takeoverReported];
     state.activeConversations = Object.fromEntries(activeConversations);
+    recentTaskText.set(conversationId, String(message.content ?? "").trim().slice(0, 2_000));
+    if (recentTaskText.size > 1_000) recentTaskText.delete(recentTaskText.keys().next().value);
     emitFrame({
       type: "event",
       record: {
@@ -1148,53 +1284,39 @@ export async function createSidecarRuntime({
             continue;
           }
           if (manual?.known === true && manual.replied === true) {
-            const intervention = classifyOwnerIntervention(manual.message?.content, {
-              active: true,
-              explicitOnly: active.participantUserId === config.selfUserId,
-            });
-            if (intervention === "unrelated_owner_message") continue;
             const ownerMessageId = String(manual.message?.id ?? "").trim() ||
               `owner:${hash(`${conversationId}:${manual.message?.createTime ?? end.toISOString()}`)}`;
             const priorControl = normalizedControlState(controlStates.get(conversationId));
             if (priorControl.lastOwnerMessageId === ownerMessageId) continue;
-            const control = {
+            const selfChat = active.participantUserId === config.selfUserId;
+            if (selfChat && active.sourceMessageId === ownerMessageId) continue;
+            const frozenControl = {
               ...priorControl,
-              ownerRevision: Number(priorControl.ownerRevision ?? 0) + 1,
               sendGeneration: Number(priorControl.sendGeneration ?? 0) + 1,
               lastOwnerMessageId: ownerMessageId,
             };
-            controlStates.set(conversationId, control);
+            controlStates.set(conversationId, frozenControl);
             state.controlStates = Object.fromEntries(controlStates);
-            takeoverReported.add(conversationId);
-            state.takeoverReported = [...takeoverReported];
-            dispatch({
-              type: "event",
-              record: {
-                control: intervention,
-                id: `takeover:${hash(conversationId)}:${end.getTime()}`,
-                conversationId,
-                participantUserId: active.participantUserId,
-                chatType: active.chatType,
-                enterpriseVerified: active.enterpriseVerified === true,
-                sourceMessageId: active.sourceMessageId ?? null,
-                ownerMessageId,
-                ownerContent: String(manual.message?.content ?? "").slice(0, 20_000),
-                ownerRevision: control.ownerRevision,
-                sendGeneration: control.sendGeneration,
-                createTime: manual.message?.createTime
-                  ? new Date(manual.message.createTime).toISOString()
-                  : end.toISOString(),
-              },
+            const classification = await classifyIntervention(manual.message?.content, {
+              selfChat,
+              taskActive: true,
+              conversationId,
             });
-            if (controlStore) {
-              await controlStore.recordIntervention({
-                taskId: taskId(conversationId, active.participantUserId),
-                type: intervention,
-                ownerRevision: control.ownerRevision,
-                sendGeneration: control.sendGeneration,
-                occurredAt: manual.message?.createTime ?? end.toISOString(),
-              });
+            if (classification.intent === "unrelated_owner_message") {
+              controlStates.set(conversationId, priorControl);
+              state.controlStates = Object.fromEntries(controlStates);
+              continue;
             }
+            await dispatchIntervention({
+              conversationId,
+              active,
+              ownerMessageId,
+              ownerContent: manual.message?.content,
+              createTime: manual.message?.createTime ?? end.toISOString(),
+              frozenControl,
+              classification,
+              emitFrame: dispatch,
+            });
           }
         }
       }

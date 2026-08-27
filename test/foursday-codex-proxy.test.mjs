@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   classifyCodexServerRequest,
+  codexProxyChildArgs,
   codexProcessEnvironment,
   injectFoursdayTurnContext,
   rewriteCodexClientRequest,
@@ -104,6 +105,18 @@ test("proxy forces the Foursday permission profile on every Codex thread", () =>
     allowedRoots: new Set(["/project"]),
     developerInstructions: "Foursday trusted instructions",
   }), /workspace_denied/u);
+
+  const classifier = rewriteCodexClientRequest({
+    jsonrpc: "2.0", id: 10, method: "thread/start",
+    params: { cwd: "/project", permissions: ":danger-full-access" },
+  }, {
+    allowedRoots: new Set(["/project"]),
+    developerInstructions: "Classifier only",
+    classifierMode: true,
+  });
+  assert.equal(classifier.params.permissions, "foursday-classifier");
+  assert.equal(classifier.params.approvalPolicy, "never");
+  assert.equal(classifier.params.developerInstructions, "Classifier only");
   assert.throws(() => rewriteCodexClientRequest({
     jsonrpc: "2.0", id: 3, method: "thread/start", params: { cwd: "/other" },
   }, {
@@ -146,6 +159,17 @@ test("proxy rejects command-line config overrides before starting Codex", async 
     spawnProcess: () => { spawned = true; },
   }), /fixed app-server entrypoint/u);
   assert.equal(spawned, false);
+});
+
+test("classifier proxy disables every non-text capability before Codex starts", () => {
+  const args = codexProxyChildArgs({ classifierMode: true });
+  assert.deepEqual(args.slice(-1), ["app-server"]);
+  assert.equal(args.includes("mcp_servers={}"), true);
+  assert.equal(args.includes("tools.web_search=false"), true);
+  assert.equal(args.includes("tools.view_image=false"), true);
+  assert.equal(args.includes("features.multi_agent=false"), true);
+  assert.equal(args.includes("features.memories=false"), true);
+  assert.deepEqual(codexProxyChildArgs(), ["app-server"]);
 });
 
 test("proxy gives Codex only runtime essentials and read-only MCP status bindings", () => {
@@ -193,6 +217,18 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
   assert.equal(environment.FOURSDAY_DWS_HOME, undefined);
   assert.equal(environment.GH_TOKEN, undefined);
   assert.equal(environment.DATABASE_URL, undefined);
+
+  const classifier = codexProcessEnvironment({
+    HOME: "/home/foursday",
+    CODEX_HOME: "/home/foursday/codex",
+    FOURSDAY_PROJECT_REGISTRY: "/private/projects.json",
+    FOURSDAY_PRODUCTION_CONFIG: "/private/config.json",
+    DWS_PERSONAL_STATE_FILE: "/private/dws.json",
+  }, "/usr/local/bin/codex", "/usr/local/bin/codex", { includeFoursday: false });
+  assert.equal(classifier.CODEX_HOME, "/home/foursday/codex");
+  assert.equal(classifier.FOURSDAY_PROJECT_REGISTRY, undefined);
+  assert.equal(classifier.FOURSDAY_PRODUCTION_CONFIG, undefined);
+  assert.equal(classifier.DWS_PERSONAL_STATE_FILE, undefined);
 });
 
 test("turn context token becomes project and personal-memory context without reaching the user request", async (t) => {

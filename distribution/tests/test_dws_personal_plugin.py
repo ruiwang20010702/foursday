@@ -1199,6 +1199,8 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "id": "communication-1",
             "ownerMessageId": "owner-1",
             "ownerContent": "我已经回复对方了",
+            "classificationSource": "codex",
+            "classificationConfidence": 0.94,
         })
         self.assertEqual(interrupted, [])
         self.assertEqual(audited[-1][0]["type"], "communication_takeover")

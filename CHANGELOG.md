@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced regex-final owner intervention decisions with send-first fencing plus a no-tool Codex semantic classifier; the connector still owns revisioned state changes, emergency stops stay local, and classifier failures conservatively suppress outbound replies.
 - Added preview-first Codex project discovery that preserves existing authority, generates a private v2 workspace/scope candidate, infers nearest saved parents, excludes over-broad or unsafe roots, and never overwrites the Active registry.
 - Split memory status into fixed bindings and a bounded discoverable-gbrain project count; catalog failures now degrade only that count without making message ingress unhealthy.
 - Added current-organization direct-message admission, context-bound DingTalk document links, shared DWS command locking, and explicit busy/unavailable/read-failed diagnostics without exposing DWS to the Codex shell.

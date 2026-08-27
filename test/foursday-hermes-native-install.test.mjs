@@ -266,6 +266,7 @@ test("profile staging packages plugins, profile and skills without Python caches
     "hermes-memory-candidate-sidecar.mjs",
     "foursday-codex-mcp.mjs",
     "foursday-codex-proxy.mjs",
+    "foursday-owner-intervention.mjs",
     "personal-gbrain-promoter.mjs",
   ]) await writeFile(join(root, "src", name), "// host\n");
   await writeFile(join(root, "scripts", "运行个人gbrain记忆晋升.mjs"), "// promoter\n");

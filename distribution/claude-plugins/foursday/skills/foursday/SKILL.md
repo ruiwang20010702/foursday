@@ -17,4 +17,6 @@ description: 查看和控制本机Foursday工作分身。用户提到Foursday状
 
 控制动作：`pause_all`、`resume_all`、`pause_task`、`communication_takeover`、`task_correction`、`task_takeover`、`resume_task`。
 
+负责人钉钉自然语言介入由生产Connector先冻结旧发送，再以无工具Codex回合分类固定枚举；Claude侧Control动作是负责人从Agent宿主发起的确定性控制，不替代消息侧语义分类。
+
 控制接口不能开启发送、部署、推送、付款、删除、扩大权限或改变项目范围。9465旧管理台不再是新版权威；可视化使用按需启动的`foursday dashboard`只读页。

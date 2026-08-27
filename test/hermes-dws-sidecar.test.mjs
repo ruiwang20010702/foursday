@@ -1577,13 +1577,113 @@ test("self-chat fragments stay as input while explicit intervention still takes 
     };
     await runtime.check();
     const interventions = frames.filter((frame) => frame.record?.control);
-    assert.equal(interventions.length, 1);
+    assert.equal(
+      interventions.length,
+      1,
+      JSON.stringify(interventions.map((frame) => ({
+        control: frame.record?.control,
+        ownerMessageId: frame.record?.ownerMessageId,
+        sourceMessageId: frame.record?.sourceMessageId,
+      }))),
+    );
     assert.equal(interventions[0].record.control, "task_takeover");
     assert.equal(interventions[0].record.ownerRevision, 1);
     assert.equal(interventions[0].record.sendGeneration, 2);
     state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.equal(state.controlStates["self-conversation"].lastOwnerMessageId, "self-takeover-1");
   } finally {
+    await runtime.stop();
+  }
+});
+
+test("semantic self-chat takeover freezes the old reply before Codex classification", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-semantic-takeover-"));
+  const frames = [];
+  let messages = [{
+    id: "self-task-1",
+    senderUserId: "owner-user",
+    senderName: "Owner",
+    conversationId: "self-conversation",
+    content: "请核对Foursday项目",
+    createTime: "2026-08-24T10:00:00+08:00",
+    isSelf: true,
+    isWithdrawn: false,
+    media: [],
+  }];
+  let releaseClassifier;
+  let enteredClassifier;
+  const classifierEntered = new Promise((resolve) => { enteredClassifier = resolve; });
+  const classifierBlocked = new Promise((resolve) => { releaseClassifier = resolve; });
+  const dws = new FakeDws();
+  dws.fetchDirect = async () => messages;
+  dws.hasManualReply = async () => ({ known: true, replied: false, message: null });
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["owner-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      semanticInterventionEnabled: true,
+      semanticInterventionTimeoutMs: 30_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    semanticInterventionClassifier: async (text, options) => {
+      assert.match(text, /接管这轮沟通/u);
+      assert.equal(options.selfChat, true);
+      enteredClassifier();
+      await classifierBlocked;
+      return { intent: "communication_takeover", source: "codex", confidence: 0.94 };
+    },
+    now: () => new Date("2026-08-24T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    assert.equal(frames.filter((frame) => frame.record?.id === "self-task-1").length, 1);
+    messages = [...messages, {
+      id: "self-takeover-semantic",
+      senderUserId: "owner-user",
+      senderName: "Owner",
+      conversationId: "self-conversation",
+      content: "我现在接管这轮沟通，请停止本轮AI回复",
+      createTime: "2026-08-24T10:00:30+08:00",
+      isSelf: true,
+      isWithdrawn: false,
+      media: [],
+    }];
+    const checking = runtime.check();
+    await classifierEntered;
+    const stale = await runtime.send({
+      conversationId: "self-conversation",
+      content: "old reply",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(stale.staleGeneration, true);
+    releaseClassifier();
+    await checking;
+    assert.equal(
+      frames.some((frame) => frame.record?.id === "self-takeover-semantic"),
+      false,
+    );
+    const takeover = frames.find((frame) =>
+      frame.record?.control === "communication_takeover" &&
+      frame.record?.ownerMessageId === "self-takeover-semantic"
+    );
+    assert.equal(takeover.record.classificationSource, "codex");
+    assert.equal(takeover.record.classificationConfidence, 0.94);
+    assert.equal(takeover.record.ownerRevision, 1);
+    assert.equal(takeover.record.sendGeneration, 2);
+  } finally {
+    releaseClassifier?.();
     await runtime.stop();
   }
 });

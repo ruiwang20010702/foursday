@@ -705,12 +705,26 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         control = str(record.get("control") or "").strip()
         if control in {"task_correction", "task_takeover", "resume_requested"}:
             await self.interrupt_session_activity(session_key, conversation_id)
+        classification_source = str(record.get("classificationSource") or "").strip()
+        if classification_source not in {
+            "codex", "emergency", "conservative_fallback", "legacy_fallback",
+        }:
+            classification_source = "unknown"
+        confidence = record.get("classificationConfidence")
+        confidence_bucket = (
+            "high" if isinstance(confidence, (int, float)) and confidence >= 0.8
+            else "medium" if isinstance(confidence, (int, float)) and confidence >= 0.65
+            else "low" if isinstance(confidence, (int, float))
+            else "unknown"
+        )
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
             "type": control,
             "conversationHash": _digest(conversation_id),
             "participantHash": _digest(participant_id),
             "occurredAt": str(record.get("createTime") or "") or None,
+            "classificationSource": classification_source,
+            "classificationConfidence": confidence_bucket,
         })
         handler = getattr(self, "_platform_event_handler", None)
         if handler is not None and control in {

@@ -85,6 +85,8 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /DWS_PERSONAL_HISTORY_SETTLE_MS="120000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_QUIET_MS="8000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS="20000"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED="true"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS="30000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEND_ENABLED="false"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_COMMAND_LOCK=.*dws-command\.lock/u);
   assert.match(plan.envContent, /CODEX_HOME=/u);
@@ -95,6 +97,9 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexConfigContent, /default_permissions = "foursday-workspace"/u);
   assert.match(plan.codexConfigContent, /":root" = "deny"/u);
   assert.match(plan.codexConfigContent, /\[permissions\.foursday-workspace\.network\]\nenabled = false/u);
+  assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\]/u);
+  assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\.filesystem\]\n":root" = "deny"\n":minimal" = "deny"/u);
+  assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\.network\]\nenabled = false/u);
   assert.match(plan.codexConfigContent, /approvals_reviewer = "auto_review"/u);
   assert.match(plan.codexConfigContent, /\[shell_environment_policy\]\ninherit = "core"/u);
   assert.match(plan.codexConfigContent, /set = \{ PYTHON = .*python-runtime.* \}/u);
