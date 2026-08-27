@@ -242,9 +242,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.workspaces), 1)
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
-        self.assertEqual(self.adapter._dm_policy, "allowlist")
-        self.assertEqual(self.adapter._group_policy, "allowlist")
-        self.assertTrue(self.adapter._is_dm_allowed("trusted-user"))
+        self.assertTrue(event.source.role_authorized)
 
     async def test_owner_message_links_become_private_ephemeral_sources(self):
         context_path = str((Path(self.temp.name) / "state-owner-link" / "work-contexts.json").resolve())
@@ -324,7 +322,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             user_id="enterprise-user",
             user_name="Enterprise user",
         )
-        self.assertFalse(self.adapter._is_dm_allowed("enterprise-user"))
+        self.assertFalse(unverified_source.role_authorized)
         with patch.dict(os.environ, {
             "GATEWAY_ALLOWED_USERS": "",
             "GATEWAY_ALLOW_ALL_USERS": "",
@@ -333,7 +331,6 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(probe._is_user_authorized(unverified_source))
         with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
             await self.bridge.emit({**base, "id": "unverified-enterprise", "enterpriseVerified": False})
-            self.assertFalse(self.adapter._is_dm_allowed("enterprise-user"))
             await self.bridge.emit({**base, "id": "verified-enterprise", "enterpriseVerified": True})
         await asyncio.sleep(0)
         self.assertEqual(len(self.events), 1)
@@ -345,7 +342,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context["requesterRole"], "trusted")
         self.assertEqual(context["providedDingtalkSources"][0]["sourceId"], "provided_1")
         self.assertEqual(context["providedDingtalkSources"][0]["nodeId"], "ENTERPRISEDOCNODE123456789012345")
-        self.assertTrue(self.adapter._is_dm_allowed("enterprise-user"))
+        self.assertTrue(self.events[0].source.role_authorized)
 
         probe.adapters = {self.events[0].source.platform: self.adapter}
         with patch.dict(os.environ, {
@@ -355,14 +352,22 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         }):
             self.assertTrue(probe._is_user_authorized(self.events[0].source))
 
-    async def test_gateway_dynamic_authorization_is_bounded_and_cleared_on_disconnect(self):
-        for index in range(5_001):
-            self.adapter._remember_gateway_authorized_user(f"dynamic-{index}")
-        self.assertFalse(self.adapter._is_dm_allowed("dynamic-0"))
-        self.assertTrue(self.adapter._is_dm_allowed("dynamic-5000"))
-        self.assertEqual(len(self.adapter._gateway_authorized_users), 5_000)
+    async def test_gateway_authorization_is_event_scoped_and_not_persisted(self):
+        source = self.adapter.build_source(
+            chat_id="future-direct",
+            chat_type="dm",
+            user_id="trusted-user",
+            user_name="Trusted",
+        )
+        self.assertFalse(source.role_authorized)
         await self.adapter.disconnect()
-        self.assertFalse(self.adapter._is_dm_allowed("dynamic-5000"))
+        next_source = self.adapter.build_source(
+            chat_id="future-direct",
+            chat_type="dm",
+            user_id="trusted-user",
+            user_name="Trusted",
+        )
+        self.assertFalse(next_source.role_authorized)
 
     async def test_enterprise_link_only_message_uses_isolated_unrouted_context(self):
         await self.adapter.disconnect()
@@ -653,7 +658,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt.message_id, "sent-1")
         self.assertEqual(self.bridge.sent[0]["conversationId"], "trusted-group")
         self.assertEqual(self.bridge.sent[0]["content"], "已经核对完成。")
-        self.assertEqual(self.adapter._group_policy, "allowlist")
+        self.assertTrue(self.events[0].source.role_authorized)
 
         class AuthorizationProbe(GatewayAuthorizationMixin):
             pass

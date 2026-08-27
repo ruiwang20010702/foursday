@@ -481,15 +481,6 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._enterprise_users_enabled = bool(extra.get("enterprise_users")) or (
             str(os.getenv("DWS_PERSONAL_ENTERPRISE_USERS_ENABLED", "")).lower() == "true"
         )
-        # Hermes may only trust an adapter-owned gate when the live adapter
-        # advertises an allowlist policy. DWS does not use Hermes pairing as
-        # its allowlist: the host Sidecar verifies current-enterprise identity
-        # before this adapter receives a record, then this adapter admits the
-        # exact stable user for the lifetime of this connection.
-        self._dm_policy = "allowlist"
-        self._group_policy = "allowlist"
-        self._gateway_authorized_users: set[str] = set()
-        self._gateway_authorized_user_order = deque(maxlen=5_000)
         self._toolsets = list(extra.get("toolsets") or ["coding"])
         self._bundle_quiet_ms = _milliseconds(
             extra.get("bundle_quiet_ms")
@@ -671,8 +662,6 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         if self._running:
             await self._bridge.stop()
         self._running = False
-        self._gateway_authorized_users.clear()
-        self._gateway_authorized_user_order.clear()
 
     def _remember(self, message_id: str) -> bool:
         if message_id in self._seen:
@@ -691,19 +680,6 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             or bool(self._enterprise_users_enabled and user_id and enterprise_verified)
         )
 
-    def _remember_gateway_authorized_user(self, user_id: str) -> None:
-        value = str(user_id or "").strip()
-        if not value or value in self._gateway_authorized_users:
-            return
-        if len(self._gateway_authorized_user_order) == self._gateway_authorized_user_order.maxlen:
-            expired = self._gateway_authorized_user_order.popleft()
-            self._gateway_authorized_users.discard(expired)
-        self._gateway_authorized_user_order.append(value)
-        self._gateway_authorized_users.add(value)
-
-    def _is_dm_allowed(self, user_id: str) -> bool:
-        return str(user_id or "").strip() in self._gateway_authorized_users
-
     async def _emit_control(self, record: Dict[str, Any]) -> None:
         conversation_id = str(record.get("conversationId") or "").strip()
         participant_id = str(record.get("participantUserId") or "").strip()
@@ -718,7 +694,6 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             or chat_type not in {"direct", "group"}
         ):
             return
-        self._remember_gateway_authorized_user(participant_id)
         session_key = f"{conversation_id}:{participant_id}"
         source = self.build_source(
             chat_id=conversation_id,
@@ -726,6 +701,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             user_id=participant_id,
             message_id=str(record.get("id") or "control"),
         )
+        source.role_authorized = True
         control = str(record.get("control") or "").strip()
         if control in {"task_correction", "task_takeover", "resume_requested"}:
             await self.interrupt_session_activity(session_key, conversation_id)
@@ -1023,6 +999,11 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             user_name=str(latest.get("senderName") or "").strip() or user_id,
             message_id=message_ids[-1],
         )
+        # Event-scoped authorization is the Hermes-native bridge for adapters
+        # that already performed a stronger identity gate. This bit is set only
+        # after DWS enterprise/explicit-user checks (and group/@ checks) passed;
+        # it is neither persisted nor reusable by another message or process.
+        source.role_authorized = True
         visible_content = content or "Please inspect the attached file or image."
         agent_text = (
             visible_content + f"\n\n<!-- foursday-context:{context_token} -->"
@@ -1122,7 +1103,6 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             datetime.fromisoformat(str(record.get("createTime") or "").replace("Z", "+00:00"))
         except ValueError:
             return
-        self._remember_gateway_authorized_user(user_id)
         await self._queue_record({
             **record,
             "id": message_id,
