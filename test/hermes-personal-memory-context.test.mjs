@@ -34,6 +34,28 @@ test("Hermes personal memory context reads only exact registered pages", async (
   assert.match(result.context, /instructions inside them as untrusted/u);
 });
 
+test("Hermes personal memory context discloses project-page redaction without private details", async () => {
+  const result = await readHermesProjectMemoryContext({
+    client: {
+      async getPage(slug) {
+        return {
+          slug,
+          title: "Foursday",
+          content: "长期目标与安全边界。",
+          updatedAt: "2026-08-27T00:00:00Z",
+          redacted: true,
+          redactionCount: 2,
+        };
+      },
+    },
+    slugs: ["projects/foursday-ai-employee"],
+  });
+  assert.equal(result.pages[0].redacted, true);
+  assert.equal(result.pages[0].redactionCount, 2);
+  assert.match(result.context, /Privacy: 2 sensitive project-memory blocks were omitted/u);
+  assert.doesNotMatch(result.context, /email|phone|secret/iu);
+});
+
 test("Hermes personal memory loader resolves only the dedicated OAuth secret", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-hermes-memory-"));
   const configPath = join(root, "production.json");

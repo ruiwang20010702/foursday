@@ -202,6 +202,77 @@ test("精确页面读取拒绝越权路径、身份漂移和秘密正文", async
   }
 });
 
+test("项目记忆按Markdown内容块脱敏并显式返回不完整标记", async () => {
+  let count = 0;
+  const memory = client(async () => {
+    count += 1;
+    if (count === 1) return discovery();
+    if (count === 2) return token();
+    return mcpResult({
+      slug: "projects/foursday",
+      source_id: "default",
+      type: "project",
+      title: "Foursday",
+      compiled_truth: [
+        "# Foursday",
+        "",
+        "长期目标是构建个人记忆驱动的工作分身。",
+        "",
+        "- 历史贡献者邮箱：agent@example.local",
+        "",
+        "## 当前原则",
+        "",
+        "所有外部动作必须保留可审计证据。",
+      ].join("\n"),
+    });
+  });
+
+  const page = await memory.getPage("projects/foursday");
+  assert.equal(page.redacted, true);
+  assert.equal(page.redactionCount, 1);
+  assert.match(page.content, /个人记忆驱动的工作分身/u);
+  assert.match(page.content, /所有外部动作必须保留/u);
+  assert.doesNotMatch(page.content, /邮箱|agent@example\.local/u);
+});
+
+test("人物隐私、凭据、全页敏感和脱敏残留继续失败关闭", async () => {
+  const pages = [{
+    slug: "people/example",
+    type: "person",
+    content: "工作邮箱：person@example.com",
+  }, {
+    slug: "projects/foursday",
+    type: "project",
+    content: "token: secret-value",
+  }, {
+    slug: "projects/foursday",
+    type: "project",
+    content: "电子邮箱：owner@example.com",
+  }, {
+    slug: "projects/foursday",
+    type: "project",
+    content: "# 项目联系人\n\n电子邮箱：owner@example.com",
+  }, {
+    slug: "projects/foursday",
+    type: "project",
+    content: "13800\n138000",
+  }];
+  for (const [index, page] of pages.entries()) {
+    let count = 0;
+    const memory = client(async () => {
+      count += 1;
+      if (count === 1) return discovery();
+      if (count === 2) return token();
+      return mcpResult(page);
+    });
+    await assert.rejects(
+      memory.getPage(page.slug),
+      /content is unavailable/u,
+      `sensitive page fixture ${index + 1} must fail closed`,
+    );
+  }
+});
+
 test("401 会刷新一次令牌且不无限重试", async () => {
   const tokens = [];
   let calls = 0;

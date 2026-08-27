@@ -66,6 +66,45 @@ function safeKnowledgeText(value) {
   return text;
 }
 
+const projectMemoryRedactionMarker = "> [已省略包含人物隐私的项目记忆内容块]";
+
+function substantiveProjectMemoryBlock(value) {
+  const lines = String(value).split("\n").filter((line) => {
+    const trimmed = line.trim();
+    return trimmed &&
+      !/^#{1,6}\s+/u.test(trimmed) &&
+      !/^```/u.test(trimmed) &&
+      !/^\|?(?:\s*:?-{3,}:?\s*\|)+\s*$/u.test(trimmed);
+  });
+  const text = lines.join(" ")
+    .replace(/^(?:[-*+]\s+|>\s*)/gu, "")
+    .replace(/[*_`~|#[\]()>-]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return /[\p{L}\p{N}]{4,}/u.test(text);
+}
+
+function redactSensitiveProjectMemory(content) {
+  const parts = String(content).split(/(\n[ \t]*\n+)/u);
+  let redactionCount = 0;
+  let retainedBlockCount = 0;
+  const projected = parts.map((part, index) => {
+    if (index % 2 === 1 || !part.trim()) return part;
+    if (containsSensitivePersonMaterial(part)) {
+      redactionCount += 1;
+      return projectMemoryRedactionMarker;
+    }
+    if (substantiveProjectMemoryBlock(part)) retainedBlockCount += 1;
+    return part;
+  }).join("").trim();
+  if (
+    redactionCount === 0 || retainedBlockCount === 0 || !projected ||
+    containsCredentialMaterial(projected) ||
+    containsSensitivePersonMaterial(projected)
+  ) throw new Error("Personal memory page content is unavailable");
+  return { content: projected, redactionCount };
+}
+
 export class PersonalMemoryClient {
   constructor({
     mcpUrl,
@@ -272,15 +311,25 @@ export class PersonalMemoryClient {
       !content.trim() ||
       Buffer.byteLength(content) > maxContentBytes ||
       page.sensitivity === "confidential" ||
-      containsCredentialMaterial(content) ||
-      containsSensitivePersonMaterial(content)
+      containsCredentialMaterial(content)
     ) throw new Error("Personal memory page content is unavailable");
+    let projectedContent = content;
+    let redactionCount = 0;
+    if (containsSensitivePersonMaterial(content)) {
+      if (page.type !== "project") {
+        throw new Error("Personal memory page content is unavailable");
+      }
+      const redacted = redactSensitiveProjectMemory(content);
+      projectedContent = redacted.content;
+      redactionCount = redacted.redactionCount;
+    }
     return {
       slug: page.slug,
       type: page.type,
       title: safeKnowledgeText(page.title) ?? "",
-      content,
+      content: projectedContent,
       updatedAt: page.updated_at ?? null,
+      ...(redactionCount > 0 ? { redacted: true, redactionCount } : {}),
     };
   }
 }

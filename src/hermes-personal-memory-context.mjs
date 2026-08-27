@@ -98,6 +98,12 @@ export async function readHermesProjectMemoryContext({
         title: String(page.title ?? "").slice(0, 300),
         content,
         updatedAt: page.updatedAt ?? null,
+        ...(page.redacted === true ? {
+          redacted: true,
+          redactionCount: Number.isSafeInteger(page.redactionCount) && page.redactionCount > 0
+            ? page.redactionCount
+            : 1,
+        } : {}),
       });
     } catch {
       // One stale registry page must not make the whole work session unavailable.
@@ -117,6 +123,9 @@ export async function readHermesProjectMemoryContext({
             `Source: gbrain:${page.slug}`,
             page.title ? `Title: ${page.title}` : "",
             page.updatedAt ? `Updated: ${page.updatedAt}` : "",
+            page.redacted
+              ? `Privacy: ${page.redactionCount} sensitive project-memory blocks were omitted.`
+              : "",
             page.content,
           ].filter(Boolean).join("\n")),
           "</foursday_personal_memory>",
