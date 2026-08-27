@@ -74,6 +74,13 @@ async function fixture(t) {
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
+    memoryCatalogReader: async () => ({
+      sourceId: "default",
+      projects: Array.from({ length: 45 }, (_, index) => ({
+        slug: `projects/example-${index + 1}`,
+      })),
+      truncated: false,
+    }),
   });
   return { service };
 }
@@ -121,11 +128,32 @@ test("control service projects tasks, schedules, memory and evidence without pri
   assert.equal("prompt" in schedules.items[0], false);
   assert.equal("script" in schedules.items[0], false);
   const memory = await service.memory();
+  assert.equal(memory.schema, "foursday-control-memory/v2");
   assert.equal(memory.sourceId, "default");
+  assert.equal(memory.registrySchemaVersion, 1);
+  assert.deepEqual(memory.fixedBindings, { projectCount: 1, pageCount: 1 });
+  assert.deepEqual(memory.discovery, {
+    enabled: true,
+    state: "ready",
+    projectCount: 45,
+    truncated: false,
+  });
   assert.deepEqual(memory.projects[0].pages, ["projects/example"]);
   const evidence = await service.evidence();
   assert.deepEqual(evidence.byType, { inbound: 1, reply_attempt: 1 });
   assert.doesNotMatch(JSON.stringify(evidence), /body|reply"/u);
+});
+
+test("control memory degrades only its discovery count when gbrain listing fails", async (t) => {
+  const { service } = await fixture(t);
+  service.memoryCatalogReader = async () => { throw new Error("private upstream error"); };
+  service.memoryCatalogCache = null;
+  const memory = await service.memory();
+  assert.equal(memory.readEnabled, true);
+  assert.equal(memory.discovery.state, "unavailable");
+  assert.equal(memory.discovery.projectCount, null);
+  assert.deepEqual(memory.fixedBindings, { projectCount: 1, pageCount: 1 });
+  assert.doesNotMatch(JSON.stringify(memory), /private upstream error/u);
 });
 
 test("control service seeds a bound task and global pause changes readiness", async (t) => {

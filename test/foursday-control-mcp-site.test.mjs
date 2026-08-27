@@ -17,7 +17,12 @@ function service() {
     }),
     tasks: async () => ({ revision: 4, items: [{ taskId: "a".repeat(64), projectId: "p", state: "active" }] }),
     schedules: async () => ({ items: [] }),
-    memory: async () => ({ readEnabled: true, projects: [] }),
+    memory: async () => ({
+      readEnabled: true,
+      fixedBindings: { projectCount: 2, pageCount: 2 },
+      discovery: { enabled: true, state: "ready", projectCount: 45, truncated: false },
+      projects: [],
+    }),
     evidence: async () => ({ count: 2, byType: { inbound: 2 }, lastEventAt: null }),
     apply: async (input) => ({ revision: 5, result: { target: "global", state: input.action === "pause_all" ? "paused" : "running" } }),
   };
@@ -70,6 +75,10 @@ test("optional status page is loopback-only, read-only and uses the same service
   assert.match(pageText, /filter\(x=>x\.enabled\)/u);
   assert.match(pageText, /DWS检查点/u);
   assert.match(pageText, /检查中（有界）/u);
+  assert.match(pageText, /固定绑定/u);
+  assert.match(pageText, /gbrain 可发现/u);
+  assert.match(pageText, /th:nth-child\(n\+3\),td:nth-child\(n\+3\)\{display:none\}/u);
+  assert.match(pageText, /taken_over:'已接管'/u);
   assert.match(page.headers.get("content-security-policy"), /default-src 'none'/u);
   const status = await fetch(`${started.url}api/status`).then((response) => response.json());
   assert.equal(status.control.revision, 4);

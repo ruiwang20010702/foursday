@@ -23,6 +23,21 @@ Create private `600`-permission copies of:
 
 Secrets must remain `env://` or `keychain://` references. Project roots must be absolute canonical paths.
 
+If Codex already has saved local projects, export that catalog to a private JSON file and generate the v2 registry as a separate preview-first candidate:
+
+```bash
+npx --no-install foursday projects discover \
+  --catalog /absolute/private/codex-projects.json \
+  --output /absolute/private/projects.v2.json
+
+npx --no-install foursday projects discover \
+  --catalog /absolute/private/codex-projects.json \
+  --output /absolute/private/projects.v2.json \
+  --apply
+```
+
+The command preserves current bindings, infers nearest saved parent projects, uses exact gbrain identity matches, rejects the whole home directory and unsafe paths, and refuses to overwrite the active registry. Applying discovery writes only the private candidate; configuration and activation remain separate.
+
 DWS `v1.0.59+` is required for the primary personal-IM Stream wake-up. Older DWS versions remain functional through filesystem wake-up and the bounded fallback, but must be reported as degraded. The recommended defaults are a 30-second fallback, an 8-second outbound stability window and a 20-second adaptive maximum; these timing settings do not change the current-organization identity policy or enable sending.
 
 ## 3. Configure Foursday and sign in to its isolated Codex environment

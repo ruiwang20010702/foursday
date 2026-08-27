@@ -1,5 +1,6 @@
 test/
 .runtime/
+docs/演示/
 **/__pycache__/
 **/*.pyc
 .github/

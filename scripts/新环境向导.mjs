@@ -23,6 +23,7 @@ export const foursdayHelp = Object.freeze({
   usage: [
     "foursday install [--apply]",
     "foursday configure [--apply] [--replace] [--cron] --registry /absolute/private/projects.json",
+    "foursday projects discover --catalog /absolute/private/codex-projects.json [--existing FILE] [--output FILE --apply]",
     "foursday login [--apply]",
     "foursday verify [--apply]",
     "foursday accept --release-sha SHA --ledger FILE --restart-evidence FILE --code-evidence FILE --output FILE [--apply]",
@@ -132,6 +133,12 @@ export async function runFoursdayCli(args = process.argv.slice(2), {
   }
   if (command === "configure") {
     return runBundledScript("./配置Foursday运行时.mjs", rest);
+  }
+  if (command === "projects") {
+    if (rest[0] !== "discover") {
+      throw new Error("Usage: foursday projects discover --catalog /private/codex-projects.json [--existing FILE] [--output FILE --apply]");
+    }
+    return runBundledScript("./发现Foursday项目.mjs", rest.slice(1));
   }
   if (command === "login") {
     if (rest.some((value) => value !== "--apply")) {

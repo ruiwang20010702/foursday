@@ -3,7 +3,7 @@ import {
   containsSensitivePersonMaterial,
 } from "./memory-candidate.mjs";
 
-const allowedTools = new Set(["whoami", "search", "get_page"]);
+const allowedTools = new Set(["whoami", "search", "get_page", "list_pages"]);
 const allowedPageTypes = new Set([
   "atom", "company", "concept", "conversation", "person",
   "preference", "project", "prospective", "source",
@@ -289,6 +289,60 @@ export class PersonalMemoryClient {
       });
     }
     return output;
+  }
+
+  async listProjects({ maximum = 1_000 } = {}) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1_000) {
+      throw new Error("Personal memory project limit must be 1-1000");
+    }
+    const projects = new Map();
+    let offset = 0;
+    let exhausted = false;
+    const maximumRows = Math.min(10_000, maximum * 10);
+    while (projects.size < maximum && !exhausted && offset < maximumRows) {
+      const limit = Math.min(100, maximum - projects.size);
+      const resultText = toolText(await this.callTool("list_pages", {
+        type: "project",
+        source_id: "default",
+        sort: "slug",
+        limit,
+        offset,
+      }));
+      let rows;
+      try {
+        rows = JSON.parse(resultText || "[]");
+      } catch {
+        throw new Error("Personal memory project catalog returned invalid JSON");
+      }
+      if (!Array.isArray(rows)) {
+        throw new Error("Personal memory project catalog is invalid");
+      }
+      for (const row of rows) {
+        const slug = String(row?.slug ?? "").trim();
+        if (
+          row?.type !== "project" ||
+          (row?.source_id != null && row.source_id !== "default") ||
+          row?.sensitivity === "confidential" ||
+          !slug.startsWith("projects/") ||
+          !/^[\p{L}\p{N}._/-]{1,300}$/u.test(slug) ||
+          slug.includes("//") ||
+          slug.split("/").includes("..")
+        ) continue;
+        projects.set(slug, {
+          slug,
+          title: safeKnowledgeText(row?.title) ?? "",
+          updatedAt: row?.updated_at ?? null,
+        });
+      }
+      offset += rows.length;
+      exhausted = rows.length < limit;
+      if (rows.length === 0) break;
+    }
+    return {
+      sourceId: "default",
+      projects: [...projects.values()].slice(0, maximum),
+      truncated: !exhausted,
+    };
   }
 
   async getPage(slug, { maxContentBytes = 256 * 1024 } = {}) {

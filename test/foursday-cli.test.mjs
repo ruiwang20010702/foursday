@@ -13,6 +13,7 @@ test("public CLI exposes only the Foursday product lifecycle", async () => {
   assert.deepEqual(help.usage, [
     "foursday install [--apply]",
     "foursday configure [--apply] [--replace] [--cron] --registry /absolute/private/projects.json",
+    "foursday projects discover --catalog /absolute/private/codex-projects.json [--existing FILE] [--output FILE --apply]",
     "foursday login [--apply]",
     "foursday verify [--apply]",
     "foursday accept --release-sha SHA --ledger FILE --restart-evidence FILE --code-evidence FILE --output FILE [--apply]",

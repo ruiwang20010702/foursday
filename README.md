@@ -8,7 +8,7 @@
 
 Trusted message → personal context → real workspace → verified work → natural reply.
 
-[简体中文](./docs/指南/中文首页.md) · [Architecture](./docs/en/architecture.md) · [Install](./docs/en/deployment.md) · [Security](./SECURITY.md) · [Contributing](./CONTRIBUTING.md)
+[简体中文](./docs/指南/中文首页.md) · [Pilot test](./docs/指南/同企业真实工作灰度测试指南.md) · [Architecture](./docs/en/architecture.md) · [Install](./docs/en/deployment.md) · [Security](./SECURITY.md) · [Contributing](./CONTRIBUTING.md)
 
 [![Checks](https://github.com/ruiwang20010702/foursday/actions/workflows/check.yml/badge.svg)](https://github.com/ruiwang20010702/foursday/actions/workflows/check.yml)
 [![Security](https://github.com/ruiwang20010702/foursday/actions/workflows/security.yml/badge.svg)](https://github.com/ruiwang20010702/foursday/actions/workflows/security.yml)
@@ -104,6 +104,21 @@ Then create private copies of:
 - [`deploy/foursday.example.json`](./deploy/foursday.example.json)
 - [`distribution/projects.example.json`](./distribution/projects.example.json)
 
+When Codex already has local projects saved, Foursday can generate the private v2 registry instead of asking you to rewrite every workspace by hand. Export the Codex project catalog to a private JSON file, preview discovery, then write a separate candidate:
+
+```bash
+npx --no-install foursday projects discover \
+  --catalog /absolute/private/codex-projects.json \
+  --output /absolute/private/projects.v2.json
+
+npx --no-install foursday projects discover \
+  --catalog /absolute/private/codex-projects.json \
+  --output /absolute/private/projects.v2.json \
+  --apply
+```
+
+Discovery preserves existing project authority, infers the nearest saved parent project, matches only exact gbrain project identities, excludes the whole user home and paths outside it, and never overwrites the active registry. The generated file is a private candidate; `configure` and production activation remain separate gates.
+
 Configure and start in send-disabled shadow mode:
 
 ```bash
@@ -139,7 +154,7 @@ claude plugin install foursday@foursday-local --scope user
 
 Start a new Codex task or Claude Code session after installation so the new Skill and MCP are discovered. Both hosts use the installed `foursday` CLI; they do not bundle a second runtime.
 
-The Control MCP exposes privacy-safe status, tasks, schedules, project-memory scope and evidence. Pause, takeover, correction and resume require the exact current `revision`; they cannot enable sending, deploy, delete data or expand permissions.
+The Control MCP exposes privacy-safe status, tasks, schedules, project-memory scope and evidence. Memory status distinguishes fixed workspace bindings from the number of project pages discoverable in personal gbrain; a temporary gbrain listing failure degrades only that count. Pause, takeover, correction and resume require the exact current `revision`; they cannot enable sending, deploy, delete data or expand permissions.
 
 The same surface is available from the CLI:
 

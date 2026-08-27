@@ -153,6 +153,36 @@ test("检索只返回有界、可读且不含敏感材料的个人知识", async
   );
 });
 
+test("项目目录分页统计只保留default中的可读项目页", async () => {
+  let count = 0;
+  const calls = [];
+  const memory = client(async (_url, options = {}) => {
+    count += 1;
+    if (count === 1) return discovery();
+    if (count === 2) return token();
+    const request = JSON.parse(options.body);
+    calls.push(request.params.arguments);
+    if (calls.length === 1) {
+      return mcpResult([
+        { slug: "projects/a", type: "project", title: "项目 A", source_id: "default" },
+        { slug: "projects/private", type: "project", title: "项目 B", sensitivity: "confidential" },
+        { slug: "projects/other", type: "project", title: "项目 C", source_id: "other" },
+      ]);
+    }
+    return mcpResult([]);
+  });
+  assert.deepEqual(await memory.listProjects({ maximum: 3 }), {
+    sourceId: "default",
+    projects: [{ slug: "projects/a", title: "项目 A", updatedAt: null }],
+    truncated: false,
+  });
+  assert.equal(calls[0].type, "project");
+  assert.equal(calls[0].source_id, "default");
+  assert.equal(calls[0].offset, 0);
+  assert.equal(calls[1].offset, 3);
+  await assert.rejects(memory.listProjects({ maximum: 1_001 }), /limit/u);
+});
+
 test("包含凭据或敏感人物信息的查询不会离开 Foursday 进程", async () => {
   let called = false;
   const memory = client(async () => {

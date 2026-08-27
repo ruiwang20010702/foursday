@@ -3,7 +3,8 @@ import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { inspectFoursdayNativeGateway } from "./foursday-native-gateway.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
-import { legacyProjectsFromWorkScopes } from "./foursday-work-scope-registry.mjs";
+import { createHermesPersonalMemoryClient } from "./hermes-personal-memory-context.mjs";
+import { normalizeWorkScopeRegistry } from "./foursday-work-scope-registry.mjs";
 
 const digest = /^[a-f0-9]{64}$/u;
 
@@ -29,18 +30,32 @@ async function privateJson(path, { optional = false, maximum = 1024 * 1024 } = {
   }
 }
 
-async function projectRegistry(path) {
+async function projectRegistrySnapshot(path) {
   const document = await privateJson(path);
-  return legacyProjectsFromWorkScopes(document).map((project) => ({
-    id: String(project.id ?? "").slice(0, 64),
-    name: String(project.name ?? "").slice(0, 200),
-    root: String(project.root ?? ""),
-    parentId: project.parentId ?? null,
-    workspaceId: project.workspaceId ?? project.id,
-    gbrainSlugs: Array.isArray(project.gbrainSlugs)
-      ? project.gbrainSlugs.slice(0, 20).map((value) => String(value).slice(0, 300))
-      : [],
-  }));
+  const normalized = normalizeWorkScopeRegistry(document);
+  const workspaces = new Map(normalized.workspaces.map((workspace) => [workspace.id, workspace]));
+  return {
+    sourceSchemaVersion: normalized.sourceSchemaVersion,
+    projects: normalized.scopes.map((scope) => ({
+      id: String(scope.id ?? "").slice(0, 64),
+      name: String(scope.name ?? "").slice(0, 200),
+      root: String(workspaces.get(scope.workspaceId)?.root ?? ""),
+      parentId: scope.parentId ?? null,
+      workspaceId: scope.workspaceId ?? scope.id,
+      gbrainSlugs: Array.isArray(scope.gbrainSlugs)
+        ? scope.gbrainSlugs.slice(0, 32).map((value) => String(value).slice(0, 300))
+        : [],
+    })),
+  };
+}
+
+async function projectRegistry(path) {
+  return (await projectRegistrySnapshot(path)).projects;
+}
+
+async function defaultMemoryCatalogReader({ configPath }) {
+  const client = await createHermesPersonalMemoryClient({ configPath });
+  return client.listProjects({ maximum: 1_000 });
 }
 
 async function threadBindings(root) {
@@ -131,6 +146,9 @@ export class FoursdayControlService {
     evidencePath,
     productionConfigPath,
     gatewayInspector = inspectFoursdayNativeGateway,
+    memoryCatalogReader = defaultMemoryCatalogReader,
+    memoryCatalogTtlMs = 5 * 60_000,
+    now = () => Date.now(),
   }) {
     this.layout = layout;
     this.controlPath = controlPath;
@@ -139,7 +157,44 @@ export class FoursdayControlService {
     this.evidencePath = evidencePath;
     this.productionConfigPath = productionConfigPath;
     this.gatewayInspector = gatewayInspector;
+    this.memoryCatalogReader = memoryCatalogReader;
+    this.memoryCatalogTtlMs = memoryCatalogTtlMs;
+    this.now = now;
+    this.memoryCatalogCache = null;
     this.store = new FoursdayControlStore({ path: controlPath });
+  }
+
+  async memoryDiscovery(readEnabled) {
+    if (!readEnabled) {
+      return { enabled: false, state: "disabled", projectCount: null, truncated: false };
+    }
+    if (
+      this.memoryCatalogCache &&
+      this.memoryCatalogCache.expiresAt > this.now()
+    ) return this.memoryCatalogCache.value;
+    let value;
+    try {
+      const catalog = await this.memoryCatalogReader({ configPath: this.productionConfigPath });
+      if (
+        catalog?.sourceId !== "default" || !Array.isArray(catalog.projects) ||
+        catalog.projects.length > 1_000
+      ) throw new Error("Foursday memory catalog is invalid");
+      value = {
+        enabled: true,
+        state: "ready",
+        projectCount: catalog.projects.length,
+        truncated: catalog.truncated === true,
+      };
+    } catch {
+      value = { enabled: true, state: "unavailable", projectCount: null, truncated: false };
+    }
+    this.memoryCatalogCache = {
+      value,
+      expiresAt: this.now() + (
+        value.state === "ready" ? this.memoryCatalogTtlMs : Math.min(this.memoryCatalogTtlMs, 30_000)
+      ),
+    };
+    return value;
   }
 
   async status() {
@@ -246,16 +301,25 @@ export class FoursdayControlService {
   }
 
   async memory() {
-    const [projects, config] = await Promise.all([
-      projectRegistry(this.registryPath),
+    const [registry, config] = await Promise.all([
+      projectRegistrySnapshot(this.registryPath),
       privateJson(this.productionConfigPath),
     ]);
+    const readEnabled = /^(?:1|true|yes)$/iu.test(String(config?.FOURSDAY_GBRAIN_ENABLED ?? ""));
+    const fixedPages = [...new Set(registry.projects.flatMap((project) => project.gbrainSlugs))];
+    const discovery = await this.memoryDiscovery(readEnabled);
     return {
-      schema: "foursday-control-memory/v1",
+      schema: "foursday-control-memory/v2",
       sourceId: "default",
-      readEnabled: /^(?:1|true|yes)$/iu.test(String(config?.FOURSDAY_GBRAIN_ENABLED ?? "")),
+      readEnabled,
       writeEnabled: /^(?:1|true|yes)$/iu.test(String(config?.FOURSDAY_GBRAIN_WRITE_ENABLED ?? "")),
-      projects: projects.map((project) => ({
+      registrySchemaVersion: registry.sourceSchemaVersion,
+      fixedBindings: {
+        projectCount: registry.projects.length,
+        pageCount: fixedPages.length,
+      },
+      discovery,
+      projects: registry.projects.map((project) => ({
         projectId: project.id,
         projectName: project.name,
         parentId: project.parentId,
