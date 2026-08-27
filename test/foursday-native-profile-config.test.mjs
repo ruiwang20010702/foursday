@@ -99,6 +99,7 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexConfigContent, /\[permissions\.foursday-workspace\.network\]\nenabled = false/u);
   assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\]/u);
   assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\.filesystem\]\n":root" = "deny"\n":minimal" = "deny"/u);
+  assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\.filesystem\][\s\S]*glob_scan_max_depth = 1/u);
   assert.match(plan.codexConfigContent, /\[permissions\.foursday-classifier\.network\]\nenabled = false/u);
   assert.match(plan.codexConfigContent, /approvals_reviewer = "auto_review"/u);
   assert.match(plan.codexConfigContent, /\[shell_environment_policy\]\ninherit = "core"/u);

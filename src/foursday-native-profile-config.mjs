@@ -120,7 +120,7 @@ export function foursdayCodexConfig({
     "[permissions.foursday-classifier.filesystem]",
     '":root" = "deny"',
     '":minimal" = "deny"',
-    "glob_scan_max_depth = 0",
+    "glob_scan_max_depth = 1",
     "",
     "[permissions.foursday-classifier.network]",
     "enabled = false",
