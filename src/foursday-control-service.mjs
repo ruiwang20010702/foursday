@@ -177,6 +177,17 @@ export class FoursdayControlService {
           : 0,
         deferredReplyErrorCode: gateway.deferredReplyErrorCode ?? null,
         deferredReplyExpiresAt: gateway.deferredReplyExpiresAt ?? null,
+        enterpriseIdentityRetryPending:
+          Number.isSafeInteger(gateway.enterpriseIdentityRetryPending) &&
+            gateway.enterpriseIdentityRetryPending >= 0
+            ? gateway.enterpriseIdentityRetryPending
+            : 0,
+        enterpriseIdentityRejectionCount:
+          Number.isSafeInteger(gateway.enterpriseIdentityRejectionCount) &&
+            gateway.enterpriseIdentityRejectionCount >= 0
+            ? gateway.enterpriseIdentityRejectionCount
+            : 0,
+        enterpriseIdentityLastErrorCode: gateway.enterpriseIdentityLastErrorCode ?? null,
         modeConsistent: gateway.modeConsistent === true,
         eventWakeEnabled: gateway.eventWakeEnabled === true,
         eventWakeReady: gateway.eventWakeReady === true,

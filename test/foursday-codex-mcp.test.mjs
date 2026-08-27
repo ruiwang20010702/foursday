@@ -92,6 +92,11 @@ async function fixture(t, {
     lastFullSuccessAt: new Date(Date.now() - 1_000).toISOString(),
     lastErrorCount: 0,
     manualReplyProbe: { ready: true, errorCode: null },
+    enterpriseIdentityQueue: { ["b".repeat(64)]: { redacted: true } },
+    enterpriseIdentityRejections: {
+      count: 2,
+      lastErrorCode: "dws_enterprise_identity_unavailable",
+    },
     sendBlocked: false,
     eventWake: { ready: true },
   })}\n`, { mode: 0o600 });
@@ -577,6 +582,12 @@ test("runtime status tool reads live Profile state instead of project memory", a
   assert.equal(result.manualReplyProbeDegraded, false);
   assert.equal(result.deferredReplyWaiting, false);
   assert.equal(result.deferredReplyAttemptCount, 0);
+  assert.equal(result.enterpriseIdentityRetryPending, 1);
+  assert.equal(result.enterpriseIdentityRejectionCount, 2);
+  assert.equal(
+    result.enterpriseIdentityLastErrorCode,
+    "dws_enterprise_identity_unavailable",
+  );
   assert.equal(result.eventWakeReady, true);
 
   const called = await handleFoursdayMcpRequest({

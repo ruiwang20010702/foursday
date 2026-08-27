@@ -54,7 +54,7 @@ flowchart LR
 Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousResearch/hermes-agent) control plane internally; Codex is the only work-planning and reply-generating loop. Foursday ships:
 
 - an isolated `foursday` Profile;
-- DWS personal DingTalk and work-scope router plugins, with Stream event wake-up, filesystem wake-up and bounded fallback;
+- DWS personal DingTalk and work-scope router plugins, with Stream event wake-up, filesystem wake-up, bounded fallback, exact enterprise dual-identity binding, and private bounded retry for temporary directory failures;
 - an isolated Codex home with an App Server policy proxy, workspace sandboxing, forbidden command rules, automatic approval review, and a Foursday MCP;
 - scope-bound live DingTalk reads through that MCP: common sources may be registered, while exact links from verified current-enterprise direct-message senders become short-lived `provided_N` sources outside the model. DWS, node IDs, URLs, contact/global search, writes, and paths outside the current primary workspace remain unavailable to the Codex shell;
 - a project-work Skill;

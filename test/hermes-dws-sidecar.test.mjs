@@ -425,6 +425,319 @@ test("enterprise mode scans verified organization direct messages without explic
   }
 });
 
+test("enterprise identity retry survives restart and emits the recovered message exactly once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-enterprise-identity-retry-"));
+  const stateFile = join(root, "state.json");
+  const diagnostics = [];
+  const frames = [];
+  let current = new Date("2026-08-27T10:33:00+08:00");
+  let firstScan = true;
+  let identityAvailable = false;
+  const dws = {
+    async fetchEnterpriseDirectScan() {
+      if (!firstScan) return identityAvailable ? {
+        messages: [{
+          id: "identity-retry-message",
+          senderUserId: "retry-employee",
+          senderOpenDingTalkId: "open-retry",
+          senderName: "Retry Employee",
+          conversationId: "identity-retry-conversation",
+          content: "retry me",
+          createTime: "2026-08-27T10:32:10+08:00",
+          singleChat: true,
+          isSelf: false,
+          enterpriseVerified: true,
+          media: [],
+        }],
+        pending: [],
+        rejected: [],
+      } : { messages: [], pending: [], rejected: [] };
+      firstScan = false;
+      return {
+        messages: [],
+        pending: [{
+          errorCode: "backend_dependency_unavailable",
+          message: {
+            id: "identity-retry-message",
+            senderUserId: "open-retry",
+            senderOpenDingTalkId: "open-retry",
+            senderIdentitySource: "payload_open_id",
+            senderName: "Retry Employee",
+            conversationId: "identity-retry-conversation",
+            content: "retry me",
+            createTime: "2026-08-27T10:32:10+08:00",
+            singleChat: true,
+            isSelf: false,
+            media: [],
+          },
+        }],
+        rejected: [],
+      };
+    },
+    async retryEnterpriseDirectMessage(message) {
+      if (!identityAvailable) {
+        const error = new Error("backend dependency unavailable");
+        error.code = "backend_dependency_unavailable";
+        throw error;
+      }
+      return {
+        ...message,
+        senderUserId: "retry-employee",
+        senderOpenDingTalkId: "open-retry",
+        enterpriseVerified: true,
+      };
+    },
+    async fetchBySender() { return []; },
+    async fetchGroupMentions() { return []; },
+  };
+  const config = {
+    dwsPath: process.execPath,
+    dingtalkRoot: "",
+    userIds: [],
+    groupIds: [],
+    enterpriseUsersEnabled: true,
+    selfUserId: null,
+    stateFile,
+    mediaRoot: null,
+    initialLookbackMs: 120_000,
+    historySettleMs: 120_000,
+    fallbackMs: 300_000,
+    eventWakeEnabled: false,
+    outboundQuietMs: 8_000,
+    outboundMaxQuietMs: 20_000,
+    enterpriseIdentityRetryTtlMs: 30 * 60_000,
+    enterpriseIdentityRetryMaxAttempts: 8,
+    enterpriseIdentityRetryCapacity: 128,
+    sendEnabled: false,
+  };
+  const first = await createSidecarRuntime({
+    config,
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: (value) => diagnostics.push(value),
+    now: () => current,
+  });
+  await first.start();
+  await first.stop();
+  let state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(Object.keys(state.enterpriseIdentityQueue).length, 1);
+  assert.equal(frames.some((frame) => frame.record?.id === "identity-retry-message"), false);
+
+  identityAvailable = true;
+  current = new Date("2026-08-27T10:33:10+08:00");
+  const second = await createSidecarRuntime({
+    config,
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: (value) => diagnostics.push(value),
+    now: () => current,
+  });
+  await second.start();
+  await second.check();
+  await second.stop();
+
+  state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(Object.keys(state.enterpriseIdentityQueue).length, 0);
+  assert.equal(
+    frames.filter((frame) => frame.record?.id === "identity-retry-message").length,
+    1,
+  );
+  assert.equal(diagnostics.some((value) => value.includes("identity_retry_resolved")), true);
+});
+
+test("enterprise identity retry expires without execution and preserves an audit count", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-enterprise-identity-expiry-"));
+  const stateFile = join(root, "state.json");
+  let current = new Date("2026-08-27T10:33:00+08:00");
+  let firstScan = true;
+  const frames = [];
+  const diagnostics = [];
+  const dws = {
+    async fetchEnterpriseDirectScan() {
+      if (!firstScan) return { messages: [], pending: [], rejected: [] };
+      firstScan = false;
+      return {
+        messages: [],
+        pending: [{
+          errorCode: "backend_dependency_unavailable",
+          message: {
+            id: "identity-expiry-message",
+            senderUserId: "open-expiry",
+            senderOpenDingTalkId: "open-expiry",
+            senderIdentitySource: "payload_open_id",
+            senderName: "Expiry Employee",
+            conversationId: "identity-expiry-conversation",
+            content: "expire me",
+            createTime: "2026-08-27T10:32:10+08:00",
+            singleChat: true,
+            isSelf: false,
+            media: [],
+          },
+        }],
+        rejected: [],
+      };
+    },
+    async retryEnterpriseDirectMessage() {
+      const error = new Error("backend dependency unavailable");
+      error.code = "backend_dependency_unavailable";
+      throw error;
+    },
+    async fetchBySender() { return []; },
+    async fetchGroupMentions() { return []; },
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: null,
+      stateFile,
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      enterpriseIdentityRetryTtlMs: 1_000,
+      enterpriseIdentityRetryMaxAttempts: 8,
+      enterpriseIdentityRetryCapacity: 128,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: (value) => diagnostics.push(value),
+    now: () => current,
+  });
+  await runtime.start();
+  current = new Date("2026-08-27T10:33:02+08:00");
+  await runtime.check();
+  await runtime.stop();
+
+  const state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.deepEqual(state.enterpriseIdentityQueue, {});
+  assert.equal(state.enterpriseIdentityRejections.count, 1);
+  assert.equal(frames.some((frame) => frame.record?.id === "identity-expiry-message"), false);
+  assert.equal(diagnostics.some((value) => value.includes("identity_retry_expired")), true);
+});
+
+test("enterprise identity retry capacity prevents an unverified sender backlog from growing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-enterprise-identity-capacity-"));
+  const stateFile = join(root, "state.json");
+  const candidate = (id, identity) => ({
+    errorCode: "backend_dependency_unavailable",
+    message: {
+      id,
+      senderUserId: identity,
+      senderOpenDingTalkId: identity,
+      senderIdentitySource: "payload_open_id",
+      senderName: identity,
+      conversationId: `conversation-${id}`,
+      content: "pending",
+      createTime: "2026-08-27T10:32:10+08:00",
+      singleChat: true,
+      isSelf: false,
+      media: [],
+    },
+  });
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: null,
+      stateFile,
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      enterpriseIdentityRetryCapacity: 1,
+      sendEnabled: false,
+    },
+    dws: {
+      async fetchEnterpriseDirectScan() {
+        return {
+          messages: [],
+          pending: [candidate("pending-one", "open-one"), candidate("pending-two", "open-two")],
+          rejected: [],
+        };
+      },
+      async fetchBySender() { return []; },
+      async fetchGroupMentions() { return []; },
+    },
+    emit: () => {},
+    diagnose: () => {},
+    now: () => new Date("2026-08-27T10:33:00+08:00"),
+  });
+  await runtime.start();
+  await runtime.stop();
+  const state = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.equal(Object.keys(state.enterpriseIdentityQueue).length, 1);
+  assert.equal(state.enterpriseIdentityRejections.count, 1);
+});
+
+test("enterprise policy rejection is audited without entering the retry queue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-enterprise-policy-reject-"));
+  const diagnostics = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      outboundQuietMs: 8_000,
+      outboundMaxQuietMs: 20_000,
+      sendEnabled: false,
+    },
+    dws: {
+      async fetchEnterpriseDirectScan() {
+        return {
+          messages: [],
+          pending: [],
+          rejected: [{
+            errorCode: "dws_enterprise_identity_unavailable",
+            message: {
+              id: "external-message",
+              senderUserId: "external-user",
+              senderName: "External",
+              conversationId: "external-conversation",
+              content: "external",
+              createTime: "2026-08-27T10:32:10+08:00",
+              singleChat: true,
+            },
+          }],
+        };
+      },
+      async fetchBySender() { return []; },
+      async fetchGroupMentions() { return []; },
+    },
+    emit: () => {},
+    diagnose: (value) => diagnostics.push(value),
+    now: () => new Date("2026-08-27T10:33:00+08:00"),
+  });
+  await runtime.start();
+  await runtime.stop();
+  const state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+  assert.deepEqual(state.enterpriseIdentityQueue, {});
+  assert.equal(state.enterpriseIdentityRejections.count, 1);
+  assert.equal(diagnostics.some((value) => value.includes("identity_rejected")), true);
+});
+
 test("DWS event wake triggers the same allowlisted history read with event latency evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-wake-"));
   const frames = [];

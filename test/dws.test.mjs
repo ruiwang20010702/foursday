@@ -692,6 +692,183 @@ test("enterprise direct scan admits only contact-verified current-organization s
   assert.equal(calls.filter((args) => args.includes("aisearch")).length, 2);
 });
 
+test("enterprise direct scan resolves an OpenID-only sender without treating it as a userId", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args) => {
+      calls.push(args);
+      if (args.includes("search-advanced")) return { stdout: JSON.stringify({
+        result: {
+          complete: true,
+          hasMore: false,
+          failures: [],
+          conversationMessagesList: [{
+            singleChat: true,
+            openConversationId: "direct-new-employee",
+            messages: [{
+              openMessageId: "message-open-only",
+              sender: "New Employee",
+              senderOpenDingTalkId: "open-new-employee",
+              createTime: "2026-08-27T10:32:10+08:00",
+              content: "请核对项目资料",
+            }],
+          }],
+        },
+      }) };
+      if (args.includes("aisearch")) return { stdout: JSON.stringify({
+        result: [{
+          userId: "new-employee",
+          openDingTalkId: "open-new-employee",
+          name: "New Employee",
+        }],
+      }) };
+      throw new Error(`unexpected DWS call: ${args.join(" ")}`);
+    },
+  });
+  dws.enrichMessageResources = async (rows) => rows;
+
+  const scan = await dws.fetchEnterpriseDirectScan({
+    start: new Date("2026-08-27T10:31:00+08:00"),
+    end: new Date("2026-08-27T10:34:00+08:00"),
+  });
+
+  assert.equal(scan.messages.length, 1);
+  assert.equal(scan.messages[0].senderUserId, "new-employee");
+  assert.equal(scan.messages[0].senderOpenDingTalkId, "open-new-employee");
+  assert.equal(scan.messages[0].enterpriseVerified, true);
+  assert.deepEqual(scan.pending, []);
+  assert.deepEqual(scan.rejected, []);
+  assert.equal(calls.some((args) => args.includes("contact")), false);
+});
+
+test("OpenID-only enterprise identity selects the exact account among same-name candidates", async () => {
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async () => ({
+    result: [{
+      userId: "same-name-wrong",
+      openDingTalkId: "open-wrong",
+      name: "Same Name",
+    }, {
+      userId: "same-name-right",
+      openDingTalkId: "open-right",
+      name: "Same Name",
+    }],
+  });
+  assert.deepEqual(await dws.resolveEnterpriseOpenDingTalkId(
+    "open-right",
+    "Same Name",
+  ), {
+    userId: "same-name-right",
+    openDingTalkId: "open-right",
+  });
+  await assert.rejects(
+    dws.resolveEnterpriseOpenDingTalkId("open-missing", "Same Name"),
+    (error) => error.code === "dws_enterprise_identity_unavailable",
+  );
+});
+
+test("OpenID-only owner messages stay outside the enterprise Agent Loop", async () => {
+  const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });
+  dws.run = async (args) => {
+    if (args.includes("search-advanced")) return {
+      result: {
+        complete: true,
+        hasMore: false,
+        failures: [],
+        conversationMessagesList: [{
+          singleChat: true,
+          openConversationId: "owner-conversation",
+          messages: [{
+            openMessageId: "owner-open-only-message",
+            sender: "Owner",
+            senderOpenDingTalkId: "open-owner",
+            createTime: "2026-08-27T10:32:10+08:00",
+            content: "owner outbound without direction projection",
+          }],
+        }],
+      },
+    };
+    return {
+      result: [{
+        userId: "owner-user",
+        openDingTalkId: "open-owner",
+        name: "Owner",
+      }],
+    };
+  };
+  dws.enrichMessageResources = async (rows) => rows;
+  const scan = await dws.fetchEnterpriseDirectScan({
+    start: new Date("2026-08-27T10:31:00+08:00"),
+    end: new Date("2026-08-27T10:34:00+08:00"),
+    selfUserId: "owner-user",
+  });
+  assert.deepEqual(scan.messages, []);
+  assert.deepEqual(scan.pending, []);
+  assert.deepEqual(scan.rejected, []);
+});
+
+test("enterprise direct scan separates transient identity failures from policy rejection", async () => {
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_command, args) => {
+      if (args.includes("search-advanced")) return { stdout: JSON.stringify({
+        result: {
+          complete: true,
+          hasMore: false,
+          failures: [],
+          conversationMessagesList: [{
+            singleChat: true,
+            openConversationId: "direct-transient",
+            messages: [{
+              openMessageId: "message-transient",
+              senderUserId: "transient-user",
+              senderName: "Transient",
+              createTime: "2026-08-27T10:32:10+08:00",
+              content: "temporary",
+            }],
+          }, {
+            singleChat: true,
+            openConversationId: "direct-external",
+            messages: [{
+              openMessageId: "message-external",
+              senderUserId: "external-user",
+              senderName: "External",
+              createTime: "2026-08-27T10:32:11+08:00",
+              content: "external",
+            }],
+          }],
+        },
+      }) };
+      const id = args[args.indexOf("--ids") + 1];
+      if (id === "external-user") {
+        const denied = new Error("organization policy denied");
+        denied.stderr = '{"code":"PAT_ORG_POLICY_DENIED","data":{"policy":"OPEN_SOURCE_ORG_SCOPE_FORBIDDEN"}}';
+        throw denied;
+      }
+      if (id === "transient-user" || args.includes("aisearch")) {
+        const temporary = new Error("backend dependency unavailable");
+        temporary.code = "backend_dependency_unavailable";
+        throw temporary;
+      }
+      throw new Error(`unexpected DWS call: ${args.join(" ")}`);
+    },
+  });
+
+  const scan = await dws.fetchEnterpriseDirectScan({
+    start: new Date("2026-08-27T10:31:00+08:00"),
+    end: new Date("2026-08-27T10:34:00+08:00"),
+  });
+
+  assert.deepEqual(scan.messages, []);
+  assert.equal(scan.pending.length, 1);
+  assert.equal(scan.pending[0].message.id, "message-transient");
+  assert.equal(scan.pending[0].errorCode, "backend_dependency_unavailable");
+  assert.equal(scan.rejected.length, 1);
+  assert.equal(scan.rejected[0].message.id, "message-external");
+  assert.equal(scan.rejected[0].errorCode, "dws_enterprise_identity_unavailable");
+});
+
 test("enterprise direct scan retries one incomplete projection before failing closed", async () => {
   let attempts = 0;
   const dws = new DwsAdapter({ dwsPath: "/safe/bin/dws" });

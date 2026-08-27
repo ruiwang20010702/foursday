@@ -59,6 +59,13 @@ const retryableManualReplyCodes = new Set([
 ]);
 const deferredReplyRetentionMs = 90_000;
 const deferredReplyProbeTimeoutMs = 12_000;
+const enterpriseIdentityRetryDefaults = Object.freeze({
+  ttlMs: 30 * 60_000,
+  maxAttempts: 8,
+  capacity: 128,
+  perIdentityCapacity: 8,
+  maximumContentBytes: 128 * 1024,
+});
 const deferredReplyRetryDelays = Object.freeze([
   500, 1_500, 3_000, 5_000, 8_000, 12_000, 15_000, 20_000, 25_000,
 ]);
@@ -168,6 +175,9 @@ async function readBackSentMessage({ dws, route, conversationId, evidence }) {
 function emptyState() {
   return {
     lastUsers: {}, lastGroups: {}, lastEnterpriseAt: null, recentMessageIds: [],
+    enterpriseIdentityQueue: {},
+    enterpriseIdentityRejectedIds: [],
+    enterpriseIdentityRejections: { count: 0, lastAt: null, lastErrorCode: null },
     recipients: {}, activeConversations: {}, takeoverReported: [],
     controlStates: {},
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
@@ -181,6 +191,78 @@ function emptyState() {
     lastWakeSource: null,
     lastDetection: null,
     eventWake: { enabled: false, ready: false, errorCode: null, updatedAt: null },
+  };
+}
+
+function enterpriseIdentityRetryKey(messageId) {
+  return createHash("sha256").update(String(messageId)).digest("hex");
+}
+
+function normalizeEnterpriseRetryMessage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const bounded = (input, maximum = 500) => {
+    const output = String(input ?? "").trim();
+    return output && output.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(output)
+      ? output
+      : null;
+  };
+  const id = bounded(value.id);
+  const conversationId = bounded(value.conversationId);
+  const createTime = bounded(value.createTime, 100);
+  const senderUserId = bounded(value.senderUserId);
+  const senderOpenDingTalkId = bounded(value.senderOpenDingTalkId);
+  const content = String(value.content ?? "");
+  if (
+    !id || !conversationId || !createTime ||
+    (!senderUserId && !senderOpenDingTalkId) ||
+    Buffer.byteLength(content, "utf8") > enterpriseIdentityRetryDefaults.maximumContentBytes ||
+    epoch(createTime) == null
+  ) return null;
+  const media = Array.isArray(value.media) ? value.media.slice(0, 8).map((item) => ({
+    resourceId: bounded(item?.resourceId),
+    resourceType: item?.resourceType === "fileId" ? "fileId" : "mediaId",
+    name: bounded(item?.name, 1_000),
+    mimeType: bounded(item?.mimeType, 200),
+  })).filter((item) => item.resourceId) : [];
+  return {
+    id,
+    senderUserId,
+    senderOpenDingTalkId,
+    senderIdentitySource: bounded(value.senderIdentitySource, 80) ?? "unknown",
+    senderName: bounded(value.senderName, 500),
+    conversationId,
+    content,
+    createTime: new Date(createTime).toISOString(),
+    singleChat: value.singleChat !== false,
+    isSelf: value.isSelf === true,
+    isWithdrawn: value.isWithdrawn === true,
+    withdrawnAt: epoch(value.withdrawnAt) == null
+      ? null
+      : new Date(value.withdrawnAt).toISOString(),
+    media,
+  };
+}
+
+function normalizeEnterpriseRetryEntry(value) {
+  const message = normalizeEnterpriseRetryMessage(value?.message);
+  const firstSeenAt = epoch(value?.firstSeenAt);
+  const lastAttemptAt = epoch(value?.lastAttemptAt);
+  const nextAttemptAt = epoch(value?.nextAttemptAt);
+  const expiresAt = epoch(value?.expiresAt);
+  const attempts = Number(value?.attempts);
+  if (
+    !message || firstSeenAt == null || lastAttemptAt == null ||
+    nextAttemptAt == null || expiresAt == null ||
+    !Number.isSafeInteger(attempts) || attempts < 1
+  ) return null;
+  return {
+    message,
+    firstSeenAt: new Date(firstSeenAt).toISOString(),
+    lastAttemptAt: new Date(lastAttemptAt).toISOString(),
+    nextAttemptAt: new Date(nextAttemptAt).toISOString(),
+    expiresAt: new Date(expiresAt).toISOString(),
+    attempts,
+    lastErrorCode: diagnosticCode({ code: value?.lastErrorCode }, "identity_check_failed"),
   };
 }
 
@@ -210,6 +292,30 @@ async function loadState(path) {
       lastEnterpriseAt: typeof parsed?.lastEnterpriseAt === "string"
         ? parsed.lastEnterpriseAt
         : null,
+      enterpriseIdentityQueue: parsed?.enterpriseIdentityQueue &&
+          typeof parsed.enterpriseIdentityQueue === "object" &&
+          !Array.isArray(parsed.enterpriseIdentityQueue)
+        ? Object.fromEntries(Object.entries(parsed.enterpriseIdentityQueue)
+          .map(([key, value]) => [key, normalizeEnterpriseRetryEntry(value)])
+          .filter(([key, value]) => /^[a-f0-9]{64}$/u.test(key) && value)
+          .slice(-enterpriseIdentityRetryDefaults.capacity))
+        : {},
+      enterpriseIdentityRejectedIds: Array.isArray(parsed?.enterpriseIdentityRejectedIds)
+        ? parsed.enterpriseIdentityRejectedIds.map(String)
+          .filter((value) => /^[a-f0-9]{64}$/u.test(value)).slice(-1_000)
+        : [],
+      enterpriseIdentityRejections: {
+        count: Number.isSafeInteger(parsed?.enterpriseIdentityRejections?.count) &&
+            parsed.enterpriseIdentityRejections.count >= 0
+          ? parsed.enterpriseIdentityRejections.count
+          : 0,
+        lastAt: typeof parsed?.enterpriseIdentityRejections?.lastAt === "string"
+          ? parsed.enterpriseIdentityRejections.lastAt
+          : null,
+        lastErrorCode: typeof parsed?.enterpriseIdentityRejections?.lastErrorCode === "string"
+          ? parsed.enterpriseIdentityRejections.lastErrorCode.slice(0, 80)
+          : null,
+      },
       recentMessageIds: Array.isArray(parsed?.recentMessageIds)
         ? parsed.recentMessageIds.map(String).filter(Boolean).slice(-5_000)
         : [],
@@ -345,6 +451,24 @@ export function sidecarConfig(environment = process.env) {
       0,
       10 * 60 * 1_000,
     ),
+    enterpriseIdentityRetryTtlMs: boundedInteger(
+      environment.DWS_PERSONAL_IDENTITY_RETRY_TTL_MS,
+      enterpriseIdentityRetryDefaults.ttlMs,
+      60_000,
+      24 * 60 * 60 * 1_000,
+    ),
+    enterpriseIdentityRetryMaxAttempts: boundedInteger(
+      environment.DWS_PERSONAL_IDENTITY_RETRY_MAX_ATTEMPTS,
+      enterpriseIdentityRetryDefaults.maxAttempts,
+      1,
+      20,
+    ),
+    enterpriseIdentityRetryCapacity: boundedInteger(
+      environment.DWS_PERSONAL_IDENTITY_RETRY_CAPACITY,
+      enterpriseIdentityRetryDefaults.capacity,
+      1,
+      1_000,
+    ),
     eventWakeEnabled: String(
       environment.DWS_PERSONAL_EVENT_WAKE_ENABLED ?? "true",
     ).toLowerCase() === "true",
@@ -398,7 +522,31 @@ export async function createSidecarRuntime({
     await chmod(config.mediaRoot, 0o700);
   }
   const state = await loadState(config.stateFile);
+  const enterpriseIdentityRetryTtlMs = boundedInteger(
+    config.enterpriseIdentityRetryTtlMs,
+    enterpriseIdentityRetryDefaults.ttlMs,
+    1_000,
+    24 * 60 * 60 * 1_000,
+  );
+  const enterpriseIdentityRetryMaxAttempts = boundedInteger(
+    config.enterpriseIdentityRetryMaxAttempts,
+    enterpriseIdentityRetryDefaults.maxAttempts,
+    1,
+    20,
+  );
+  const enterpriseIdentityRetryCapacity = boundedInteger(
+    config.enterpriseIdentityRetryCapacity,
+    enterpriseIdentityRetryDefaults.capacity,
+    1,
+    1_000,
+  );
   const seen = new Set(state.recentMessageIds);
+  const enterpriseIdentityQueue = new Map(Object.entries(state.enterpriseIdentityQueue));
+  while (enterpriseIdentityQueue.size > enterpriseIdentityRetryCapacity) {
+    enterpriseIdentityQueue.delete(enterpriseIdentityQueue.keys().next().value);
+  }
+  state.enterpriseIdentityQueue = Object.fromEntries(enterpriseIdentityQueue);
+  const enterpriseIdentityRejectedIds = new Set(state.enterpriseIdentityRejectedIds);
   const recipients = new Map(Object.entries(state.recipients));
   const activeConversations = new Map(Object.entries(state.activeConversations));
   const takeoverReported = new Set(state.takeoverReported);
@@ -432,6 +580,126 @@ export async function createSidecarRuntime({
   let pending = false;
   let pendingWakeSource = null;
   let stateWrite = Promise.resolve();
+  const syncEnterpriseIdentityQueue = () => {
+    state.enterpriseIdentityQueue = Object.fromEntries(enterpriseIdentityQueue);
+  };
+  const identityRetryDelayMs = (attempts) => Math.min(
+    5 * 60_000,
+    5_000 * (2 ** Math.max(0, attempts - 1)),
+  );
+  const identityFailure = (error) => {
+    if (typeof dws.enterpriseIdentityFailure === "function") {
+      return dws.enterpriseIdentityFailure(error);
+    }
+    const code = diagnosticCode(error, "dws_enterprise_identity_check_failed");
+    return {
+      errorCode: code,
+      retryable: !/(?:identity_(?:required|unavailable|mismatch)|auth|unauthorized|forbidden)/iu
+        .test(`${code} ${String(error?.message ?? "")}`),
+    };
+  };
+  const recordIdentityRejection = (message, errorCode, reason = "identity_rejected") => {
+    const rejectionId = enterpriseIdentityRetryKey(
+      message?.id ?? `${message?.conversationId ?? "unknown"}:${message?.createTime ?? "unknown"}:${errorCode}`,
+    );
+    if (enterpriseIdentityRejectedIds.has(rejectionId)) return false;
+    enterpriseIdentityRejectedIds.add(rejectionId);
+    if (enterpriseIdentityRejectedIds.size > 1_000) {
+      enterpriseIdentityRejectedIds.delete(enterpriseIdentityRejectedIds.values().next().value);
+    }
+    state.enterpriseIdentityRejectedIds = [...enterpriseIdentityRejectedIds];
+    state.enterpriseIdentityRejections = {
+      count: Number(state.enterpriseIdentityRejections?.count ?? 0) + 1,
+      lastAt: now().toISOString(),
+      lastErrorCode: diagnosticCode({ code: errorCode }, reason),
+    };
+    diagnose(
+      `dws_enterprise_${reason}:${hash(message?.id)}:${state.enterpriseIdentityRejections.lastErrorCode}`,
+    );
+    return true;
+  };
+  const enqueueIdentityRetry = (candidate, observedAt) => {
+    const message = normalizeEnterpriseRetryMessage(candidate?.message);
+    const errorCode = diagnosticCode(
+      { code: candidate?.errorCode },
+      "dws_enterprise_identity_check_failed",
+    );
+    if (!message || seen.has(message?.id)) {
+      if (!message) recordIdentityRejection(candidate?.message, "invalid_retry_envelope");
+      return null;
+    }
+    const key = enterpriseIdentityRetryKey(message.id);
+    if (enterpriseIdentityQueue.has(key)) return key;
+    const identity = message.senderOpenDingTalkId || message.senderUserId;
+    const sameIdentity = [...enterpriseIdentityQueue.values()].filter((entry) =>
+      (entry.message.senderOpenDingTalkId || entry.message.senderUserId) === identity
+    ).length;
+    if (
+      enterpriseIdentityQueue.size >= enterpriseIdentityRetryCapacity ||
+      sameIdentity >= enterpriseIdentityRetryDefaults.perIdentityCapacity
+    ) {
+      recordIdentityRejection(message, "identity_retry_capacity_exceeded", "identity_retry_dropped");
+      return null;
+    }
+    const observed = epoch(observedAt) ?? now().getTime();
+    enterpriseIdentityQueue.set(key, {
+      message,
+      firstSeenAt: new Date(observed).toISOString(),
+      lastAttemptAt: new Date(observed).toISOString(),
+      nextAttemptAt: new Date(observed + identityRetryDelayMs(1)).toISOString(),
+      expiresAt: new Date(observed + enterpriseIdentityRetryTtlMs).toISOString(),
+      attempts: 1,
+      lastErrorCode: errorCode,
+    });
+    syncEnterpriseIdentityQueue();
+    diagnose(`dws_enterprise_identity_retry_queued:${hash(message.id)}:${errorCode}`);
+    return key;
+  };
+  const retryEnterpriseIdentities = async (at) => {
+    if (typeof dws.retryEnterpriseDirectMessage !== "function") return [];
+    const recovered = [];
+    for (const [key, entry] of enterpriseIdentityQueue) {
+      if (seen.has(entry.message.id)) {
+        enterpriseIdentityQueue.delete(key);
+        continue;
+      }
+      const currentTime = at.getTime();
+      if (
+        currentTime >= (epoch(entry.expiresAt) ?? 0) ||
+        entry.attempts >= enterpriseIdentityRetryMaxAttempts
+      ) {
+        enterpriseIdentityQueue.delete(key);
+        recordIdentityRejection(entry.message, entry.lastErrorCode, "identity_retry_expired");
+        continue;
+      }
+      if (currentTime < (epoch(entry.nextAttemptAt) ?? 0)) continue;
+      try {
+        const message = await dws.retryEnterpriseDirectMessage(entry.message);
+        recovered.push({ ...message, enterpriseIdentityRetryKey: key });
+      } catch (error) {
+        const failure = identityFailure(error);
+        const attempts = entry.attempts + 1;
+        if (!failure.retryable || attempts >= enterpriseIdentityRetryMaxAttempts) {
+          enterpriseIdentityQueue.delete(key);
+          recordIdentityRejection(
+            entry.message,
+            failure.errorCode,
+            failure.retryable ? "identity_retry_expired" : "identity_rejected",
+          );
+          continue;
+        }
+        enterpriseIdentityQueue.set(key, {
+          ...entry,
+          attempts,
+          lastAttemptAt: at.toISOString(),
+          nextAttemptAt: new Date(currentTime + identityRetryDelayMs(attempts)).toISOString(),
+          lastErrorCode: failure.errorCode,
+        });
+      }
+    }
+    syncEnterpriseIdentityQueue();
+    return recovered;
+  };
   const persistState = () => {
     const snapshot = structuredClone(state);
     const current = stateWrite.catch(() => {}).then(() => saveState(config.stateFile, snapshot));
@@ -734,13 +1002,42 @@ export async function createSidecarRuntime({
         let messages;
         if (target.kind === "enterprise") {
           if (typeof dws.fetchEnterpriseDirect !== "function") {
-            throw new Error("DWS enterprise message scan is unavailable");
+            if (typeof dws.fetchEnterpriseDirectScan !== "function") {
+              throw new Error("DWS enterprise message scan is unavailable");
+            }
           }
-          messages = await dws.fetchEnterpriseDirect({
-            start,
-            end: targetEnd,
-            selfUserId: config.selfUserId,
-          });
+          const recovered = await retryEnterpriseIdentities(end);
+          if (typeof dws.fetchEnterpriseDirectScan === "function") {
+            const scan = await dws.fetchEnterpriseDirectScan({
+              start,
+              end: targetEnd,
+              selfUserId: config.selfUserId,
+            });
+            for (const candidate of scan.pending ?? []) {
+              enqueueIdentityRetry(candidate, end);
+            }
+            for (const rejected of scan.rejected ?? []) {
+              recordIdentityRejection(rejected.message, rejected.errorCode);
+            }
+            messages = [
+              ...recovered,
+              ...(scan.messages ?? []).map((message) => {
+                const key = enterpriseIdentityRetryKey(message.id);
+                return enterpriseIdentityQueue.has(key)
+                  ? { ...message, enterpriseIdentityRetryKey: key }
+                  : message;
+              }),
+            ];
+          } else {
+            messages = [
+              ...recovered,
+              ...await dws.fetchEnterpriseDirect({
+                start,
+                end: targetEnd,
+                selfUserId: config.selfUserId,
+              }),
+            ];
+          }
         } else if (target.kind === "user" && target.id === config.selfUserId) {
           const lookbackMs = Math.min(
             24 * 60 * 60 * 1_000,
@@ -802,6 +1099,11 @@ export async function createSidecarRuntime({
               target.kind === "group",
               dispatch,
             );
+            if (message.enterpriseIdentityRetryKey) {
+              enterpriseIdentityQueue.delete(message.enterpriseIdentityRetryKey);
+              syncEnterpriseIdentityQueue();
+              diagnose(`dws_enterprise_identity_retry_resolved:${hash(message.id)}`);
+            }
           } catch (error) {
             errors.push(error);
             targetFailed = true;

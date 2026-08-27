@@ -68,6 +68,9 @@ async function fixture(t) {
       deferredReplyWaiting: true, deferredReplyAttemptCount: 2,
       deferredReplyErrorCode: "tls_timeout",
       deferredReplyExpiresAt: "2026-08-25T10:00:00.000Z",
+      enterpriseIdentityRetryPending: 3,
+      enterpriseIdentityRejectionCount: 4,
+      enterpriseIdentityLastErrorCode: "dws_enterprise_identity_unavailable",
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
@@ -90,6 +93,12 @@ test("control service projects tasks, schedules, memory and evidence without pri
   assert.equal(status.gateway.deferredReplyAttemptCount, 2);
   assert.equal(status.gateway.deferredReplyErrorCode, "tls_timeout");
   assert.equal(status.gateway.deferredReplyExpiresAt, "2026-08-25T10:00:00.000Z");
+  assert.equal(status.gateway.enterpriseIdentityRetryPending, 3);
+  assert.equal(status.gateway.enterpriseIdentityRejectionCount, 4);
+  assert.equal(
+    status.gateway.enterpriseIdentityLastErrorCode,
+    "dws_enterprise_identity_unavailable",
+  );
   assert.equal(status.gateway.sendBlocked, false);
   assert.equal(status.gateway.lastWakeSource, "filesystem");
   assert.equal(status.gateway.lastDetectionLatencyMs, 1250);

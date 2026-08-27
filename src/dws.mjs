@@ -496,6 +496,7 @@ export class DwsAdapter {
     this.environment = environment;
     this.commandLockPath = String(environment.DWS_PERSONAL_COMMAND_LOCK ?? "").trim() || null;
     this.userIdentityCache = new Map();
+    this.openIdentityCache = new Map();
     this.commandQueue = Promise.resolve();
   }
 
@@ -795,7 +796,9 @@ export class DwsAdapter {
     return enriched;
   }
 
-  async resolveUserOpenDingTalkId(expectedUserId, displayName = null) {
+  async resolveUserOpenDingTalkId(expectedUserId, displayName = null, {
+    allowPolicyFallback = true,
+  } = {}) {
     const userId = normalizeDwsIdentity(expectedUserId);
     if (!userId) {
       const error = new Error("DWS contact identity requires a user ID");
@@ -815,6 +818,13 @@ export class DwsAdapter {
         userId,
       ]);
     } catch (error) {
+      const marker = `${String(error?.stdout ?? "")} ${String(error?.stderr ?? "")} ${String(error?.message ?? "")}`;
+      if (
+        !allowPolicyFallback &&
+        /PAT_ORG_POLICY_DENIED|OPEN_SOURCE_ORG_SCOPE_FORBIDDEN/u.test(marker)
+      ) {
+        throw error;
+      }
       const name = String(displayName ?? "").trim();
       if (!name) throw error;
       payload = await this.run([
@@ -849,7 +859,64 @@ export class DwsAdapter {
       throw error;
     }
     this.userIdentityCache.set(userId, openDingTalkId);
+    this.openIdentityCache.set(openDingTalkId, userId);
     return openDingTalkId;
+  }
+
+  async resolveEnterpriseOpenDingTalkId(expectedOpenDingTalkId, displayName = null) {
+    const openDingTalkId = normalizeDwsIdentity(expectedOpenDingTalkId);
+    const name = String(displayName ?? "").trim();
+    if (!openDingTalkId || !name) {
+      const error = new Error("DWS enterprise OpenID identity requires an exact display name");
+      error.code = "dws_enterprise_identity_required";
+      throw error;
+    }
+    if (this.openIdentityCache.has(openDingTalkId)) {
+      return {
+        userId: this.openIdentityCache.get(openDingTalkId),
+        openDingTalkId,
+      };
+    }
+    const payload = await this.run([
+      "aisearch",
+      "person",
+      "--query",
+      name,
+      "--dimension",
+      "name",
+    ]);
+    const candidates = Array.isArray(payload?.result)
+      ? payload.result
+      : Array.isArray(payload?.items)
+        ? payload.items
+        : payload?.result && typeof payload.result === "object"
+          ? [payload.result]
+          : [];
+    const exactByIdentity = new Map();
+    for (const candidate of candidates) {
+      const identity = {
+        userId: normalizeDwsIdentity(
+          candidate?.userId ?? candidate?.meta?.staffId ??
+          candidate?.orgEmployeeModel?.userId,
+        ),
+        openDingTalkId: normalizeDwsIdentity(
+          candidate?.openDingTalkId ?? candidate?.openDingtalkId ??
+          candidate?.orgEmployeeModel?.openDingTalkId,
+        ),
+      };
+      if (identity.userId && identity.openDingTalkId === openDingTalkId) {
+        exactByIdentity.set(`${identity.userId}\0${identity.openDingTalkId}`, identity);
+      }
+    }
+    const exact = [...exactByIdentity.values()];
+    if (exact.length !== 1) {
+      const error = new Error("DWS enterprise OpenID is not a unique current-organization identity");
+      error.code = "dws_enterprise_identity_unavailable";
+      throw error;
+    }
+    this.userIdentityCache.set(exact[0].userId, openDingTalkId);
+    this.openIdentityCache.set(openDingTalkId, exact[0].userId);
+    return exact[0];
   }
 
   async verifyEnterpriseUser(expectedUserId, displayName = null) {
@@ -860,7 +927,9 @@ export class DwsAdapter {
       throw error;
     }
     try {
-      const openDingTalkId = await this.resolveUserOpenDingTalkId(userId, displayName);
+      const openDingTalkId = await this.resolveUserOpenDingTalkId(userId, displayName, {
+        allowPolicyFallback: false,
+      });
       return { userId, openDingTalkId };
     } catch (error) {
       const marker = `${String(error?.stdout ?? "")} ${String(error?.stderr ?? "")}`;
@@ -873,7 +942,49 @@ export class DwsAdapter {
     }
   }
 
-  async fetchEnterpriseDirect({ start, end, selfUserId = null, timeoutMs = 60_000 } = {}) {
+  enterpriseIdentityFailure(error) {
+    const marker = [
+      error?.code,
+      error?.name,
+      error?.message,
+      error?.stdout,
+      error?.stderr,
+    ].map((value) => String(value ?? "")).join(" ");
+    if (/PAT_ORG_POLICY_DENIED|OPEN_SOURCE_ORG_SCOPE_FORBIDDEN/u.test(marker)) {
+      return { errorCode: "dws_enterprise_identity_unavailable", retryable: false };
+    }
+    const errorCode = String(error?.code ?? error?.name ?? "dws_enterprise_identity_check_failed")
+      .replaceAll(/[^A-Za-z0-9_.-]/gu, "_").slice(0, 80) ||
+      "dws_enterprise_identity_check_failed";
+    const permanent = /(?:identity_(?:required|unavailable|mismatch)|auth|unauthorized|forbidden)/iu
+      .test(`${errorCode} ${marker}`);
+    return { errorCode, retryable: !permanent };
+  }
+
+  async verifyEnterpriseMessage(message) {
+    const source = String(message?.senderIdentitySource ?? "");
+    const suppliedUserId = normalizeDwsIdentity(message?.senderUserId);
+    const suppliedOpenDingTalkId = normalizeDwsIdentity(message?.senderOpenDingTalkId);
+    const displayName = String(message?.senderName ?? "").trim() || null;
+    if (
+      suppliedOpenDingTalkId &&
+      (source === "payload_open_id" || !suppliedUserId || suppliedUserId === suppliedOpenDingTalkId)
+    ) {
+      return this.resolveEnterpriseOpenDingTalkId(suppliedOpenDingTalkId, displayName);
+    }
+    const identity = await this.verifyEnterpriseUser(suppliedUserId, displayName);
+    if (
+      suppliedOpenDingTalkId &&
+      identity.openDingTalkId !== suppliedOpenDingTalkId
+    ) {
+      const error = new Error("DWS enterprise userId and OpenID identify different users");
+      error.code = "dws_enterprise_identity_mismatch";
+      throw error;
+    }
+    return identity;
+  }
+
+  async fetchEnterpriseDirectScan({ start, end, selfUserId = null, timeoutMs = 60_000 } = {}) {
     if (!(start instanceof Date) || !Number.isFinite(start.getTime()) ||
         !(end instanceof Date) || !Number.isFinite(end.getTime()) || start >= end) {
       throw new Error("DWS enterprise message range is invalid");
@@ -958,12 +1069,12 @@ export class DwsAdapter {
       return true;
     });
     const output = [];
+    const pending = [];
+    const rejected = [];
     for (const message of messages.slice(0, 500)) {
       try {
-        const identity = await this.verifyEnterpriseUser(
-          message.senderUserId,
-          message.senderName,
-        );
+        const identity = await this.verifyEnterpriseMessage(message);
+        if (ownerUserId && identity.userId === ownerUserId) continue;
         output.push({
           ...message,
           senderUserId: identity.userId,
@@ -971,14 +1082,35 @@ export class DwsAdapter {
           senderIdentitySource: "enterprise_contact_verified",
           enterpriseVerified: true,
         });
-      } catch {
-        // Identity is an admission gate for one sender, not availability for the
-        // whole organization. Keep the message out of the Agent Loop; the
-        // Sidecar's overlapping checkpoint window gives transient failures a
-        // bounded retry without letting an unverified sender DoS every target.
+      } catch (error) {
+        const failure = this.enterpriseIdentityFailure(error);
+        (failure.retryable ? pending : rejected).push({
+          message,
+          errorCode: failure.errorCode,
+        });
       }
     }
-    return this.enrichMessageResources(output, { timeoutMs });
+    return {
+      messages: await this.enrichMessageResources(output, { timeoutMs }),
+      pending,
+      rejected,
+    };
+  }
+
+  async fetchEnterpriseDirect(input = {}) {
+    return (await this.fetchEnterpriseDirectScan(input)).messages;
+  }
+
+  async retryEnterpriseDirectMessage(message, { timeoutMs = 60_000 } = {}) {
+    const identity = await this.verifyEnterpriseMessage(message);
+    const [verified] = await this.enrichMessageResources([{
+      ...message,
+      senderUserId: identity.userId,
+      senderOpenDingTalkId: identity.openDingTalkId,
+      senderIdentitySource: "enterprise_contact_verified",
+      enterpriseVerified: true,
+    }], { timeoutMs });
+    return verified;
   }
 
   async fetchBySender({ senderUserId, start, end }) {

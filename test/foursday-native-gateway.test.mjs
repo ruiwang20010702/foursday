@@ -19,6 +19,11 @@ async function fixture(t) {
     lastFullSuccessAt: new Date(now).toISOString(),
     lastErrorCount: 0,
     manualReplyProbe: { ready: true, errorCode: null },
+    enterpriseIdentityQueue: { ["a".repeat(64)]: { redacted: true } },
+    enterpriseIdentityRejections: {
+      count: 2,
+      lastErrorCode: "dws_enterprise_identity_unavailable",
+    },
     eventWake: { enabled: true, ready: true, errorCode: null },
     lastWakeSource: "dws_event",
     lastDetection: { latencyMs: 250 },
@@ -108,6 +113,12 @@ test("native Gateway status is derived from the official profile and send mode",
   assert.equal(status.manualReplyProbeDegraded, false);
   assert.equal(status.deferredReplyWaiting, false);
   assert.equal(status.deferredReplyAttemptCount, 0);
+  assert.equal(status.enterpriseIdentityRetryPending, 1);
+  assert.equal(status.enterpriseIdentityRejectionCount, 2);
+  assert.equal(
+    status.enterpriseIdentityLastErrorCode,
+    "dws_enterprise_identity_unavailable",
+  );
   assert.equal(status.eventWakeReady, true);
   assert.equal(status.eventWakeDegraded, false);
   assert.equal(status.lastWakeSource, "dws_event");

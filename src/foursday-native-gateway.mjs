@@ -207,6 +207,9 @@ export async function inspectFoursdayNativeGateway({
   let eventWakeDegraded = false;
   let lastWakeSource = null;
   let lastDetectionLatencyMs = null;
+  let enterpriseIdentityRetryPending = 0;
+  let enterpriseIdentityRejectionCount = 0;
+  let enterpriseIdentityLastErrorCode = null;
   let sendBlocked = false;
   if (checkpointPath) {
     try {
@@ -243,6 +246,20 @@ export async function inspectFoursdayNativeGateway({
       deferredReplyExpiresAt = typeof state.deferredReply?.expiresAt === "string"
         ? state.deferredReply.expiresAt
         : null;
+      enterpriseIdentityRetryPending = state.enterpriseIdentityQueue &&
+          typeof state.enterpriseIdentityQueue === "object" &&
+          !Array.isArray(state.enterpriseIdentityQueue)
+        ? Object.keys(state.enterpriseIdentityQueue).length
+        : 0;
+      enterpriseIdentityRejectionCount = Number.isSafeInteger(
+        state.enterpriseIdentityRejections?.count,
+      ) && state.enterpriseIdentityRejections.count >= 0
+        ? state.enterpriseIdentityRejections.count
+        : 0;
+      enterpriseIdentityLastErrorCode =
+        typeof state.enterpriseIdentityRejections?.lastErrorCode === "string"
+          ? state.enterpriseIdentityRejections.lastErrorCode.slice(0, 80)
+          : null;
       ({
         checkpointHealthy,
         checkpointState,
@@ -294,6 +311,9 @@ export async function inspectFoursdayNativeGateway({
     deferredReplyAttemptCount,
     deferredReplyErrorCode,
     deferredReplyExpiresAt,
+    enterpriseIdentityRetryPending,
+    enterpriseIdentityRejectionCount,
+    enterpriseIdentityLastErrorCode,
     eventWakeEnabled,
     eventWakeReady,
     eventWakeDegraded,

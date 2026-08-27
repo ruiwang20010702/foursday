@@ -34,6 +34,8 @@ flowchart LR
 | Durable business knowledge | personal PRIVATE gbrain Git |
 | Memory promotion queue | minimal Foursday PostgreSQL schema |
 
+Enterprise direct-message admission keeps staff user IDs and DingTalk OpenIDs distinct. If DWS returns only an OpenID, the display name may locate current-organization candidates, but the same OpenID must uniquely resolve one staff user ID before any Session, project read, or Codex turn exists. Explicit organization-policy denial is permanent. Temporary directory or network failures enter a private, message-ID-deduplicated queue with a 30-minute TTL, eight attempts, a 128-message global cap, and an eight-message per-identity cap. The queue survives restart but never retries outbound sends; expired and rejected candidates produce only hashed diagnostics.
+
 Foursday has no Hermes fork, core patch, second Agent Loop, capability-manifest workflow, or second business-memory repository.
 
 ## Operator surface
