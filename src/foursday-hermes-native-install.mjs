@@ -259,6 +259,7 @@ async function verifyInstalledSingleLoopProfile(layout) {
   for (const required of [
     "openai_runtime: codex_app_server",
     "approvals:\n  mode: 'off'",
+    "unauthorized_dm_behavior: ignore",
     "display:\n  show_commentary: false\n  tool_progress: off\n  interim_assistant_messages: false\n  long_running_notifications: false\n  busy_input_mode: queue\n  busy_ack_enabled: false",
     "streaming:\n  enabled: false",
     "background_review:\n    enabled: false",
@@ -316,6 +317,7 @@ function profileConfig() {
     "  openai_runtime: codex_app_server",
     "approvals:",
     "  mode: 'off'",
+    "unauthorized_dm_behavior: ignore",
     "display:",
     "  show_commentary: false",
     "  tool_progress: off",
