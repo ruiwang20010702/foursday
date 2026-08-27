@@ -155,6 +155,7 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS"], "20000")
             self.assertEqual(bridge.environment["DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED"], "true")
             self.assertEqual(bridge.environment["DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS"], "30000")
+            self.assertEqual(bridge.environment["FOURSDAY_NODE_PATH"], sys.executable)
             self.assertEqual(bridge.environment["FOURSDAY_CODEX_PATH"], "/absolute/codex")
             self.assertEqual(bridge.environment["CODEX_HOME"], str(Path(root, "codex-home")))
             self.assertNotIn("FOURSDAY_DWS_HOME", bridge.environment)
