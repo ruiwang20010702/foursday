@@ -2326,6 +2326,13 @@ test("reaction startup ignores legacy conversations without a current responsibi
         after: "2026-08-24T08:56:04.000Z",
       },
     },
+    reactionWake: {
+      enabled: true,
+      readyCount: 1,
+      errorCount: 5,
+      lastErrorCode: "4",
+      updatedAt: "2026-08-24T08:56:04.000Z",
+    },
   }), { mode: 0o600 });
   const dws = new FakeDws();
   dws.messages = [];

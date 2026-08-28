@@ -2135,7 +2135,13 @@ export async function createSidecarRuntime({
         const claimedConversations = new Set([...responsibilityReactions.values()]
           .filter((entry) => !["clearing", "cleared"].includes(entry.status))
           .map((entry) => entry.conversationId));
-        if (claimedConversations.size > 0) await resolveOwnerOpenDingTalkId();
+        if (claimedConversations.size > 0) {
+          await resolveOwnerOpenDingTalkId();
+        } else {
+          state.reactionWake.lastErrorCode = null;
+          updateReactionWakeState();
+          await persistState();
+        }
         for (const conversationId of claimedConversations) {
           const active = activeConversations.get(conversationId);
           if (!active) continue;
