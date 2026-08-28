@@ -2131,13 +2131,12 @@ export async function createSidecarRuntime({
       }
       if (config.responsibilityReactionsEnabled === true) {
         await resolveOwnerOpenDingTalkId();
-        for (const groupId of config.groupIds) {
-          await ensureReactionWake({
-            chatType: "group",
-            conversationId: groupId,
-          });
-        }
-        for (const [conversationId, active] of activeConversations) {
+        const claimedConversations = new Set([...responsibilityReactions.values()]
+          .filter((entry) => !["clearing", "cleared"].includes(entry.status))
+          .map((entry) => entry.conversationId));
+        for (const conversationId of claimedConversations) {
+          const active = activeConversations.get(conversationId);
+          if (!active) continue;
           await ensureReactionWake({
             chatType: active.chatType,
             conversationId,

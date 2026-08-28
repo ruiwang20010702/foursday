@@ -2315,6 +2315,54 @@ test("responsibility label and reaction takeover survive a sidecar restart", asy
   }
 });
 
+test("reaction startup ignores legacy conversations without a current responsibility claim", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-reaction-legacy-startup-"));
+  const stateFile = join(root, "state.json");
+  await writeFile(stateFile, JSON.stringify({
+    activeConversations: {
+      "legacy-conversation": {
+        participantUserId: "legacy-user",
+        chatType: "direct",
+        after: "2026-08-24T08:56:04.000Z",
+      },
+    },
+  }), { mode: 0o600 });
+  const dws = new FakeDws();
+  dws.messages = [];
+  dws.reactionWakeFailure = true;
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+  });
+  try {
+    await runtime.start();
+    assert.equal(dws.reactionWatchers.length, 0);
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(state.reactionWake.readyCount, 0);
+    assert.equal(state.reactionWake.errorCount, 0);
+    assert.equal(state.reactionWake.lastErrorCode, null);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("Hermes DWS sidecar converts a verified owner reply into one communication takeover event", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-takeover-"));
   const frames = [];
