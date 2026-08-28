@@ -577,6 +577,11 @@ test("task takeover suppresses later enterprise messages without poisoning the s
     },
     emit: (frame) => frames.push(frame),
     diagnose: (value) => diagnostics.push(value),
+    taskBoundaryResolver: async () => ({
+      intent: "same_task",
+      confidence: 0.98,
+      source: "codex",
+    }),
     now: () => new Date("2026-08-26T14:01:00+08:00"),
   });
   try {
@@ -589,6 +594,99 @@ test("task takeover suppresses later enterprise messages without poisoning the s
     assert.equal(frames.some((frame) => frame.record?.id === "message-after-takeover"), false);
     assert.equal(
       diagnostics.some((value) => value.startsWith("dws_taken_over_message_suppressed:")),
+      true,
+    );
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("a semantic new task reopens a taken-over conversation and enters the Agent Loop", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-enterprise-new-task-")));
+  const controlFile = join(root, "control.json");
+  const stateFile = join(root, "state.json");
+  const control = await new FoursdayControlStore({ path: controlFile }).open();
+  const conversationId = "reopened-conversation";
+  const senderUserId = "reopened-user";
+  const controlledTaskId = createHash("sha256")
+    .update(`${conversationId}:${senderUserId}`)
+    .digest("hex");
+  await control.observeTask({
+    taskId: controlledTaskId,
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-25T10:00:00+08:00",
+  });
+  await control.apply({
+    action: "task_takeover",
+    expectedRevision: 1,
+    taskId: controlledTaskId,
+  });
+  const frames = [];
+  const diagnostics = [];
+  let classifierInput = null;
+  const message = {
+    id: "new-task-message",
+    senderUserId,
+    senderOpenDingTalkId: "open-reopened",
+    senderName: "Reopened user",
+    conversationId,
+    content: "请处理另一个独立项目任务",
+    createTime: "2026-08-28T15:19:06+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    enterpriseVerified: true,
+    media: [],
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: "owner-user",
+      stateFile,
+      mediaRoot: null,
+      controlFile,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    controlStore: control,
+    dws: {
+      async fetchEnterpriseDirectScan() {
+        return { messages: [message], pending: [], rejected: [] };
+      },
+      async fetchDirect() {
+        return [{ ...message, id: "prior-message", content: "旧任务内容" }];
+      },
+      async fetchBySender() { return []; },
+      async fetchGroupMentions() { return []; },
+    },
+    emit: (frame) => frames.push(frame),
+    diagnose: (value) => diagnostics.push(value),
+    taskBoundaryResolver: async (input) => {
+      classifierInput = input;
+      return { intent: "new_task", confidence: 0.94, source: "codex" };
+    },
+    now: () => new Date("2026-08-28T15:20:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    const event = frames.find((frame) => frame.record?.id === "new-task-message");
+    assert.ok(event, JSON.stringify({ diagnostics, frames }));
+    assert.equal(event.record.taskBoundary.intent, "new_task");
+    assert.equal(event.record.taskBoundary.source, "codex");
+    assert.equal(classifierInput.currentMessage, "请处理另一个独立项目任务");
+    assert.equal(classifierInput.recentMessages[0].content, "旧任务内容");
+    const task = (await control.snapshot()).tasks[controlledTaskId];
+    assert.equal(task.state, "active");
+    assert.equal(task.pendingEvent, null);
+    assert.equal(task.lastInboundAt, "2026-08-28T07:19:06.000Z");
+    assert.equal(
+      diagnostics.some((value) => value.startsWith("dws_taken_over_task_reopened:")),
       true,
     );
   } finally {

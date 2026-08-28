@@ -1185,6 +1185,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "detection_latency_ms": detection_latency_ms,
                 "bundle_wait_ms": bundle_wait_ms,
                 "wake_source": wake_source,
+                "task_boundary": latest.get("taskBoundary"),
                 "enterprise_verified": latest.get("enterpriseVerified") is True,
                 "resource_enrichment_unavailable": resource_enrichment_unavailable,
             },
@@ -1204,6 +1205,12 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "detectionLatencyMs": detection_latency_ms,
             "bundleWaitMs": bundle_wait_ms,
             "wakeSource": wake_source,
+            "taskBoundaryIntent": (
+                str((latest.get("taskBoundary") or {}).get("intent") or "")[:40] or None
+            ),
+            "taskBoundarySource": (
+                str((latest.get("taskBoundary") or {}).get("source") or "")[:40] or None
+            ),
         })
         from project_router.runtime_context import routed_project_scope
 

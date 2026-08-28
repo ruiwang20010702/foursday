@@ -240,6 +240,11 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "detectedAt": "2026-08-18T14:00:01.200+08:00",
                 "detectionLatencyMs": 1200,
                 "wakeSource": "dws_event",
+                "taskBoundary": {
+                    "intent": "new_task",
+                    "source": "codex",
+                    "confidence": 0.93,
+                },
             })
         await asyncio.sleep(0)
         self.assertEqual(len(self.events), 1)
@@ -250,6 +255,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.source.user_id, "trusted-user")
         self.assertEqual(event.source.user_id_alt, "open-trusted")
         self.assertEqual(event.message_id, "message-1")
+        self.assertEqual(event.metadata["task_boundary"]["intent"], "new_task")
         self.assertFalse(hasattr(event.source, "workspace_path"))
         self.assertIn("单词 2.2", event.channel_prompt)
         token_match = re.search(r"fctx_[a-f0-9]{64}", event.channel_prompt)

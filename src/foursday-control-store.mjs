@@ -181,6 +181,43 @@ export class FoursdayControlStore {
     });
   }
 
+  async reopenTakenOverTask({
+    taskId,
+    expectedOwnerRevision,
+    expectedSendGeneration,
+    lastInboundAt,
+  }) {
+    if (
+      !digest.test(String(taskId ?? "")) ||
+      !Number.isSafeInteger(expectedOwnerRevision) || expectedOwnerRevision < 0 ||
+      !Number.isSafeInteger(expectedSendGeneration) || expectedSendGeneration < 0 ||
+      typeof lastInboundAt !== "string" || !Number.isFinite(new Date(lastInboundAt).getTime())
+    ) throw new Error("Foursday task reopen identity is invalid");
+    return this.#mutate((document, timestamp) => {
+      const task = document.tasks[taskId];
+      if (!task) throw new Error("foursday_control_task_not_found");
+      if (task.state === "active") {
+        return noWrite({ reopened: false, alreadyActive: true, task: { ...task } });
+      }
+      if (
+        task.state !== "taken_over" ||
+        task.ownerRevision !== expectedOwnerRevision ||
+        task.sendGeneration !== expectedSendGeneration
+      ) throw new Error("foursday_control_task_revision_conflict");
+      task.state = "active";
+      task.ownerRevision += 1;
+      task.sendGeneration += 1;
+      task.lastInboundAt = lastInboundAt;
+      task.updatedAt = timestamp;
+      task.pendingEvent = null;
+      return {
+        reopened: true,
+        alreadyActive: false,
+        task: { ...task },
+      };
+    });
+  }
+
   async apply({ action, expectedRevision, taskId = null, note = "", taskSeed = null }) {
     if (!actions.has(action) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new Error("Foursday control action is invalid");
@@ -195,7 +232,7 @@ export class FoursdayControlStore {
           updatedAt: timestamp,
         };
         for (const task of Object.values(document.tasks)) {
-          task.state = paused ? "paused" : "active";
+          if (task.state !== "active") continue;
           task.ownerRevision += 1;
           task.sendGeneration += 1;
           task.updatedAt = timestamp;

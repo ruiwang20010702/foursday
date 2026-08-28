@@ -6,6 +6,7 @@ import test from "node:test";
 import { FoursdayControlStore } from "../src/foursday-control-store.mjs";
 
 const taskId = "a".repeat(64);
+const secondTaskId = "b".repeat(64);
 
 async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-control-store-")));
@@ -118,6 +119,73 @@ test("a bound task can be seeded atomically by its first control action", async 
   assert.equal(result.revision, 1);
   assert.equal(result.document.tasks[taskId].ownerRevision, 5);
   assert.equal(result.document.tasks[taskId].sendGeneration, 8);
+});
+
+test("a semantic new task reopens only the exact taken-over generation", async (t) => {
+  const value = await fixture(t);
+  await value.store.observeTask({
+    taskId,
+    projectId: "project",
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-24T10:00:00.000Z",
+  });
+  const takeover = await value.store.apply({
+    action: "task_takeover",
+    expectedRevision: 1,
+    taskId,
+  });
+  const reopened = await value.store.reopenTakenOverTask({
+    taskId,
+    expectedOwnerRevision: takeover.result.ownerRevision,
+    expectedSendGeneration: takeover.result.sendGeneration,
+    lastInboundAt: "2026-08-28T07:18:27.000Z",
+  });
+  assert.equal(reopened.result.reopened, true);
+  assert.equal(reopened.result.task.state, "active");
+  assert.equal(reopened.result.task.ownerRevision, 2);
+  assert.equal(reopened.result.task.sendGeneration, 3);
+  assert.equal(reopened.result.task.pendingEvent, null);
+  await value.store.apply({ action: "task_takeover", expectedRevision: 3, taskId });
+  await assert.rejects(value.store.reopenTakenOverTask({
+    taskId,
+    expectedOwnerRevision: 1,
+    expectedSendGeneration: 2,
+    lastInboundAt: "2026-08-28T07:19:06.000Z",
+  }), /revision_conflict/u);
+});
+
+test("global pause and resume preserve task-level taken-over ownership", async (t) => {
+  const value = await fixture(t);
+  await value.store.observeTask({
+    taskId,
+    projectId: "project",
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-24T10:00:00.000Z",
+  });
+  await value.store.observeTask({
+    taskId: secondTaskId,
+    projectId: "project",
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-24T10:01:00.000Z",
+  });
+  await value.store.apply({
+    action: "task_takeover",
+    expectedRevision: 2,
+    taskId: secondTaskId,
+  });
+  await value.store.apply({ action: "pause_all", expectedRevision: 3 });
+  let snapshot = await value.store.snapshot();
+  assert.equal(snapshot.global.state, "paused");
+  assert.equal(snapshot.tasks[taskId].state, "active");
+  assert.equal(snapshot.tasks[secondTaskId].state, "taken_over");
+  await value.store.apply({ action: "resume_all", expectedRevision: 4 });
+  snapshot = await value.store.snapshot();
+  assert.equal(snapshot.global.state, "running");
+  assert.equal(snapshot.tasks[taskId].state, "active");
+  assert.equal(snapshot.tasks[secondTaskId].state, "taken_over");
 });
 
 test("control store never tightens permissions on an existing broad parent", async (t) => {

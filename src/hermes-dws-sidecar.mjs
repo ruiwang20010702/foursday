@@ -20,6 +20,7 @@ import {
   resolveOwnerIntervention,
 } from "./foursday-owner-intervention.mjs";
 import { resolveResponsibilityGroups } from "./foursday-message-groups.mjs";
+import { resolveTakenOverTaskBoundary } from "./foursday-task-boundary.mjs";
 
 function csv(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))];
@@ -688,6 +689,7 @@ export async function createSidecarRuntime({
     : null,
   semanticInterventionClassifier = resolveOwnerIntervention,
   responsibilityGroupingResolver = resolveResponsibilityGroups,
+  taskBoundaryResolver = resolveTakenOverTaskBoundary,
   classifierEnvironment = process.env,
 } = {}) {
   if (config.outboundQuietMs > config.outboundMaxQuietMs) {
@@ -1629,7 +1631,7 @@ export async function createSidecarRuntime({
     if (!rememberReactionEvent(eventId)) return;
     const stableTaskId = taskId(event.conversationId, active.participantUserId);
     const externalControl = controlStore ? await controlStore.snapshot() : null;
-    const externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
+    let externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
     const localControl = normalizedControlState(controlStates.get(event.conversationId));
     const frozenControl = {
       ownerRevision: Math.max(localControl.ownerRevision, externalTask?.ownerRevision ?? 0),
@@ -1711,7 +1713,7 @@ export async function createSidecarRuntime({
     }
     const stableTaskId = taskId(conversationId, senderUserId);
     const externalControl = controlStore ? await controlStore.snapshot() : null;
-    const externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
+    let externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
     const priorActive = activeConversations.get(conversationId) ?? null;
     const ownerSelfMessage = Boolean(config.selfUserId && senderUserId === config.selfUserId);
     const selfInterventionCandidate = Boolean(
@@ -1719,20 +1721,83 @@ export async function createSidecarRuntime({
     );
     const globalPaused = externalControl?.global?.state === "paused";
     const taskPaused = externalTask?.state === "paused";
-    const taskTakenOver = externalTask?.state === "taken_over";
-    if (
-      globalPaused || taskPaused || taskTakenOver
-    ) {
-      if (!selfInterventionCandidate) {
-        if (taskTakenOver && !globalPaused && !taskPaused) {
-          if (!remember(id)) return;
-          diagnose(`dws_taken_over_message_suppressed:${hash(id)}`);
-          return;
-        }
-        const error = new Error("Foursday control paused this task");
-        error.code = "FOURSDAY_CONTROL_PAUSED";
-        throw error;
+    let taskTakenOver = externalTask?.state === "taken_over";
+    let taskBoundaryDecision = null;
+    const reopenTakenOverTask = async () => {
+      diagnose(`dws_taken_over_boundary_started:${hash(id)}`);
+      let recentMessages = [];
+      if (
+        chatType === "direct" && senderOpenDingTalkId &&
+        typeof dws.fetchDirect === "function"
+      ) {
+        try {
+          recentMessages = (await dws.fetchDirect({
+            userId: senderOpenDingTalkId,
+            identityKind: "open_dingtalk_id",
+            before: new Date(createTime),
+            limit: 12,
+            lookbackMs: 24 * 60 * 60 * 1_000,
+            timeoutMs: 12_000,
+          })).filter((item) => item.id !== id).slice(-8).map((item) => ({
+            isSelf: item.isSelf === true,
+            content: String(item.content ?? "").slice(0, 1_000),
+          }));
+        } catch {}
       }
+      diagnose(`dws_taken_over_boundary_context_ready:${hash(id)}:${recentMessages.length}`);
+      const decision = await taskBoundaryResolver({
+        currentMessage: String(message.content ?? ""),
+        recentMessages,
+        lastTaskInboundAt: externalTask?.lastInboundAt ?? null,
+        takenOverAt: externalTask?.updatedAt ?? null,
+        currentAt: createTime,
+      }, {
+        environment: classifierEnvironment,
+        timeoutMs: config.semanticInterventionTimeoutMs,
+      });
+      diagnose(`dws_taken_over_boundary_decided:${hash(id)}:${decision.intent}:${decision.source}`);
+      taskBoundaryDecision = decision;
+      if (decision.intent !== "new_task") return false;
+      if (controlStore) {
+        const reopened = await controlStore.reopenTakenOverTask({
+          taskId: stableTaskId,
+          expectedOwnerRevision: externalTask.ownerRevision,
+          expectedSendGeneration: externalTask.sendGeneration,
+          lastInboundAt: createTime,
+        });
+        diagnose(`dws_taken_over_boundary_control_reopened:${hash(id)}:${
+          reopened?.result?.task ? "ready" : "missing"
+        }`);
+        externalTask = reopened.result.task;
+      } else {
+        externalTask = {
+          ...externalTask,
+          state: "active",
+          ownerRevision: Number(externalTask?.ownerRevision ?? 0) + 1,
+          sendGeneration: Number(externalTask?.sendGeneration ?? 0) + 1,
+          lastInboundAt: createTime,
+          updatedAt: now().toISOString(),
+          pendingEvent: null,
+        };
+      }
+      taskTakenOver = false;
+      takeoverReported.delete(conversationId);
+      state.takeoverReported = [...takeoverReported];
+      diagnose(`dws_taken_over_task_reopened:${hash(id)}:${decision.source}`);
+      return true;
+    };
+    if ((globalPaused || taskPaused) && !selfInterventionCandidate) {
+      const error = new Error("Foursday control paused this task");
+      error.code = "FOURSDAY_CONTROL_PAUSED";
+      throw error;
+    }
+    if (taskTakenOver && !selfInterventionCandidate) {
+      if (!await reopenTakenOverTask()) {
+        if (!remember(id)) return;
+        diagnose(`dws_taken_over_message_suppressed:${hash(id)}`);
+        return;
+      }
+      diagnose(`dws_taken_over_boundary_reopen_complete:${hash(id)}`);
     }
     const localControl = normalizedControlState(controlStates.get(conversationId));
     const priorControl = {
@@ -1776,9 +1841,12 @@ export async function createSidecarRuntime({
       state.controlStates = Object.fromEntries(controlStates);
     }
     if (taskTakenOver && !globalPaused && !taskPaused) {
-      if (!remember(id)) return;
-      diagnose(`dws_taken_over_message_suppressed:${hash(id)}`);
-      return;
+      if (!await reopenTakenOverTask()) {
+        if (!remember(id)) return;
+        diagnose(`dws_taken_over_message_suppressed:${hash(id)}`);
+        return;
+      }
+      diagnose(`dws_taken_over_boundary_reopen_complete:${hash(id)}`);
     }
     if (globalPaused || taskPaused) {
       const error = new Error("Foursday control paused this task");
@@ -1815,6 +1883,9 @@ export async function createSidecarRuntime({
         sendGeneration: control.sendGeneration,
         lastInboundAt: createTime,
       });
+      if (taskBoundaryDecision) {
+        diagnose(`dws_taken_over_boundary_observed:${hash(id)}`);
+      }
     }
     if (!remember(id)) return;
     recipients.set(conversationId, {
@@ -1877,8 +1948,14 @@ export async function createSidecarRuntime({
           ? Math.max(0, Number(message.detectionLatencyMs))
           : null,
         wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
+        taskBoundary: taskBoundaryDecision ? {
+          intent: taskBoundaryDecision.intent,
+          source: taskBoundaryDecision.source,
+          confidence: Number(taskBoundaryDecision.confidence ?? 0),
+        } : null,
       },
     });
+    if (taskBoundaryDecision) diagnose(`dws_taken_over_boundary_emitted:${hash(id)}`);
     await replayPendingOwnerReactions({
       conversationId,
       messageId: id,
