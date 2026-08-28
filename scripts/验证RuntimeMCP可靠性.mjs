@@ -17,6 +17,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../src/main-module.mjs";
+import { legacyProjectsFromWorkScopes } from "../src/foursday-work-scope-registry.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultProfile = join(process.env.HOME ?? "", ".hermes", "profiles", "foursday");
@@ -61,6 +62,13 @@ export function percentile95(values) {
   }
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)];
+}
+
+export function runtimeValidationProject(document) {
+  const projects = legacyProjectsFromWorkScopes(document);
+  return projects.find((project) =>
+    Array.isArray(project.dingtalkSources) && project.dingtalkSources.length > 0
+  ) ?? projects.find((project) => project.id === "foursday") ?? null;
 }
 
 function boundedInteger(value, fallback, minimum, maximum) {
@@ -201,9 +209,7 @@ export async function verifyRuntimeMcpReliability({
   const productionConfig = JSON.parse(await readFile(productionConfigPath, "utf8"));
   const projectRegistryPath = await privateFile(environment.FOURSDAY_PROJECT_REGISTRY);
   const projectRegistry = JSON.parse(await readFile(projectRegistryPath, "utf8"));
-  const sourceProject = projectRegistry?.projects?.find((project) =>
-    Array.isArray(project?.dingtalkSources) && project.dingtalkSources.length > 0
-  ) ?? projectRegistry?.projects?.find((project) => project?.id === "foursday");
+  const sourceProject = runtimeValidationProject(projectRegistry);
   if (!sourceProject?.id) throw new Error("Runtime MCP validation project registry is invalid");
   const validationSourceId = sourceProject.dingtalkSources?.[0]?.id ?? null;
   if (/^(?:1|true|yes)$/iu.test(String(productionConfig.FOURSDAY_GBRAIN_WRITE_ENABLED ?? "false"))) {

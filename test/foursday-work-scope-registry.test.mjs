@@ -4,6 +4,7 @@ import {
   legacyProjectsFromWorkScopes,
   normalizeWorkScopeRegistry,
 } from "../src/foursday-work-scope-registry.mjs";
+import { runtimeValidationProject } from "../scripts/验证RuntimeMCP可靠性.mjs";
 
 test("work-scope registry separates executable workspaces from inherited business scopes", () => {
   const document = {
@@ -79,4 +80,32 @@ test("legacy project registries remain readable without changing their authority
   assert.equal(registry.sourceSchemaVersion, 1);
   assert.equal(registry.scopes[0].workspaceId, "legacy");
   assert.deepEqual(registry.scopes[0].lineage, ["legacy"]);
+});
+
+test("runtime MCP verification selects a source project from the v2 registry", () => {
+  const source = runtimeValidationProject({
+    schemaVersion: 2,
+    workspaces: [
+      { id: "foursday", root: "/private/foursday" },
+      { id: "source_repo", root: "/private/source" },
+    ],
+    scopes: [
+      { id: "foursday", name: "Foursday", aliases: [], workspaceId: "foursday" },
+      {
+        id: "source_project",
+        name: "Source project",
+        aliases: [],
+        workspaceId: "source_repo",
+        dingtalkSources: [{
+          id: "project_source",
+          name: "Project source",
+          kind: "doc",
+          nodeId: "0123456789abcdefghij",
+        }],
+      },
+    ],
+  });
+  assert.equal(source.id, "source_project");
+  assert.equal(source.root, "/private/source");
+  assert.equal(source.dingtalkSources[0].id, "project_source");
 });
