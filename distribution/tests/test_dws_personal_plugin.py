@@ -55,6 +55,8 @@ class FakeBridge:
         self.settled = []
         self.grouped = []
         self.group_result = None
+        self.startup_releases = 0
+        self.reconciles = 0
         self.send_result = {"success": True, "messageId": "sent-1"}
 
     async def start(self, callback):
@@ -66,6 +68,13 @@ class FakeBridge:
 
     async def emit(self, record):
         await self.callback(record)
+
+    async def release_events(self):
+        self.startup_releases += 1
+
+    async def reconcile(self):
+        self.reconciles += 1
+        return {"success": True}
 
     async def send(self, payload):
         self.sent.append(payload)
@@ -222,6 +231,11 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.adapter.disconnect()
+
+    async def test_startup_releases_buffer_before_requesting_reconcile(self):
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.bridge.startup_releases, 1)
+        self.assertEqual(self.bridge.reconciles, 1)
 
     async def test_direct_message_becomes_hermes_event_and_keeps_identity(self):
         context_path = str((Path(self.temp.name) / "state" / "work-contexts.json").resolve())

@@ -2311,7 +2311,7 @@ export async function createSidecarRuntime({
   fallbackTimer = setInterval(() => trigger("fallback"), config.fallbackMs);
 
   return {
-    async start() {
+    async start({ deferStartupReconcile = false } = {}) {
       if (!config.sendEnabled && state.sendBlocked) {
         state.sendBlocked = false;
         state.sendBlockReason = null;
@@ -2359,24 +2359,34 @@ export async function createSidecarRuntime({
           lastErrorCode: null, updatedAt: now().toISOString(),
         };
       }
-      let initialFrames = [];
-      try {
-        initialFrames = await check({
-          deferEmit: true,
-          wakeSource: "startup",
-          reconcileLookbackMs: config.initialLookbackMs,
-          onStarted: () => emit({
-            type: "ready",
-            transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
-            targets: config.userIds.length,
-            groups: config.groupIds.length,
-            reconciling: true,
-          }),
+      if (deferStartupReconcile) {
+        emit({
+          type: "ready",
+          transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
+          targets: config.userIds.length,
+          groups: config.groupIds.length,
+          reconciling: false,
         });
-      } catch (error) {
-        diagnose(`dws_sidecar_initial_reconcile_failed:${String(error?.code ?? error?.name ?? "error")}`);
+      } else {
+        let initialFrames = [];
+        try {
+          initialFrames = await check({
+            deferEmit: true,
+            wakeSource: "startup",
+            reconcileLookbackMs: config.initialLookbackMs,
+            onStarted: () => emit({
+              type: "ready",
+              transport: watchers.length > 0 ? "filesystem-events-with-fallback" : "fallback",
+              targets: config.userIds.length,
+              groups: config.groupIds.length,
+              reconciling: true,
+            }),
+          });
+        } catch (error) {
+          diagnose(`dws_sidecar_initial_reconcile_failed:${String(error?.code ?? error?.name ?? "error")}`);
+        }
+        for (const frame of initialFrames) emit(frame);
       }
-      for (const frame of initialFrames) emit(frame);
       await persistState();
       if (
         config.eventWakeEnabled &&
@@ -2771,6 +2781,14 @@ export async function createSidecarRuntime({
     releaseResponsibility,
     settleResponsibility,
     groupResponsibilityMessages,
+    async reconcile() {
+      await check({
+        deferEmit: false,
+        wakeSource: "startup",
+        reconcileLookbackMs: config.initialLookbackMs,
+      });
+      return { success: true };
+    },
     async stop() {
       clearInterval(fallbackTimer);
       clearTimeout(debounceTimer);
@@ -2813,6 +2831,8 @@ async function runProtocol() {
           ? await runtime.settleResponsibility(frame.payload)
         : frame.action === "group-responsibility"
           ? await runtime.groupResponsibilityMessages(frame.payload)
+        : frame.action === "reconcile"
+          ? await runtime.reconcile()
         : frame.action === "shutdown"
           ? { success: true }
           : { success: false, error: "Unsupported DWS sidecar action" };
@@ -2829,7 +2849,7 @@ async function runProtocol() {
       })}\n`);
     }
   });
-  await runtime.start();
+  await runtime.start({ deferStartupReconcile: true });
 }
 
 if (isMainModule(import.meta.url)) {

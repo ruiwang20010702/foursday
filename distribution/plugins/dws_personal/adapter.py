@@ -725,6 +725,14 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 await asyncio.sleep(0.25)
                 if self._running:
                     await release_events()
+                    reconcile = getattr(self._bridge, "reconcile", None)
+                    if callable(reconcile):
+                        try:
+                            result = await reconcile()
+                            if not isinstance(result, dict) or result.get("success") is not True:
+                                logger.warning("DWS startup reconcile did not return success")
+                        except Exception:
+                            logger.warning("DWS startup reconcile failed")
 
             self._startup_release_task = asyncio.create_task(
                 release_after_gateway_registration()

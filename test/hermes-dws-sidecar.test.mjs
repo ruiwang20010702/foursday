@@ -177,6 +177,46 @@ test("Hermes DWS sidecar announces transport readiness before a slow startup rec
   }
 });
 
+test("protocol startup waits for the registered adapter to request reconciliation", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-deferred-reconcile-")));
+  const frames = [];
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: null,
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-26T16:00:00+08:00"),
+  });
+  try {
+    await runtime.start({ deferStartupReconcile: true });
+    assert.equal(frames[0].type, "ready");
+    assert.equal(frames[0].reconciling, false);
+    assert.equal(frames.some((frame) => frame.record?.id === "dws-1"), false);
+    let state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.equal(state.recentMessageIds.includes("dws-1"), false);
+    assert.deepEqual(await runtime.reconcile(), { success: true });
+    assert.equal(frames.some((frame) => frame.record?.id === "dws-1"), true);
+    state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.equal(state.recentMessageIds.includes("dws-1"), true);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("external takeover revision blocks a stale reply before DWS transport", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-control-send-sidecar-")));
   const controlFile = join(root, "control.json");
