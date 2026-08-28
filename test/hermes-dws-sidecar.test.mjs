@@ -30,7 +30,7 @@ test("responsibility reaction configuration is bounded and disabled by default",
   }), /reaction name is invalid/u);
 });
 
-test("sidecar exposes bounded Codex responsibility grouping only when enabled", async () => {
+test("sidecar exposes bounded Codex responsibility grouping for every multi-message task batch", async () => {
   const calls = [];
   const runtime = await createSidecarRuntime({
     config: {
@@ -68,6 +68,51 @@ test("sidecar exposes bounded Codex responsibility grouping only when enabled", 
       confidence: 0.99,
     });
     assert.equal(calls.length, 1);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("sidecar exposes one bounded semantic response-duty decision per task group", async () => {
+  const calls = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: null,
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      semanticInterventionTimeoutMs: 30_000,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws: new FakeDws(),
+    responseDutyResolver: async (input) => {
+      calls.push(input);
+      return { decision: "action_required", confidence: 0.99, source: "codex" };
+    },
+  });
+  try {
+    assert.deepEqual(await runtime.classifyResponseDuty({
+      content: "请核对并回复结果",
+      messageCount: 2,
+    }), {
+      success: true,
+      decision: "action_required",
+      source: "codex",
+      confidence: 0.99,
+    });
+    assert.deepEqual(calls, [{ content: "请核对并回复结果", messageCount: 2 }]);
+    assert.deepEqual(await runtime.classifyResponseDuty({
+      content: "",
+      messageCount: 1,
+    }), { success: false, error: "response_duty_invalid" });
   } finally {
     await runtime.stop();
   }

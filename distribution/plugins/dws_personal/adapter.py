@@ -222,6 +222,7 @@ def _work_context_token(
     provided_dingtalk_sources: Optional[list[dict[str, str]]] = None,
     related_projects: Optional[list[Any]] = None,
     related_gbrain_slugs: Optional[list[str]] = None,
+    response_duty: Optional[dict[str, Any]] = None,
 ) -> str:
     if owner_intervention not in {None, "task_correction", "resume_requested"}:
         raise RuntimeError("Foursday owner intervention is invalid")
@@ -234,6 +235,21 @@ def _work_context_token(
         raise RuntimeError("Foursday source scope is invalid")
     if requester_role not in {"owner", "trusted"}:
         raise RuntimeError("Foursday requester role is invalid")
+    duty = dict(response_duty or {
+        "decision": "action_required",
+        "source": "availability_fallback",
+        "confidence": 0.0,
+    })
+    if (
+        duty.get("decision") not in {"action_required", "no_text_reply"}
+        or str(duty.get("source") or "") not in {
+            "codex", "availability_fallback",
+        }
+        or not isinstance(duty.get("confidence"), (int, float))
+        or float(duty["confidence"]) < 0
+        or float(duty["confidence"]) > 1
+    ):
+        raise RuntimeError("Foursday response duty is invalid")
     raw_sources = list(provided_dingtalk_sources or [])
     if len(raw_sources) > 4 or (source_scope != "direct" and raw_sources):
         raise RuntimeError("Foursday provided DingTalk sources are invalid")
@@ -350,6 +366,11 @@ def _work_context_token(
             "ownerIntervention": owner_intervention,
             "sourceScope": source_scope,
             "requesterRole": requester_role,
+            "responseDuty": {
+                "decision": duty["decision"],
+                "source": str(duty["source"]),
+                "confidence": float(duty["confidence"]),
+            },
             "providedDingtalkSources": safe_sources,
             "attachments": safe_attachments,
             "expiresAt": now + 15 * 60,
@@ -920,7 +941,14 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 str(record.get("createTime") or "").replace("Z", "+00:00")
             )
             source_gap_ms = (current_at - previous_at).total_seconds() * 1_000
-            if source_gap_ms > self._bundle_max_wait_ms:
+            same_startup_reconcile = bool(
+                str(record.get("wakeSource") or "") == "startup"
+                and str(existing[-1].get("wakeSource") or "") == "startup"
+                and str(record.get("detectedAt") or "")
+                and str(record.get("detectedAt") or "")
+                == str(existing[-1].get("detectedAt") or "")
+            )
+            if source_gap_ms > self._bundle_max_wait_ms and not same_startup_reconcile:
                 records = self._pending.pop(key, [])
                 task = self._bundle_tasks.pop(key, None)
                 if task is not None:
@@ -997,6 +1025,35 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         wake_source = str(latest.get("wakeSource") or "unknown")[:40]
         message_ids = [str(item["id"]) for item in records]
         content = "\n".join(str(item["content"]).strip() for item in records).strip()
+        response_duty = {
+            "decision": "action_required",
+            "source": "availability_fallback",
+            "confidence": 0.0,
+        }
+        classify_response_duty = getattr(self._bridge, "classify_response_duty", None)
+        if callable(classify_response_duty) and content:
+            try:
+                result = await classify_response_duty({
+                    "content": content[:8_000],
+                    "messageCount": len(records),
+                })
+                if (
+                    isinstance(result, dict)
+                    and result.get("success") is True
+                    and result.get("decision") in {"action_required", "no_text_reply"}
+                    and str(result.get("source") or "") in {
+                        "codex", "availability_fallback",
+                    }
+                    and isinstance(result.get("confidence"), (int, float))
+                    and 0 <= float(result["confidence"]) <= 1
+                ):
+                    response_duty = {
+                        "decision": result["decision"],
+                        "source": str(result["source"]),
+                        "confidence": float(result["confidence"]),
+                    }
+            except Exception:
+                pass
         attachments = [
             attachment
             for record in records
@@ -1122,6 +1179,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             provided_dingtalk_sources=provided_sources,
             related_projects=list(getattr(route, "related_projects", ()) or ()),
             related_gbrain_slugs=list(getattr(route, "related_gbrain_slugs", ()) or ()),
+            response_duty=response_duty,
         )
         tool_context = (
             "Foursday work context token: " + context_token +
@@ -1194,6 +1252,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "bundle_wait_ms": bundle_wait_ms,
                 "wake_source": wake_source,
                 "task_boundary": latest.get("taskBoundary"),
+                "response_duty": response_duty,
                 "enterprise_verified": latest.get("enterpriseVerified") is True,
                 "resource_enrichment_unavailable": resource_enrichment_unavailable,
             },
@@ -1219,6 +1278,8 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "taskBoundarySource": (
                 str((latest.get("taskBoundary") or {}).get("source") or "")[:40] or None
             ),
+            "responseDutyDecision": response_duty["decision"],
+            "responseDutySource": response_duty["source"],
         })
         from project_router.runtime_context import routed_project_scope
 

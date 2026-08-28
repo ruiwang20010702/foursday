@@ -223,6 +223,15 @@ export async function prepareFoursdayTurnContext(message, {
     ...(context.ownerIntervention ? [
       `<foursday_owner_intervention trust="connector-verified" type="${context.ownerIntervention}" />`,
     ] : []),
+    ...(context.responseDuty ? [
+      `<foursday_response_duty trust="connector-semantic" decision="${context.responseDuty.decision}" source="${context.responseDuty.source}" confidence="${Number(context.responseDuty.confidence).toFixed(2)}">`,
+      context.responseDuty.decision === "action_required" && context.responseDuty.source === "codex"
+        ? "A bounded Codex semantic decision found an unresolved request or expected action in this task group. Do not return NO_REPLY: complete the work, answer, ask the one necessary question, or report the exact blocker."
+        : context.responseDuty.decision === "no_text_reply"
+          ? "This is a semantic hint only. Return NO_REPLY only if your own reading confirms that the entire task group has no unresolved request or expected action."
+          : "The bounded classifier was unavailable. Inspect the entire task group yourself; never return NO_REPLY when it contains an unresolved request or expected action.",
+      "</foursday_response_duty>",
+    ] : []),
     `Foursday MCP context token: ${token}. Use it only for Foursday MCP tools and never quote it.`,
     "<current_user_request>",
     cleanText,

@@ -20,6 +20,7 @@ import {
   resolveOwnerIntervention,
 } from "./foursday-owner-intervention.mjs";
 import { resolveResponsibilityGroups } from "./foursday-message-groups.mjs";
+import { resolveResponseDuty } from "./foursday-response-duty.mjs";
 import { resolveTakenOverTaskBoundary } from "./foursday-task-boundary.mjs";
 
 function csv(value) {
@@ -689,6 +690,7 @@ export async function createSidecarRuntime({
     : null,
   semanticInterventionClassifier = resolveOwnerIntervention,
   responsibilityGroupingResolver = resolveResponsibilityGroups,
+  responseDutyResolver = resolveResponseDuty,
   taskBoundaryResolver = resolveTakenOverTaskBoundary,
   classifierEnvironment = process.env,
 } = {}) {
@@ -1258,11 +1260,11 @@ export async function createSidecarRuntime({
       messages.some((message) => !message.id) ||
       new Set(messages.map((message) => message.id)).size !== messages.length
     ) return { success: false, error: "responsibility_grouping_invalid" };
-    if (config.responsibilityReactionsEnabled !== true || messages.length === 1) {
+    if (messages.length === 1) {
       return {
         success: true,
         groups: [messages.map((_message, index) => index)],
-        source: messages.length === 1 ? "single" : "disabled",
+        source: "single",
       };
     }
     const result = await responsibilityGroupingResolver(messages, {
@@ -1272,6 +1274,24 @@ export async function createSidecarRuntime({
     return {
       success: true,
       groups: result.groups,
+      source: result.source,
+      confidence: result.confidence,
+    };
+  };
+  const classifyResponseDuty = async (payload) => {
+    const content = String(payload?.content ?? "").trim().slice(0, 8_000);
+    const messageCount = Number(payload?.messageCount ?? 1);
+    if (
+      !content || !Number.isSafeInteger(messageCount) ||
+      messageCount < 1 || messageCount > 32
+    ) return { success: false, error: "response_duty_invalid" };
+    const result = await responseDutyResolver({ content, messageCount }, {
+      environment: classifierEnvironment,
+      timeoutMs: Math.min(20_000, config.semanticInterventionTimeoutMs),
+    });
+    return {
+      success: true,
+      decision: result.decision,
       source: result.source,
       confidence: result.confidence,
     };
@@ -2781,6 +2801,7 @@ export async function createSidecarRuntime({
     releaseResponsibility,
     settleResponsibility,
     groupResponsibilityMessages,
+    classifyResponseDuty,
     async reconcile() {
       await check({
         deferEmit: false,
@@ -2831,6 +2852,8 @@ async function runProtocol() {
           ? await runtime.settleResponsibility(frame.payload)
         : frame.action === "group-responsibility"
           ? await runtime.groupResponsibilityMessages(frame.payload)
+        : frame.action === "classify-response-duty"
+          ? await runtime.classifyResponseDuty(frame.payload)
         : frame.action === "reconcile"
           ? await runtime.reconcile()
         : frame.action === "shutdown"

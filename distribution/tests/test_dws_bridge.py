@@ -63,6 +63,9 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await bridge.group_responsibility({
                 "messages": [{"id": "m1", "content": "task"}],
             }), {"success": True})
+            self.assertEqual(await bridge.classify_response_duty({
+                "content": "task", "messageCount": 1,
+            }), {"success": True})
             self.assertEqual(await bridge.reconcile(), {"success": True})
             for _ in range(20):
                 if acknowledgements:

@@ -242,6 +242,10 @@ class JsonLineDwsBridge:
         result = await self._request("group-responsibility", payload)
         return result if isinstance(result, dict) else {"success": False}
 
+    async def classify_response_duty(self, payload: dict) -> dict:
+        result = await self._request("classify-response-duty", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
     async def reconcile(self) -> dict:
         result = await self._request("reconcile")
         return result if isinstance(result, dict) else {"success": False}

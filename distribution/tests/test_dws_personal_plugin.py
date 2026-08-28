@@ -55,6 +55,8 @@ class FakeBridge:
         self.settled = []
         self.grouped = []
         self.group_result = None
+        self.response_duties = []
+        self.response_duty_result = None
         self.startup_releases = 0
         self.reconciles = 0
         self.send_result = {"success": True, "messageId": "sent-1"}
@@ -103,6 +105,15 @@ class FakeBridge:
             "success": True,
             "groups": [list(range(len(messages)))],
             "source": "test_default",
+        }
+
+    async def classify_response_duty(self, payload):
+        self.response_duties.append(dict(payload))
+        return self.response_duty_result or {
+            "success": True,
+            "decision": "action_required",
+            "source": "codex",
+            "confidence": 0.99,
         }
 
 
@@ -279,6 +290,11 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("单词 2.2", contexts[token_match.group(0)]["projectContext"])
         self.assertEqual(contexts[token_match.group(0)]["memoryContext"], "")
         self.assertEqual(contexts[token_match.group(0)]["requesterRole"], "trusted")
+        self.assertEqual(
+            contexts[token_match.group(0)]["responseDuty"]["decision"],
+            "action_required",
+        )
+        self.assertEqual(event.metadata["response_duty"]["source"], "codex")
         self.assertEqual(contexts[token_match.group(0)]["providedDingtalkSources"], [])
         self.assertRegex(contexts[token_match.group(0)]["sourcePrincipalHandle"], r"^[a-f0-9]{64}$")
         self.assertNotIn("trusted-user", json.dumps(contexts))
@@ -844,6 +860,53 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.events[0].metadata["source_message_ids"],
             ["bundle-1", "bundle-2"],
         )
+
+    async def test_one_startup_reconcile_semantically_groups_messages_despite_source_gap(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 20,
+                "bundle_max_wait_ms": 2_000,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        self.events = []
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        base = {
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "direct-startup-replay",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+            "detectedAt": "2026-08-28T08:00:00Z",
+            "wakeSource": "startup",
+        }
+        await self.bridge.emit({
+            **base,
+            "id": "startup-1",
+            "content": "先说明背景",
+            "createTime": "2026-08-28T07:18:27Z",
+        })
+        await self.bridge.emit({
+            **base,
+            "id": "startup-2",
+            "content": "再给出同一任务的具体要求",
+            "createTime": "2026-08-28T07:19:06Z",
+        })
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].metadata["bundle_size"], 2)
+        self.assertEqual(
+            self.events[0].metadata["source_message_ids"],
+            ["startup-1", "startup-2"],
+        )
+        self.assertEqual(self.bridge.grouped[-1]["messages"][1]["id"], "startup-2")
 
     async def test_codex_grouping_splits_independent_tasks_and_claims_each_anchor(self):
         await self.adapter.disconnect()

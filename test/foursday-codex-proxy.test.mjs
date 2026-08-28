@@ -256,6 +256,11 @@ test("turn context token becomes project and personal-memory context without rea
         sourceSessionHash: "c".repeat(64),
         sourceScope: "direct",
         requesterRole: "owner",
+        responseDuty: {
+          decision: "action_required",
+          source: "codex",
+          confidence: 0.99,
+        },
         providedDingtalkSources: [],
         ownerIntervention: "task_correction",
         attachments: [
@@ -288,6 +293,8 @@ test("turn context token becomes project and personal-memory context without rea
   assert.match(text, /owner prefers evidence-first/u);
   assert.match(text, /<current_user_request>\nWhat changed\?/u);
   assert.match(text, /<foursday_owner_intervention trust="connector-verified" type="task_correction" \/>/u);
+  assert.match(text, /<foursday_response_duty trust="connector-semantic" decision="action_required" source="codex" confidence="0\.99">/u);
+  assert.match(text, /Do not return NO_REPLY/u);
   assert.doesNotMatch(text, /<!-- foursday-context:/u);
   assert.deepEqual(result.params.input[1], { type: "localImage", path: imagePath });
   assert.equal(result.params.input.length, 2);

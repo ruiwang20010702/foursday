@@ -64,6 +64,18 @@ export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now
     !["owner", "trusted", "system"].includes(context.requesterRole) ||
     (context.sourceScope === "cron") !== (context.requesterRole === "system")
   ) throw new Error("work_context_requester_invalid");
+  const responseDuty = context.responseDuty ?? {
+    decision: "action_required",
+    source: "availability_fallback",
+    confidence: 0,
+  };
+  if (
+    !responseDuty || typeof responseDuty !== "object" || Array.isArray(responseDuty) ||
+    !["action_required", "no_text_reply"].includes(responseDuty.decision) ||
+    !["codex", "availability_fallback"].includes(responseDuty.source) ||
+    !Number.isFinite(responseDuty.confidence) ||
+    responseDuty.confidence < 0 || responseDuty.confidence > 1
+  ) throw new Error("work_context_response_duty_invalid");
   const rawProvidedSources = context.providedDingtalkSources ?? [];
   if (
     !Array.isArray(rawProvidedSources) || rawProvidedSources.length > 4 ||
@@ -147,5 +159,6 @@ export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now
     workspace,
     attachments,
     providedDingtalkSources,
+    responseDuty: { ...responseDuty },
   };
 }
