@@ -189,7 +189,7 @@ function emptyState() {
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
     checkLifecycle: normalizeDwsCheckLifecycle(),
     sendBlocked: false, sendBlockReason: null, sendBlockedAt: null,
-    responsibilityReactions: {}, reactionAutomationOps: [],
+    responsibilityReactions: {}, reactionAutomationOps: [], pendingOwnerReactions: {},
     manualReplyProbe: { ready: null, errorCode: null, updatedAt: null },
     deferredReply: {
       waiting: false, attemptCount: 0, errorCode: null,
@@ -211,6 +211,10 @@ function enterpriseIdentityRetryKey(messageId) {
 
 function responsibilityReactionKey(conversationId, messageId) {
   return createHash("sha256").update(`${conversationId}\0${messageId}`).digest("hex");
+}
+
+function pendingOwnerReactionKey(eventId) {
+  return createHash("sha256").update(String(eventId)).digest("hex");
 }
 
 function boundedReactionValue(value, maximum = 500) {
@@ -284,6 +288,34 @@ function normalizeReactionAutomationOp(value) {
     startedAt: new Date(startedAt).toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
     status,
+  };
+}
+
+function normalizePendingOwnerReaction(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const eventId = boundedReactionValue(value.eventId);
+  const conversationId = boundedReactionValue(value.conversationId);
+  const messageId = boundedReactionValue(value.messageId);
+  const operatorOpenDingTalkId = boundedReactionValue(value.operatorOpenDingTalkId);
+  const senderOpenDingTalkId = boundedReactionValue(value.senderOpenDingTalkId);
+  const reactionName = boundedReactionValue(value.reactionName, 100);
+  const occurredAt = epoch(value.occurredAt);
+  const expiresAt = epoch(value.expiresAt);
+  if (
+    !eventId || !conversationId || !messageId || !operatorOpenDingTalkId ||
+    !reactionName || value.action !== "added" || occurredAt == null ||
+    expiresAt == null || expiresAt < occurredAt
+  ) return null;
+  return {
+    eventId,
+    conversationId,
+    messageId,
+    operatorOpenDingTalkId,
+    senderOpenDingTalkId,
+    reactionName,
+    action: "added",
+    occurredAt: new Date(occurredAt).toISOString(),
+    expiresAt: new Date(expiresAt).toISOString(),
   };
 }
 
@@ -440,6 +472,14 @@ async function loadState(path) {
       reactionAutomationOps: Array.isArray(parsed?.reactionAutomationOps)
         ? parsed.reactionAutomationOps.map(normalizeReactionAutomationOp).filter(Boolean).slice(-200)
         : [],
+      pendingOwnerReactions: parsed?.pendingOwnerReactions &&
+          typeof parsed.pendingOwnerReactions === "object" &&
+          !Array.isArray(parsed.pendingOwnerReactions)
+        ? Object.fromEntries(Object.entries(parsed.pendingOwnerReactions)
+          .map(([key, value]) => [key, normalizePendingOwnerReaction(value)])
+          .filter(([key, value]) => value && key === pendingOwnerReactionKey(value.eventId))
+          .slice(-128))
+        : {},
       sendBlocked: parsed?.sendBlocked === true,
       sendBlockReason: typeof parsed?.sendBlockReason === "string"
         ? parsed.sendBlockReason.slice(0, 80)
@@ -707,6 +747,7 @@ export async function createSidecarRuntime({
   ]));
   const sendLedger = new Map(Object.entries(state.sendLedger));
   const responsibilityReactions = new Map(Object.entries(state.responsibilityReactions));
+  const pendingOwnerReactions = new Map(Object.entries(state.pendingOwnerReactions));
   let reactionAutomationOps = [...state.reactionAutomationOps];
   const automatedSendEvidence = [...sendLedger.values()]
     .filter((entry) => entry && typeof entry === "object")
@@ -743,6 +784,7 @@ export async function createSidecarRuntime({
   const syncResponsibilityState = () => {
     state.responsibilityReactions = Object.fromEntries(responsibilityReactions);
     state.reactionAutomationOps = reactionAutomationOps.slice(-200);
+    state.pendingOwnerReactions = Object.fromEntries(pendingOwnerReactions);
     state.recentReactionEventIds = [...seenReactionEvents].slice(-5_000);
   };
   const identityRetryDelayMs = (attempts) => Math.min(
@@ -1112,7 +1154,7 @@ export async function createSidecarRuntime({
       if (
         previous.conversationId === conversationId &&
         previous.messageId !== messageId &&
-        ["claiming", "claimed", "clearing"].includes(previous.status) &&
+        ["claiming", "claimed", "clearing", "shadow"].includes(previous.status) &&
         Number(previous.sendGeneration) < sendGeneration
       ) {
         await releaseResponsibility({
@@ -1426,6 +1468,37 @@ export async function createSidecarRuntime({
     syncResponsibilityState();
     return true;
   };
+  const prunePendingOwnerReactions = (at = clock()) => {
+    for (const [key, entry] of pendingOwnerReactions) {
+      if ((epoch(entry.expiresAt) ?? 0) > at) continue;
+      pendingOwnerReactions.delete(key);
+      rememberReactionEvent(entry.eventId);
+    }
+    syncResponsibilityState();
+  };
+  const deferOwnerReaction = async (event) => {
+    prunePendingOwnerReactions();
+    const key = pendingOwnerReactionKey(event.eventId);
+    pendingOwnerReactions.set(key, {
+      eventId: String(event.eventId),
+      conversationId: String(event.conversationId),
+      messageId: String(event.messageId),
+      operatorOpenDingTalkId: String(event.operatorOpenDingTalkId),
+      senderOpenDingTalkId: String(event.senderOpenDingTalkId ?? "") || null,
+      reactionName: String(event.reactionName),
+      action: "added",
+      occurredAt: new Date(event.occurredAt).toISOString(),
+      expiresAt: new Date(clock() + 5 * 60_000).toISOString(),
+    });
+    while (pendingOwnerReactions.size > 128) {
+      const [oldestKey, oldest] = pendingOwnerReactions.entries().next().value;
+      pendingOwnerReactions.delete(oldestKey);
+      rememberReactionEvent(oldest.eventId);
+    }
+    syncResponsibilityState();
+    await persistState();
+    diagnose(`dws_owner_reaction_deferred:${hash(event.eventId)}`);
+  };
   const resolveOwnerOpenDingTalkId = async () => {
     if (ownerOpenDingTalkId) return ownerOpenDingTalkId;
     if (!config.selfUserId || typeof dws.resolveUserOpenDingTalkId !== "function") {
@@ -1454,13 +1527,16 @@ export async function createSidecarRuntime({
       return null;
     }
   };
-  handleReactionEvent = async (event) => {
+  handleReactionEvent = async (event, emitFrame = emit, { fromPending = false } = {}) => {
+    const pendingKey = pendingOwnerReactionKey(event?.eventId);
     if (
       config.responsibilityReactionsEnabled !== true ||
       !event || typeof event !== "object" || Array.isArray(event) ||
       !String(event.eventId ?? "").trim() ||
-      seenReactionEvents.has(String(event.eventId))
+      seenReactionEvents.has(String(event.eventId)) ||
+      (!fromPending && pendingOwnerReactions.has(pendingKey))
     ) return;
+    if (fromPending) pendingOwnerReactions.delete(pendingKey);
     const eventId = String(event.eventId);
     if (consumeAutomatedReactionEvent(event)) {
       rememberReactionEvent(eventId);
@@ -1475,16 +1551,11 @@ export async function createSidecarRuntime({
     }
     const active = activeConversations.get(event.conversationId);
     if (!active) {
-      rememberReactionEvent(eventId);
-      await persistState();
-      return;
-    }
-    if (
-      event.senderOpenDingTalkId && active.participantOpenDingTalkId &&
-      event.senderOpenDingTalkId !== active.participantOpenDingTalkId
-    ) {
-      rememberReactionEvent(eventId);
-      await persistState();
+      if (event.action === "added") await deferOwnerReaction(event);
+      else {
+        rememberReactionEvent(eventId);
+        await persistState();
+      }
       return;
     }
     const messageResponsibilities = [...responsibilityReactions.values()].filter((entry) =>
@@ -1521,6 +1592,17 @@ export async function createSidecarRuntime({
     }
     const currentAnchor = active.sourceMessageId === event.messageId && !terminalResponsibility;
     if (claims.length === 0 && !currentAnchor) {
+      if (event.action === "added") await deferOwnerReaction(event);
+      else {
+        rememberReactionEvent(eventId);
+        await persistState();
+      }
+      return;
+    }
+    if (
+      event.senderOpenDingTalkId && active.participantOpenDingTalkId &&
+      event.senderOpenDingTalkId !== active.participantOpenDingTalkId
+    ) {
       rememberReactionEvent(eventId);
       await persistState();
       return;
@@ -1558,6 +1640,7 @@ export async function createSidecarRuntime({
         source: "owner_reaction",
         confidence: 1,
       },
+      emitFrame,
     });
     for (const entry of claims) {
       if (
@@ -1576,6 +1659,16 @@ export async function createSidecarRuntime({
     }
     syncResponsibilityState();
     await persistState();
+  };
+
+  const replayPendingOwnerReactions = async ({ conversationId, messageId, emitFrame }) => {
+    prunePendingOwnerReactions();
+    const pendingEvents = [...pendingOwnerReactions.values()].filter((entry) =>
+      entry.conversationId === conversationId && entry.messageId === messageId
+    );
+    for (const event of pendingEvents) {
+      await handleReactionEvent(event, emitFrame, { fromPending: true });
+    }
   };
 
   const emitMessage = async (message, chatType, mentionedSelf, emitFrame = emit) => {
@@ -1774,6 +1867,11 @@ export async function createSidecarRuntime({
           : null,
         wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
       },
+    });
+    await replayPendingOwnerReactions({
+      conversationId,
+      messageId: id,
+      emitFrame,
     });
   };
 

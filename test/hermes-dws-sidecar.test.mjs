@@ -2254,6 +2254,83 @@ test("owner reaction freezes the current task even before the responsibility lab
   }
 });
 
+test("owner reaction arriving before the newer message projection is replayed on that exact anchor", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-owner-reaction-before-message-"));
+  const stateFile = join(root, "state.json");
+  const frames = [];
+  const dws = new FakeDws();
+  const firstMessage = {
+    id: "dws-1",
+    senderUserId: "trusted-user",
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "Trusted user",
+    conversationId: "conversation-1",
+    content: "第一条任务消息",
+    createTime: "2026-08-28T10:00:00+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  };
+  dws.messages = [firstMessage];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile,
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-28T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    dws.reactionWatchers[0].onEvent({
+      eventId: "owner-reacts-to-future-anchor",
+      conversationId: "conversation-1",
+      messageId: "dws-2",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "👌",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:01.000Z",
+    });
+    await new Promise((accept) => setTimeout(accept, 50));
+    let state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(Object.keys(state.pendingOwnerReactions ?? {}).length, 1);
+    assert.equal(frames.some((frame) => frame.record?.control), false);
+
+    dws.messages = [firstMessage, {
+      ...firstMessage,
+      id: "dws-2",
+      content: "第二条补充消息",
+      createTime: "2026-08-28T10:00:30+08:00",
+    }];
+    await runtime.check();
+    assert.equal(await waitFor(() => frames.some((frame) =>
+      frame.record?.control === "communication_takeover" &&
+      frame.record?.ownerMessageId === "owner-reacts-to-future-anchor"
+    )), true);
+    state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(Object.keys(state.pendingOwnerReactions ?? {}).length, 0);
+    assert.equal(state.recentReactionEventIds.includes("owner-reacts-to-future-anchor"), true);
+    assert.equal(dws.sent.length, 0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("responsibility label and reaction takeover survive a sidecar restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-reaction-restart-"));
   const stateFile = join(root, "state.json");

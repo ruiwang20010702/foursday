@@ -682,6 +682,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         if source_message_ids:
             target_metadata["source_message_ids"] = source_message_ids
             target_metadata["bundle_size"] = len(source_message_ids)
+        latest_message_id = str(getattr(latest, "message_id", "") or "").strip()
+        if latest_message_id:
+            target.message_id = latest_message_id
         target.metadata = target_metadata
         latest_markers = _FOURSDAY_CONTEXT_MARKER.findall(str(latest.text or ""))
         target_markers = _FOURSDAY_CONTEXT_MARKER.findall(str(target.text or ""))

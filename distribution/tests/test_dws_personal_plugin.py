@@ -1019,6 +1019,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         first_started = asyncio.Event()
         release_first = asyncio.Event()
         handled = []
+        handled_message_ids = []
         handled_metadata = []
         handled_markers = []
         context_path = str((
@@ -1033,6 +1034,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 event.text,
             ).strip()
             handled.append(visible)
+            handled_message_ids.append(event.message_id)
             handled_metadata.append(dict(event.metadata))
             handled_markers.append(markers)
             if visible == "第一句":
@@ -1086,6 +1088,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
 
         self.assertEqual(handled, ["第一句", "第二句\n\n第三句"])
+        self.assertEqual(handled_message_ids, ["generation-1", "generation-3"])
         self.assertEqual(handled_metadata[1]["send_generation"], 3)
         self.assertEqual(handled_metadata[1]["bundle_size"], 2)
         self.assertEqual(len(handled_markers[1]), 1)
