@@ -597,6 +597,65 @@ test("enterprise mode scans verified organization direct messages without explic
   }
 });
 
+test("enterprise recovery splits a checkpoint gap into bounded one-hour reads", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-enterprise-long-recovery-")));
+  const stateFile = join(root, "state.json");
+  await writeFile(stateFile, `${JSON.stringify({
+    lastEnterpriseAt: "2026-08-26T14:00:00+08:00",
+    recentMessageIds: [],
+  })}\n`, { mode: 0o600 });
+  const frames = [];
+  const dws = new FakeDws();
+  const calls = [];
+  dws.fetchBySender = async () => [];
+  dws.fetchEnterpriseDirect = async ({ start, end }) => {
+    calls.push({ start, end });
+    return [{
+      id: "enterprise-recovery-message",
+      senderUserId: "enterprise-user",
+      senderOpenDingTalkId: "open-enterprise",
+      senderName: "Enterprise user",
+      conversationId: "enterprise-recovery-conversation",
+      content: "请恢复这个任务",
+      createTime: "2026-08-26T14:30:00+08:00",
+      isSelf: false,
+      isWithdrawn: false,
+      enterpriseVerified: true,
+      media: [],
+    }];
+  };
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["owner-user"],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: "owner-user",
+      stateFile,
+      mediaRoot: null,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-26T15:30:10+08:00"),
+  });
+  try {
+    await runtime.start();
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(({ start, end }) => end.getTime() - start.getTime() <= 60 * 60 * 1_000));
+    assert.equal(frames.filter((frame) =>
+      frame.record?.id === "enterprise-recovery-message"
+    ).length, 1);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("task takeover suppresses later enterprise messages without poisoning the shared checkpoint", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-enterprise-taken-over-")));
   const controlFile = join(root, "control.json");

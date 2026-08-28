@@ -710,6 +710,47 @@ export async function createSidecarRuntime({
       ? candidate
       : current;
   };
+  const fetchEnterpriseHistoryWindow = async ({ start, end }) => {
+    const maximumSliceMs = 60 * 60 * 1_000;
+    const output = { messages: [], pending: [], rejected: [] };
+    const seen = new Set();
+    for (
+      let cursor = start.getTime();
+      cursor < end.getTime();
+      cursor += maximumSliceMs
+    ) {
+      const sliceStart = new Date(cursor);
+      const sliceEnd = new Date(Math.min(end.getTime(), cursor + maximumSliceMs));
+      if (typeof dws.fetchEnterpriseDirectScan === "function") {
+        const scan = await dws.fetchEnterpriseDirectScan({
+          start: sliceStart,
+          end: sliceEnd,
+          selfUserId: config.selfUserId,
+        });
+        output.pending.push(...(scan.pending ?? []));
+        output.rejected.push(...(scan.rejected ?? []));
+        for (const message of scan.messages ?? []) {
+          const id = String(message?.id ?? "");
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          output.messages.push(message);
+        }
+      } else {
+        const messages = await dws.fetchEnterpriseDirect({
+          start: sliceStart,
+          end: sliceEnd,
+          selfUserId: config.selfUserId,
+        });
+        for (const message of messages ?? []) {
+          const id = String(message?.id ?? "");
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          output.messages.push(message);
+        }
+      }
+    }
+    return output;
+  };
   await access(config.dwsPath);
   if (config.mediaRoot) {
     await mkdir(config.mediaRoot, { recursive: true, mode: 0o700 });
@@ -2053,11 +2094,7 @@ export async function createSidecarRuntime({
           }
           const recovered = await retryEnterpriseIdentities(end);
           if (typeof dws.fetchEnterpriseDirectScan === "function") {
-            const scan = await dws.fetchEnterpriseDirectScan({
-              start,
-              end: targetEnd,
-              selfUserId: config.selfUserId,
-            });
+            const scan = await fetchEnterpriseHistoryWindow({ start, end: targetEnd });
             for (const candidate of scan.pending ?? []) {
               enqueueIdentityRetry(candidate, end);
             }
@@ -2076,11 +2113,7 @@ export async function createSidecarRuntime({
           } else {
             messages = [
               ...recovered,
-              ...await dws.fetchEnterpriseDirect({
-                start,
-                end: targetEnd,
-                selfUserId: config.selfUserId,
-              }),
+              ...(await fetchEnterpriseHistoryWindow({ start, end: targetEnd })).messages,
             ];
           }
         } else if (target.kind === "user" && target.id === config.selfUserId) {
