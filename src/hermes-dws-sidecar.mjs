@@ -1100,6 +1100,11 @@ export async function createSidecarRuntime({
     const ownerRevision = Number(payload?.ownerRevision);
     const sendGeneration = Number(payload?.sendGeneration);
     const active = activeConversations.get(conversationId);
+    if (takeoverReported.has(conversationId)) {
+      await releaseConversationResponsibilities(conversationId);
+      return { success: false, error: "responsibility_claim_stale" };
+    }
+    const latestControl = normalizedControlState(controlStates.get(conversationId));
     if (
       !active || !conversationId || conversationId.length > 500 ||
       !messageId || messageId.length > 500 ||
@@ -1107,7 +1112,9 @@ export async function createSidecarRuntime({
       !Number.isSafeInteger(ownerRevision) || ownerRevision < 0 ||
       !Number.isSafeInteger(sendGeneration) || sendGeneration < 0 ||
       ownerRevision !== Number(active.ownerRevision ?? 0) ||
-      sendGeneration !== Number(active.sendGeneration ?? 0)
+      sendGeneration !== Number(active.sendGeneration ?? 0) ||
+      ownerRevision !== latestControl.ownerRevision ||
+      sendGeneration !== latestControl.sendGeneration
     ) return { success: false, error: "responsibility_claim_stale" };
     if (!await resolveOwnerOpenDingTalkId()) {
       return { success: false, error: "reaction_owner_identity_unavailable" };
@@ -1270,7 +1277,9 @@ export async function createSidecarRuntime({
       if (
         entry.conversationId === conversationId &&
         (!messageId || entry.sourceMessageIds.includes(messageId)) &&
-        ["claiming", "claimed", "handled_no_reply", "clearing"].includes(entry.status)
+        [
+          "claiming", "claimed", "handled_no_reply", "clearing", "shadow", "unavailable",
+        ].includes(entry.status)
       ) {
         await releaseResponsibility({
           conversationId: entry.conversationId,
@@ -1564,7 +1573,7 @@ export async function createSidecarRuntime({
       entry.sourceMessageIds.includes(event.messageId)
     );
     const claims = messageResponsibilities.filter((entry) =>
-      ["claiming", "claimed", "clearing"].includes(entry.status)
+      ["claiming", "claimed", "clearing", "shadow", "unavailable"].includes(entry.status)
     );
     const terminalResponsibility = messageResponsibilities.some((entry) =>
       ["cleared", "handled_no_reply"].includes(entry.status)
@@ -2230,6 +2239,9 @@ export async function createSidecarRuntime({
         state.sendBlockedAt = null;
       }
       if (config.responsibilityReactionsEnabled === true) {
+        for (const conversationId of takeoverReported) {
+          await releaseConversationResponsibilities(conversationId);
+        }
         const claimedConversations = new Set([...responsibilityReactions.values()]
           .filter((entry) => !["clearing", "cleared"].includes(entry.status))
           .map((entry) => entry.conversationId));

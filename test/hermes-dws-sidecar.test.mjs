@@ -2325,6 +2325,19 @@ test("owner reaction arriving before the newer message projection is replayed on
     state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.equal(Object.keys(state.pendingOwnerReactions ?? {}).length, 0);
     assert.equal(state.recentReactionEventIds.includes("owner-reacts-to-future-anchor"), true);
+    const lateClaim = await runtime.claimResponsibility({
+      conversationId: "conversation-1",
+      messageId: "dws-2",
+      sourceMessageIds: ["dws-1", "dws-2"],
+      ownerRevision: 0,
+      sendGeneration: 2,
+    });
+    assert.equal(lateClaim.success, false);
+    assert.equal(lateClaim.error, "responsibility_claim_stale");
+    state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(Object.values(state.responsibilityReactions ?? {}).some((entry) =>
+      entry.status !== "cleared"
+    ), false);
     assert.equal(dws.sent.length, 0);
   } finally {
     await runtime.stop();
