@@ -1436,9 +1436,11 @@ export async function createSidecarRuntime({
       return null;
     }
     try {
-      ownerOpenDingTalkId = await dws.resolveUserOpenDingTalkId(config.selfUserId, null, {
-        allowPolicyFallback: false,
-      });
+      ownerOpenDingTalkId = typeof dws.resolveCurrentUserOpenDingTalkId === "function"
+        ? await dws.resolveCurrentUserOpenDingTalkId(config.selfUserId)
+        : await dws.resolveUserOpenDingTalkId(config.selfUserId, null, {
+            allowPolicyFallback: false,
+          });
       reactionWakeFailed.delete("owner_identity");
       updateReactionWakeState();
       await persistState();
@@ -2130,10 +2132,10 @@ export async function createSidecarRuntime({
         state.sendBlockedAt = null;
       }
       if (config.responsibilityReactionsEnabled === true) {
-        await resolveOwnerOpenDingTalkId();
         const claimedConversations = new Set([...responsibilityReactions.values()]
           .filter((entry) => !["clearing", "cleared"].includes(entry.status))
           .map((entry) => entry.conversationId));
+        if (claimedConversations.size > 0) await resolveOwnerOpenDingTalkId();
         for (const conversationId of claimedConversations) {
           const active = activeConversations.get(conversationId);
           if (!active) continue;

@@ -1409,6 +1409,36 @@ test("通讯录详情受策略限制时经AI搜问精确绑定双身份", async 
   );
 });
 
+test("当前账号通过认证身份和精确通讯录回读解析负责人OpenID", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
+  dws.run = async (args) => {
+    calls.push(args);
+    if (args[0] === "auth") {
+      return {
+        success: true,
+        authenticated: true,
+        user_id: "owner-user",
+        user_name: "负责人",
+      };
+    }
+    if (args[0] === "contact") throw new Error("PAT_ORG_POLICY_DENIED");
+    assert.deepEqual(args, [
+      "aisearch", "person", "--keyword", "负责人", "--dimension", "name",
+    ]);
+    return { result: [{ userId: "owner-user", openDingTalkId: "open-owner" }] };
+  };
+  assert.equal(
+    await dws.resolveCurrentUserOpenDingTalkId("owner-user"),
+    "open-owner",
+  );
+  assert.deepEqual(calls[0], ["auth", "status"]);
+  await assert.rejects(
+    dws.resolveCurrentUserOpenDingTalkId("different-owner"),
+    (error) => error.code === "dws_current_identity_mismatch",
+  );
+});
+
 test("群聊监听只保留白名单群中的 @我 消息", async () => {
   const dws = new DwsAdapter({ dwsPath: "/fake/dws" });
   dws.run = async (args) => {

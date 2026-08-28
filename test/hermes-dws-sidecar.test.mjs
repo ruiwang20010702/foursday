@@ -2330,6 +2330,11 @@ test("reaction startup ignores legacy conversations without a current responsibi
   const dws = new FakeDws();
   dws.messages = [];
   dws.reactionWakeFailure = true;
+  let identityResolutions = 0;
+  dws.resolveUserOpenDingTalkId = async () => {
+    identityResolutions += 1;
+    throw Object.assign(new Error("legacy identity must not be resolved"), { code: 4 });
+  };
   const runtime = await createSidecarRuntime({
     config: {
       dwsPath: process.execPath,
@@ -2354,6 +2359,7 @@ test("reaction startup ignores legacy conversations without a current responsibi
   try {
     await runtime.start();
     assert.equal(dws.reactionWatchers.length, 0);
+    assert.equal(identityResolutions, 0);
     const state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.equal(state.reactionWake.readyCount, 0);
     assert.equal(state.reactionWake.errorCount, 0);

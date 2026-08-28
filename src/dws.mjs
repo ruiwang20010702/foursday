@@ -966,6 +966,30 @@ export class DwsAdapter {
     return openDingTalkId;
   }
 
+  async resolveCurrentUserOpenDingTalkId(expectedUserId) {
+    const expected = normalizeDwsIdentity(expectedUserId);
+    if (!expected) {
+      const error = new Error("DWS current identity requires a user ID");
+      error.code = "dws_current_identity_required";
+      throw error;
+    }
+    const payload = await this.run(["auth", "status"]);
+    const result = payload?.result ?? payload ?? {};
+    const currentUserId = normalizeDwsIdentity(result.user_id ?? result.userId);
+    const currentUserName = String(result.user_name ?? result.userName ?? "").trim();
+    if (
+      result.success !== true || result.authenticated !== true ||
+      currentUserId !== expected || !currentUserName
+    ) {
+      const error = new Error("DWS authenticated identity does not match the configured owner");
+      error.code = "dws_current_identity_mismatch";
+      throw error;
+    }
+    return this.resolveUserOpenDingTalkId(expected, currentUserName, {
+      allowPolicyFallback: true,
+    });
+  }
+
   async resolveEnterpriseOpenDingTalkId(expectedOpenDingTalkId, displayName = null) {
     const openDingTalkId = normalizeDwsIdentity(expectedOpenDingTalkId);
     const name = String(displayName ?? "").trim();
