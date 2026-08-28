@@ -51,6 +51,18 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events[0]["id"], "message-1")
             receipt = await bridge.send({"content": "done"})
             self.assertEqual(receipt["messageId"], "sent-1")
+            self.assertEqual(await bridge.claim_responsibility({
+                "conversationId": "c1", "messageId": "m1",
+            }), {"success": True})
+            self.assertEqual(await bridge.release_responsibility({
+                "conversationId": "c1", "messageId": "m1",
+            }), {"success": True})
+            self.assertEqual(await bridge.settle_responsibility({
+                "conversationId": "c1", "messageId": "m1",
+            }), {"success": True})
+            self.assertEqual(await bridge.group_responsibility({
+                "messages": [{"id": "m1", "content": "task"}],
+            }), {"success": True})
             for _ in range(20):
                 if acknowledgements:
                     break
@@ -128,6 +140,8 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS": "20000",
                     "DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED": "true",
                     "DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS": "30000",
+                    "DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED": "true",
+                    "DWS_PERSONAL_RESPONSIBILITY_REACTION": "OK",
                     "FOURSDAY_CODEX_PATH": "/absolute/codex",
                     "CODEX_HOME": str(Path(root, "codex-home")),
                     "FOURSDAY_PROJECT_REGISTRY": str(Path(root, "projects.json")),
@@ -155,6 +169,8 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS"], "20000")
             self.assertEqual(bridge.environment["DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED"], "true")
             self.assertEqual(bridge.environment["DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS"], "30000")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED"], "true")
+            self.assertEqual(bridge.environment["DWS_PERSONAL_RESPONSIBILITY_REACTION"], "OK")
             self.assertEqual(bridge.environment["FOURSDAY_NODE_PATH"], sys.executable)
             self.assertEqual(bridge.environment["FOURSDAY_CODEX_PATH"], "/absolute/codex")
             self.assertEqual(bridge.environment["CODEX_HOME"], str(Path(root, "codex-home")))

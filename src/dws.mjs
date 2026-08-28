@@ -308,6 +308,64 @@ function epoch(value) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+function normalizedReactionAction(value) {
+  const action = String(value ?? "").trim().toLowerCase();
+  if (["add", "added", "reply", "create", "created"].includes(action)) return "added";
+  if (["remove", "removed", "recall", "recalled", "delete", "deleted"].includes(action)) {
+    return "removed";
+  }
+  return null;
+}
+
+export function normalizeDwsReactionEvent(value) {
+  const event = value && !Array.isArray(value) && typeof value === "object" ? value : {};
+  const data = event.data && !Array.isArray(event.data) && typeof event.data === "object"
+    ? event.data
+    : {};
+  const read = (...names) => {
+    for (const name of names) {
+      const candidate = event[name] ?? data[name];
+      if (candidate != null && String(candidate).trim() !== "") return candidate;
+    }
+    return null;
+  };
+  const type = String(read("event_type", "type") ?? "").trim();
+  if (!/^user_im_message_reaction_(?:o2o|group)$/u.test(type)) return null;
+  const eventId = String(read("event_id", "eventId") ?? "").trim();
+  const conversationId = String(read("conversation_id", "conversationId") ?? "").trim();
+  const messageId = String(read("message_id", "messageId") ?? "").trim();
+  const operatorOpenDingTalkId = normalizeDwsIdentity(
+    read("operator_open_dingtalk_id", "operatorOpenDingTalkId"),
+  );
+  const senderOpenDingTalkId = normalizeDwsIdentity(
+    read("sender_open_dingtalk_id", "senderOpenDingTalkId"),
+  );
+  const reactionName = String(read("reaction_name", "reactionName", "reaction_text") ?? "")
+    .trim().slice(0, 100);
+  const action = normalizedReactionAction(read("operation_type", "operationType"));
+  const occurredAtMs = epoch(
+    read("operation_time", "operationTime", "event_time", "eventTime", "timestamp"),
+  );
+  if (
+    !eventId || eventId.length > 500 ||
+    !conversationId || conversationId.length > 500 ||
+    !messageId || messageId.length > 500 ||
+    !operatorOpenDingTalkId || operatorOpenDingTalkId.length > 500 ||
+    !reactionName || !action || occurredAtMs == null
+  ) return null;
+  return {
+    eventId,
+    type,
+    conversationId,
+    messageId,
+    operatorOpenDingTalkId,
+    senderOpenDingTalkId,
+    reactionName,
+    action,
+    occurredAt: new Date(occurredAtMs).toISOString(),
+  };
+}
+
 function normalizedText(value) {
   return String(value ?? "")
     .replace(/\r\n?/gu, "\n")
@@ -500,25 +558,26 @@ export class DwsAdapter {
     this.commandQueue = Promise.resolve();
   }
 
-  createPersonalEventWake({
+  _createEventWake({
+    args,
     onEvent,
     onDiagnostic = () => {},
     readyTimeoutMs = 30_000,
+    normalizeEvent = (event) => event,
   } = {}) {
     if (typeof onEvent !== "function") {
       throw new Error("DWS personal event wake requires an event callback");
     }
-    const child = this.processSpawner(this.dwsPath, [
-      "event", "+listen-im",
-      "--kind", "all-direct",
-      "--events", "message",
-      "--format", "ndjson",
-    ], {
+    if (!Array.isArray(args) || args.some((item) => typeof item !== "string" || !item)) {
+      throw new Error("DWS personal event wake requires fixed arguments");
+    }
+    const child = this.processSpawner(this.dwsPath, [...args, "--format", "ndjson"], {
       env: safeCodexEnvironment(this.dwsPath, this.environment),
       stdio: ["pipe", "pipe", "pipe"],
     });
     let settled = false;
     let ready = false;
+    let stopping = false;
     let acceptReady;
     let rejectReady;
     const readyPromise = new Promise((accept, reject) => {
@@ -550,18 +609,8 @@ export class DwsAdapter {
       let event;
       try { event = JSON.parse(line); } catch { return; }
       if (!event || Array.isArray(event) || typeof event !== "object") return;
-      const data = event.data && !Array.isArray(event.data) && typeof event.data === "object"
-        ? event.data
-        : {};
-      const eventId = String(
-        event.event_id ?? event.eventId ?? event.message_id ?? event.messageId ??
-        data.event_id ?? data.eventId ?? data.message_id ?? data.messageId ?? "",
-      ).trim();
-      if (!eventId || eventId.length > 500) return;
-      onEvent({
-        eventId,
-        type: String(event.event_type ?? data.event_type ?? data.type ?? event.type ?? "message"),
-      });
+      const normalized = normalizeEvent(event);
+      if (normalized) onEvent(normalized);
     });
     child.once("error", (failure) => {
       clearTimeout(timeout);
@@ -578,7 +627,7 @@ export class DwsAdapter {
         const error = new Error("DWS personal event wake exited before ready");
         error.code = "dws_event_unavailable";
         rejectReady(error);
-      } else if (ready) {
+      } else if (ready && !stopping) {
         ready = false;
         onDiagnostic(`dws_event_closed:${String(code ?? signal ?? "unknown")}`);
       }
@@ -586,6 +635,7 @@ export class DwsAdapter {
     return {
       ready: readyPromise,
       async stop() {
+        stopping = true;
         clearTimeout(timeout);
         if (!settled) {
           settled = true;
@@ -602,6 +652,59 @@ export class DwsAdapter {
         ]);
       },
     };
+  }
+
+  createPersonalEventWake(options = {}) {
+    return this._createEventWake({
+      ...options,
+      args: [
+        "event", "+listen-im",
+        "--kind", "all-direct",
+        "--events", "message",
+      ],
+      normalizeEvent: (event) => {
+        const data = event.data && !Array.isArray(event.data) && typeof event.data === "object"
+          ? event.data
+          : {};
+        const eventId = String(
+          event.event_id ?? event.eventId ?? event.message_id ?? event.messageId ??
+          data.event_id ?? data.eventId ?? data.message_id ?? data.messageId ?? "",
+        ).trim();
+        if (!eventId || eventId.length > 500) return null;
+        return {
+          eventId,
+          type: String(event.event_type ?? data.event_type ?? data.type ?? event.type ?? "message"),
+        };
+      },
+    });
+  }
+
+  createReactionEventWake({
+    chatType,
+    participantOpenDingTalkId = null,
+    conversationId = null,
+    ...options
+  } = {}) {
+    const direct = chatType === "direct";
+    const group = chatType === "group";
+    const participant = normalizeDwsIdentity(participantOpenDingTalkId);
+    const conversation = normalizeDwsIdentity(conversationId);
+    if ((!direct && !group) || (direct && !participant) || (group && !conversation)) {
+      throw new Error("DWS reaction event wake requires one exact conversation target");
+    }
+    return this._createEventWake({
+      ...options,
+      args: direct
+        ? [
+            "event", "+listen-im", "--kind", "sender",
+            "--open-dingtalk-id", participant, "--events", "reaction",
+          ]
+        : [
+            "event", "+listen-im", "--kind", "group",
+            "--chat-id", conversation, "--events", "reaction",
+          ],
+      normalizeEvent: normalizeDwsReactionEvent,
+    });
   }
 
   async run(args, options = {}) {
@@ -1111,6 +1214,42 @@ export class DwsAdapter {
       enterpriseVerified: true,
     }], { timeoutMs });
     return verified;
+  }
+
+  async setEmojiReaction({ action, conversationId, messageId, emoji }) {
+    const operation = String(action ?? "").trim();
+    const conversation = normalizeDwsIdentity(conversationId);
+    const message = normalizeDwsIdentity(messageId);
+    const reaction = String(emoji ?? "").trim();
+    if (
+      !["add", "remove"].includes(operation) ||
+      !conversation || conversation.length > 500 ||
+      !message || message.length > 500 ||
+      !reaction || reaction.length > 100
+    ) {
+      throw new Error("DWS emoji reaction request is invalid");
+    }
+    const receipt = await this.run([
+      "chat", "message", operation === "add" ? "add-emoji" : "remove-emoji",
+      "--conversation-id", conversation,
+      "--message-id", message,
+      "--emoji", reaction,
+    ], { timeout: 8_000 });
+    const success = receipt?.success === true || receipt?.result?.success === true;
+    if (!success) {
+      const error = new Error("DWS emoji reaction did not return explicit success");
+      error.code = `dws_reaction_${operation}_failed`;
+      throw error;
+    }
+    return { success: true, receipt };
+  }
+
+  async addEmojiReaction(input) {
+    return this.setEmojiReaction({ ...input, action: "add" });
+  }
+
+  async removeEmojiReaction(input) {
+    return this.setEmojiReaction({ ...input, action: "remove" });
   }
 
   async fetchBySender({ senderUserId, start, end }) {

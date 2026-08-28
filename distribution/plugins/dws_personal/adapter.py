@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -574,6 +575,89 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "bundleWaitMs": metadata.get("bundle_wait_ms"),
                 "wakeSource": metadata.get("wake_source"),
             })
+            claim = getattr(self._bridge, "claim_responsibility", None)
+            if callable(claim):
+                source_message_ids = [
+                    str(value) for value in metadata.get("source_message_ids") or []
+                    if str(value)
+                ][:32]
+                message_id = str(getattr(event, "message_id", "") or "").strip()
+                if message_id and message_id not in source_message_ids:
+                    source_message_ids.append(message_id)
+                try:
+                    result = await claim({
+                        "conversationId": conversation_id,
+                        "messageId": message_id,
+                        "sourceMessageIds": source_message_ids,
+                        "ownerRevision": owner_revision,
+                        "sendGeneration": send_generation,
+                    })
+                    if not isinstance(result, dict) or result.get("success") is not True:
+                        _shadow_evidence({
+                            "schema": "foursday-shadow-event/v1",
+                            "type": "responsibility_reaction_claim_failed",
+                            "conversationHash": _digest(conversation_id),
+                            "messageHash": _digest(message_id),
+                        })
+                except Exception:
+                    _shadow_evidence({
+                        "schema": "foursday-shadow-event/v1",
+                        "type": "responsibility_reaction_claim_failed",
+                        "conversationHash": _digest(conversation_id),
+                        "messageHash": _digest(message_id),
+                    })
+
+    async def _release_responsibility(self, conversation_id: str, message_id: str) -> None:
+        release = getattr(self._bridge, "release_responsibility", None)
+        if not callable(release) or not conversation_id or not message_id:
+            return
+        try:
+            result = await release({
+                "conversationId": conversation_id,
+                "messageId": message_id,
+            })
+            if isinstance(result, dict) and result.get("success") is True:
+                return
+        except Exception:
+            pass
+        _shadow_evidence({
+            "schema": "foursday-shadow-event/v1",
+            "type": "responsibility_reaction_release_failed",
+            "conversationHash": _digest(conversation_id),
+            "messageHash": _digest(message_id),
+        })
+
+    async def _settle_responsibility(self, conversation_id: str, message_id: str) -> None:
+        settle = getattr(self._bridge, "settle_responsibility", None)
+        if not callable(settle) or not conversation_id or not message_id:
+            return
+        try:
+            result = await settle({
+                "conversationId": conversation_id,
+                "messageId": message_id,
+            })
+            if isinstance(result, dict) and result.get("success") is True:
+                return
+        except Exception:
+            pass
+        _shadow_evidence({
+            "schema": "foursday-shadow-event/v1",
+            "type": "responsibility_reaction_settle_failed",
+            "conversationHash": _digest(conversation_id),
+            "messageHash": _digest(message_id),
+        })
+
+    async def on_processing_complete(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        conversation_id = str(getattr(event.source, "chat_id", "") or "").strip()
+        message_id = str(getattr(event, "message_id", "") or "").strip()
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._settle_responsibility(conversation_id, message_id)
+        else:
+            await self._release_responsibility(conversation_id, message_id)
 
     @staticmethod
     def _merge_queued_delivery_metadata(target: MessageEvent, latest: MessageEvent) -> None:
@@ -708,6 +792,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         classification_source = str(record.get("classificationSource") or "").strip()
         if classification_source not in {
             "codex", "emergency", "conservative_fallback", "legacy_fallback",
+            "owner_reaction",
         }:
             classification_source = "unknown"
         confidence = record.get("classificationConfidence")
@@ -840,10 +925,56 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         if key not in self._bundle_tasks:
             self._bundle_tasks[key] = asyncio.create_task(self._bundle_after(key))
 
-    async def _deliver_records(self, records: list[Dict[str, Any]]) -> None:
+    async def _deliver_records(
+        self,
+        records: list[Dict[str, Any]],
+        *,
+        partition: bool = True,
+    ) -> None:
         if not records:
             return
         records = sorted(records, key=lambda item: str(item.get("createTime") or ""))
+        if partition and len(records) > 1:
+            grouping = getattr(self._bridge, "group_responsibility", None)
+            groups = [list(range(len(records)))]
+            source = "unavailable"
+            if callable(grouping):
+                try:
+                    result = await grouping({
+                        "messages": [{
+                            "id": str(record.get("id") or ""),
+                            "content": str(record.get("content") or "")[:2_000],
+                        } for record in records[:32]],
+                    })
+                    candidate = result.get("groups") if isinstance(result, dict) else None
+                    flattened = [
+                        index for group in candidate or [] for index in group
+                        if isinstance(index, int)
+                    ]
+                    if (
+                        isinstance(candidate, list)
+                        and candidate
+                        and all(isinstance(group, list) and group for group in candidate)
+                        and flattened == list(range(len(records)))
+                    ):
+                        groups = candidate
+                        source = str(result.get("source") or "unknown")[:40]
+                except Exception:
+                    source = "conservative_fallback"
+            _shadow_evidence({
+                "schema": "foursday-shadow-event/v1",
+                "type": "responsibility_grouping",
+                "messageCount": len(records),
+                "groupCount": len(groups),
+                "source": source,
+            })
+            if len(groups) > 1:
+                for group in groups:
+                    await self._deliver_records(
+                        [records[index] for index in group],
+                        partition=False,
+                    )
+                return
         latest = records[-1]
         bundle_wait_ms = max(0, int(
             time.monotonic() * 1_000 -
@@ -1283,6 +1414,14 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                     message_id=f"suppressed-unknown-{suppressed_id}",
                 )
             if isinstance(result, dict) and result.get("staleGeneration") is True:
+                await self._release_responsibility(
+                    str(chat_id),
+                    str(
+                        version.get("messageId")
+                        or (reply_to if latest_reply_anchor or processing_root_reply_anchor else "")
+                        or ""
+                    ).strip(),
+                )
                 suppressed_id = hashlib.sha256(
                     f"{chat_id}\n{content}".encode("utf-8")
                 ).hexdigest()[:24]
@@ -1303,6 +1442,14 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 success=False,
                 error="DWS bridge success receipt did not include a message ID",
             )
+        await self._release_responsibility(
+            str(chat_id),
+            str(
+                version.get("messageId")
+                or (reply_to if latest_reply_anchor or processing_root_reply_anchor else "")
+                or ""
+            ).strip(),
+        )
         return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

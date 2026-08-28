@@ -83,10 +83,23 @@ test("architecture docs use diagrams and the minimal storage model", async () =>
   assert.doesNotMatch(design, /listener\.mjs|worker\.mjs|plan-executor\.mjs|hermes\/patches/u);
 });
 
+test("profile and product docs share the responsibility-reaction contract", async () => {
+  const profile = await text("distribution/profile/SOUL.md");
+  const product = await text("docs/产品需求文档.md");
+  const design = await text("docs/技术设计文档.md");
+  assert.match(profile, /pure notification, greeting, acknowledgement, thanks/u);
+  assert.match(profile, /return exactly `NO_REPLY`/u);
+  assert.match(product, /“好的”责任标签/u);
+  assert.match(product, /reaction，本身即为对外回复/u);
+  assert.match(design, /handled_no_reply/u);
+  assert.match(design, /operatorOpenDingTalkId/u);
+});
+
 test("public examples use the minimal FOURSDAY configuration contract", async () => {
   const example = JSON.parse(await text("deploy/foursday.example.json"));
   assert.ok(Object.keys(example).every((key) => key.startsWith("FOURSDAY_")));
   assert.equal(example.FOURSDAY_GBRAIN_WRITE_ENABLED, false);
+  assert.equal(example.FOURSDAY_DINGTALK_RESPONSIBILITY_REACTIONS, false);
   assert.match(example.FOURSDAY_DATABASE_URL, /^keychain:\/\//u);
   assert.doesNotMatch(JSON.stringify(example), /AI_EMPLOYEE_|"DATABASE_URL":/u);
 });

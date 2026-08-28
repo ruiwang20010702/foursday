@@ -83,6 +83,8 @@ class JsonLineDwsBridge:
                 "DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS",
                 "DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED",
                 "DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS",
+                "DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED",
+                "DWS_PERSONAL_RESPONSIBILITY_REACTION",
                 "DWS_PERSONAL_MEDIA_ROOT",
                 "FOURSDAY_CONTROL_FILE",
                 "FOURSDAY_NODE_PATH", "FOURSDAY_CODEX_PATH", "CODEX_HOME",
@@ -222,6 +224,22 @@ class JsonLineDwsBridge:
             "taskId": str(task_id),
             "eventId": str(event_id),
         })
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def claim_responsibility(self, payload: dict) -> dict:
+        result = await self._request("claim-responsibility", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def release_responsibility(self, payload: dict) -> dict:
+        result = await self._request("release-responsibility", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def settle_responsibility(self, payload: dict) -> dict:
+        result = await self._request("settle-responsibility", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def group_responsibility(self, payload: dict) -> dict:
+        result = await self._request("group-responsibility", payload)
         return result if isinstance(result, dict) else {"success": False}
 
     async def stop(self) -> None:

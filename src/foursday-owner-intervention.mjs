@@ -95,11 +95,17 @@ function classifierEnvironment(environment) {
   };
 }
 
-export function codexOwnerInterventionTurn({
+export function codexBoundedClassifierTurn({
   prompt,
   environment = process.env,
   timeoutMs = 30_000,
   spawnProcess = spawn,
+  parseResult = (value) => value,
+  clientInfo = {
+    name: "foursday-bounded-classifier",
+    title: "Foursday Bounded Classifier",
+    version: "1",
+  },
 } = {}) {
   const env = classifierEnvironment(environment);
   const workspace = resolve(env.FOURSDAY_FALLBACK_WORKSPACE);
@@ -171,14 +177,14 @@ export function codexOwnerInterventionTurn({
         if (turn.status !== "completed") {
           finish(new Error("owner_intervention_classifier_turn_failed"));
         } else {
-          try { finish(null, parseOwnerInterventionResult(finalText)); } catch (error) { finish(error); }
+          try { finish(null, parseResult(finalText)); } catch (error) { finish(error); }
         }
       }
     });
     (async () => {
       try {
         await request("initialize", {
-          clientInfo: { name: "foursday-owner-intervention", title: "Foursday Owner Intervention", version: "1" },
+          clientInfo,
         });
         child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`);
         const thread = await request("thread/start", { cwd: workspace, ephemeral: true });
@@ -193,6 +199,18 @@ export function codexOwnerInterventionTurn({
         finish(error);
       }
     })();
+  });
+}
+
+export function codexOwnerInterventionTurn(options = {}) {
+  return codexBoundedClassifierTurn({
+    ...options,
+    parseResult: parseOwnerInterventionResult,
+    clientInfo: {
+      name: "foursday-owner-intervention",
+      title: "Foursday Owner Intervention",
+      version: "1",
+    },
   });
 }
 

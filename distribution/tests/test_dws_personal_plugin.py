@@ -12,6 +12,7 @@ from unittest.mock import patch
 from gateway.config import PlatformConfig
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.platform_registry import PlatformEntry, platform_registry
+from gateway.platforms.base import ProcessingOutcome
 from dws_personal import register
 from dws_personal.adapter import (
     DwsPersonalAdapter,
@@ -49,6 +50,11 @@ class FakeBridge:
         self.stopped = False
         self.sent = []
         self.acked = []
+        self.claimed = []
+        self.released = []
+        self.settled = []
+        self.grouped = []
+        self.group_result = None
         self.send_result = {"success": True, "messageId": "sent-1"}
 
     async def start(self, callback):
@@ -68,6 +74,27 @@ class FakeBridge:
     async def ack_control(self, task_id, event_id):
         self.acked.append((task_id, event_id))
         return {"success": True}
+
+    async def claim_responsibility(self, payload):
+        self.claimed.append(dict(payload))
+        return {"success": True}
+
+    async def release_responsibility(self, payload):
+        self.released.append(dict(payload))
+        return {"success": True}
+
+    async def settle_responsibility(self, payload):
+        self.settled.append(dict(payload))
+        return {"success": True}
+
+    async def group_responsibility(self, payload):
+        self.grouped.append(dict(payload))
+        messages = list(payload.get("messages") or [])
+        return self.group_result or {
+            "success": True,
+            "groups": [list(range(len(messages)))],
+            "source": "test_default",
+        }
 
 
 class GenerationFenceBridge(FakeBridge):
@@ -243,6 +270,18 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(self.workspaces[0]).resolve(), Path(self.temp.name).resolve())
         self.assertIsNone(current_routed_principal_id())
         self.assertTrue(event.source.role_authorized)
+        self.assertEqual(self.bridge.claimed[-1], {
+            "conversationId": "direct-1",
+            "messageId": "message-1",
+            "sourceMessageIds": ["message-1"],
+            "ownerRevision": 0,
+            "sendGeneration": 0,
+        })
+        self.assertEqual(self.bridge.released, [])
+        self.assertEqual(self.bridge.settled[-1], {
+            "conversationId": "direct-1",
+            "messageId": "message-1",
+        })
 
     async def test_owner_message_links_become_private_ephemeral_sources(self):
         context_path = str((Path(self.temp.name) / "state-owner-link" / "work-contexts.json").resolve())
@@ -658,6 +697,11 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt.message_id, "sent-1")
         self.assertEqual(self.bridge.sent[0]["conversationId"], "trusted-group")
         self.assertEqual(self.bridge.sent[0]["content"], "已经核对完成。")
+        self.assertEqual(self.bridge.claimed[-1]["messageId"], "message-4")
+        self.assertEqual(self.bridge.released[-1], {
+            "conversationId": "trusted-group",
+            "messageId": "message-4",
+        })
         self.assertTrue(self.events[0].source.role_authorized)
 
         class AuthorizationProbe(GatewayAuthorizationMixin):
@@ -674,6 +718,28 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "DWS_PERSONAL_ALLOWED_USERS": "",
         }):
             self.assertTrue(probe._is_user_authorized(self.events[0].source))
+
+    async def test_failed_processing_releases_responsibility_without_sending(self):
+        await self.bridge.emit({
+            "id": "message-failed",
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "direct-failed",
+            "content": "请处理这个任务",
+            "createTime": "2026-08-18T14:00:00+08:00",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        })
+        await asyncio.sleep(0)
+        event = self.events[-1]
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        self.assertEqual(self.bridge.released[-1], {
+            "conversationId": "direct-failed",
+            "messageId": "message-failed",
+        })
+        self.assertEqual(self.bridge.sent, [])
 
     async def test_project_memory_is_private_context_not_a_second_message(self):
         await self.adapter.disconnect()
@@ -758,6 +824,61 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             self.events[0].metadata["source_message_ids"],
             ["bundle-1", "bundle-2"],
         )
+
+    async def test_codex_grouping_splits_independent_tasks_and_claims_each_anchor(self):
+        await self.adapter.disconnect()
+        self.bridge = FakeBridge()
+        self.bridge.group_result = {
+            "success": True,
+            "groups": [[0], [1]],
+            "source": "codex",
+            "confidence": 0.99,
+        }
+        self.adapter = DwsPersonalAdapter(
+            PlatformConfig(enabled=True, extra={
+                "allowed_users": ["trusted-user"],
+                "bundle_quiet_ms": 20,
+                "bundle_max_wait_ms": 2_000,
+            }),
+            bridge=self.bridge,
+            router=self.router,
+        )
+        self.events = []
+        self.adapter.set_message_handler(lambda event: self._capture(event))
+        self.assertTrue(await self.adapter.connect())
+        base = {
+            "senderUserId": "trusted-user",
+            "senderName": "娜娜老师",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "direct-two-tasks",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+        }
+        await self.bridge.emit({
+            **base,
+            "id": "task-a",
+            "content": "请核对单词2.2试题数量",
+            "createTime": "2026-08-18T14:00:00+08:00",
+        })
+        await self.bridge.emit({
+            **base,
+            "id": "task-b",
+            "content": "另外请整理Foursday发布说明",
+            "createTime": "2026-08-18T14:00:01+08:00",
+        })
+        for _ in range(100):
+            if len(self.events) == 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual([event.text for event in self.events], [
+            "请核对单词2.2试题数量",
+            "另外请整理Foursday发布说明",
+        ])
+        self.assertEqual([event.message_id for event in self.events], ["task-a", "task-b"])
+        self.assertEqual([claim["messageId"] for claim in self.bridge.claimed[-2:]], [
+            "task-a", "task-b",
+        ])
 
     async def test_file_message_and_followup_text_share_one_context_attachment(self):
         await self.adapter.disconnect()
@@ -982,6 +1103,14 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             [payload["content"] for payload in self.bridge.delivered],
             ["最终回复"],
         )
+        self.assertIn({
+            "conversationId": "direct-generation-queue",
+            "messageId": "generation-1",
+        }, self.bridge.released)
+        self.assertIn({
+            "conversationId": "direct-generation-queue",
+            "messageId": "generation-3",
+        }, self.bridge.released)
 
     async def test_only_consumed_latest_or_processing_root_can_adopt_newer_generation(self):
         bridge = GenerationFenceBridge()

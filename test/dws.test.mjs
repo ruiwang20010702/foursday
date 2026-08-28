@@ -16,6 +16,7 @@ import {
   extractDwsMediaDescriptors,
   isAutomatedSelfMessage,
   mergeDwsMessageResourceDetails,
+  normalizeDwsReactionEvent,
 } from "../src/dws.mjs";
 
 test("DWS extracts bounded media IDs without treating arbitrary text as a file", () => {
@@ -1007,6 +1008,161 @@ test("DWS personal event wake waits for ready and forwards only valid event sign
   ]);
   assert.equal(Object.hasOwn(invocation[2].env, "FOURSDAY_DATA_KEY"), false);
   await wake.stop();
+});
+
+test("DWS reaction event wake preserves stable actor, target, action and time", async () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = (signal) => {
+    child.signalCode = signal;
+    queueMicrotask(() => child.emit("close", 0, signal));
+    return true;
+  };
+  let invocation;
+  const events = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    processSpawner: (...args) => { invocation = args; return child; },
+  });
+  const wake = dws.createReactionEventWake({
+    chatType: "group",
+    conversationId: "cid-1",
+    onEvent: (event) => events.push(event),
+    readyTimeoutMs: 1_000,
+  });
+  child.stderr.write("[event] ready event_key=user_im_message_reaction_group bus_pid=1 subscribe_id=test\n");
+  await wake.ready;
+  child.stdout.write(`${JSON.stringify({
+    type: "user_im_message_reaction_group",
+    event_id: "reaction-event-1",
+    conversation_id: "cid-1",
+    message_id: "msg-1",
+    operator_open_dingtalk_id: "open-owner",
+    sender_open_dingtalk_id: "open-requester",
+    reaction_name: "OK",
+    operation_type: "reply",
+    operation_time: "2026-08-28T10:18:30+08:00",
+  })}\n`);
+  child.stdout.write(`${JSON.stringify({
+    type: "user_im_message_reaction_group",
+    event_id: "missing-actor",
+    conversation_id: "cid-1",
+    message_id: "msg-1",
+    reaction_name: "OK",
+    operation_type: "reply",
+    operation_time: "2026-08-28T10:18:30+08:00",
+  })}\n`);
+  await new Promise((accept) => setImmediate(accept));
+  assert.deepEqual(events, [{
+    eventId: "reaction-event-1",
+    type: "user_im_message_reaction_group",
+    conversationId: "cid-1",
+    messageId: "msg-1",
+    operatorOpenDingTalkId: "open-owner",
+    senderOpenDingTalkId: "open-requester",
+    reactionName: "OK",
+    action: "added",
+    occurredAt: "2026-08-28T02:18:30.000Z",
+  }]);
+  assert.deepEqual(invocation[1], [
+    "event", "+listen-im", "--kind", "group", "--chat-id", "cid-1",
+    "--events", "reaction", "--format", "ndjson",
+  ]);
+  await wake.stop();
+});
+
+test("DWS direct reaction wake binds one stable participant OpenID", async () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = (signal) => {
+    child.signalCode = signal;
+    queueMicrotask(() => child.emit("close", 0, signal));
+    return true;
+  };
+  let invocation;
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    processSpawner: (...args) => { invocation = args; return child; },
+  });
+  const wake = dws.createReactionEventWake({
+    chatType: "direct",
+    participantOpenDingTalkId: "open-requester",
+    onEvent: () => {},
+    readyTimeoutMs: 1_000,
+  });
+  child.stderr.write("[event] ready event_key=user_im_message_reaction_o2o bus_pid=1 subscribe_id=test\n");
+  await wake.ready;
+  assert.deepEqual(invocation[1], [
+    "event", "+listen-im", "--kind", "sender",
+    "--open-dingtalk-id", "open-requester", "--events", "reaction",
+    "--format", "ndjson",
+  ]);
+  await wake.stop();
+});
+
+test("DWS reaction normalization rejects snapshots and accepts removal events", () => {
+  assert.equal(normalizeDwsReactionEvent({
+    reactions: { counts: [{ emoji: "OK", count: 1 }] },
+  }), null);
+  assert.deepEqual(normalizeDwsReactionEvent({
+    event_type: "user_im_message_reaction_o2o",
+    data: {
+      event_id: "reaction-event-2",
+      conversation_id: "cid-2",
+      message_id: "msg-2",
+      operator_open_dingtalk_id: "open-owner",
+      sender_open_dingtalk_id: "open-requester",
+      reaction_name: "收到",
+      operation_type: "recall",
+      timestamp: 1787883510000,
+    },
+  }), {
+    eventId: "reaction-event-2",
+    type: "user_im_message_reaction_o2o",
+    conversationId: "cid-2",
+    messageId: "msg-2",
+    operatorOpenDingTalkId: "open-owner",
+    senderOpenDingTalkId: "open-requester",
+    reactionName: "收到",
+    action: "removed",
+    occurredAt: "2026-08-28T02:18:30.000Z",
+  });
+});
+
+test("DWS emoji reaction writes require explicit success and exact target", async () => {
+  const calls = [];
+  const dws = new DwsAdapter({
+    dwsPath: "/safe/bin/dws",
+    commandRunner: async (_path, args) => {
+      calls.push(args);
+      return { stdout: JSON.stringify({ success: true }) };
+    },
+  });
+  assert.deepEqual(await dws.addEmojiReaction({
+    conversationId: "cid-1",
+    messageId: "msg-1",
+    emoji: "OK",
+  }), { success: true, receipt: { success: true } });
+  assert.deepEqual(await dws.removeEmojiReaction({
+    conversationId: "cid-1",
+    messageId: "msg-1",
+    emoji: "OK",
+  }), { success: true, receipt: { success: true } });
+  assert.deepEqual(calls, [[
+    "chat", "message", "add-emoji", "--conversation-id", "cid-1",
+    "--message-id", "msg-1", "--emoji", "OK", "--format", "json",
+  ], [
+    "chat", "message", "remove-emoji", "--conversation-id", "cid-1",
+    "--message-id", "msg-1", "--emoji", "OK", "--format", "json",
+  ]]);
 });
 
 test("人工回复按当前账号发送记录和会话匹配", async () => {

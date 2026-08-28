@@ -370,6 +370,12 @@ export async function buildFoursdayNativeProfileConfiguration({
     ),
     DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED: "true",
     DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS: "30000",
+    DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED: scalar(
+      profileProductionConfig, "FOURSDAY_DINGTALK_RESPONSIBILITY_REACTIONS", false,
+    ),
+    DWS_PERSONAL_RESPONSIBILITY_REACTION: scalar(
+      profileProductionConfig, "FOURSDAY_DINGTALK_RESPONSIBILITY_REACTION", "OK",
+    ),
     DWS_PERSONAL_SEND_ENABLED: "false",
     PATH: [join(layout.profileDirectory, "host", "bin"), dirname(codex), dirname(node),
       "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),

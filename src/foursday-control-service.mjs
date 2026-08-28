@@ -247,6 +247,19 @@ export class FoursdayControlService {
         eventWakeEnabled: gateway.eventWakeEnabled === true,
         eventWakeReady: gateway.eventWakeReady === true,
         eventWakeDegraded: gateway.eventWakeDegraded === true,
+        responsibilityReactionsEnabled: gateway.responsibilityReactionsEnabled === true,
+        reactionWakeReadyCount: Number.isSafeInteger(gateway.reactionWakeReadyCount)
+          ? gateway.reactionWakeReadyCount
+          : 0,
+        reactionWakeErrorCount: Number.isSafeInteger(gateway.reactionWakeErrorCount)
+          ? gateway.reactionWakeErrorCount
+          : 0,
+        reactionWakeDegraded: gateway.reactionWakeDegraded === true,
+        reactionControlHealthy: gateway.reactionControlHealthy !== false,
+        reactionWakeLastErrorCode: gateway.reactionWakeLastErrorCode ?? null,
+        responsibilityReactionCount: Number.isSafeInteger(gateway.responsibilityReactionCount)
+          ? gateway.responsibilityReactionCount
+          : 0,
         lastWakeSource: gateway.lastWakeSource ?? null,
         lastDetectionLatencyMs: Number.isFinite(gateway.lastDetectionLatencyMs)
           ? gateway.lastDetectionLatencyMs

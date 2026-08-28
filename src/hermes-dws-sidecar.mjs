@@ -19,6 +19,7 @@ import {
   ownerInterventionCandidate,
   resolveOwnerIntervention,
 } from "./foursday-owner-intervention.mjs";
+import { resolveResponsibilityGroups } from "./foursday-message-groups.mjs";
 
 function csv(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))];
@@ -179,6 +180,7 @@ async function readBackSentMessage({ dws, route, conversationId, evidence }) {
 function emptyState() {
   return {
     lastUsers: {}, lastGroups: {}, lastEnterpriseAt: null, recentMessageIds: [],
+    recentReactionEventIds: [],
     enterpriseIdentityQueue: {},
     enterpriseIdentityRejectedIds: [],
     enterpriseIdentityRejections: { count: 0, lastAt: null, lastErrorCode: null },
@@ -187,6 +189,7 @@ function emptyState() {
     sendLedger: {}, lastCheckAt: null, lastFullSuccessAt: null, lastErrorCount: 0,
     checkLifecycle: normalizeDwsCheckLifecycle(),
     sendBlocked: false, sendBlockReason: null, sendBlockedAt: null,
+    responsibilityReactions: {}, reactionAutomationOps: [],
     manualReplyProbe: { ready: null, errorCode: null, updatedAt: null },
     deferredReply: {
       waiting: false, attemptCount: 0, errorCode: null,
@@ -195,11 +198,93 @@ function emptyState() {
     lastWakeSource: null,
     lastDetection: null,
     eventWake: { enabled: false, ready: false, errorCode: null, updatedAt: null },
+    reactionWake: {
+      enabled: false, readyCount: 0, errorCount: 0,
+      lastErrorCode: null, updatedAt: null,
+    },
   };
 }
 
 function enterpriseIdentityRetryKey(messageId) {
   return createHash("sha256").update(String(messageId)).digest("hex");
+}
+
+function responsibilityReactionKey(conversationId, messageId) {
+  return createHash("sha256").update(`${conversationId}\0${messageId}`).digest("hex");
+}
+
+function boundedReactionValue(value, maximum = 500) {
+  const output = String(value ?? "").trim();
+  return output && output.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(output)
+    ? output
+    : null;
+}
+
+function normalizeResponsibilityReactionEntry(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const conversationId = boundedReactionValue(value.conversationId);
+  const messageId = boundedReactionValue(value.messageId);
+  const reactionName = boundedReactionValue(value.reactionName, 100);
+  const sourceMessageIds = Array.isArray(value.sourceMessageIds)
+    ? [...new Set(value.sourceMessageIds.map((item) => boundedReactionValue(item)).filter(Boolean))]
+      .slice(0, 32)
+    : [];
+  const ownerRevision = Number(value.ownerRevision);
+  const sendGeneration = Number(value.sendGeneration);
+  const status = String(value.status ?? "");
+  const claimedAt = epoch(value.claimedAt);
+  const clearedAt = value.clearedAt == null ? null : epoch(value.clearedAt);
+  if (
+    !conversationId || !messageId || !reactionName ||
+    !sourceMessageIds.includes(messageId) ||
+    !Number.isSafeInteger(ownerRevision) || ownerRevision < 0 ||
+    !Number.isSafeInteger(sendGeneration) || sendGeneration < 0 ||
+    ![
+      "claiming", "claimed", "handled_no_reply",
+      "shadow", "clearing", "cleared", "unavailable",
+    ].includes(status) ||
+    claimedAt == null || (value.clearedAt != null && clearedAt == null)
+  ) return null;
+  return {
+    conversationId,
+    messageId,
+    sourceMessageIds,
+    reactionName,
+    ownerRevision,
+    sendGeneration,
+    status,
+    claimedAt: new Date(claimedAt).toISOString(),
+    clearedAt: clearedAt == null ? null : new Date(clearedAt).toISOString(),
+  };
+}
+
+function normalizeReactionAutomationOp(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const id = boundedReactionValue(value.id, 64);
+  const conversationId = boundedReactionValue(value.conversationId);
+  const messageId = boundedReactionValue(value.messageId);
+  const reactionName = boundedReactionValue(value.reactionName, 100);
+  const action = String(value.action ?? "");
+  const status = String(value.status ?? "");
+  const startedAt = epoch(value.startedAt);
+  const expiresAt = epoch(value.expiresAt);
+  if (
+    !/^[a-f0-9]{64}$/u.test(id ?? "") ||
+    !conversationId || !messageId || !reactionName ||
+    !["added", "removed"].includes(action) ||
+    !["intent", "completed", "unknown", "failed"].includes(status) ||
+    startedAt == null || expiresAt == null || expiresAt < startedAt
+  ) return null;
+  return {
+    id,
+    action,
+    conversationId,
+    messageId,
+    reactionName,
+    startedAt: new Date(startedAt).toISOString(),
+    expiresAt: new Date(expiresAt).toISOString(),
+    status,
+  };
 }
 
 function normalizeEnterpriseRetryMessage(value) {
@@ -323,6 +408,9 @@ async function loadState(path) {
       recentMessageIds: Array.isArray(parsed?.recentMessageIds)
         ? parsed.recentMessageIds.map(String).filter(Boolean).slice(-5_000)
         : [],
+      recentReactionEventIds: Array.isArray(parsed?.recentReactionEventIds)
+        ? parsed.recentReactionEventIds.map(String).filter(Boolean).slice(-5_000)
+        : [],
       recipients: parsed?.recipients && typeof parsed.recipients === "object"
         ? parsed.recipients
         : {},
@@ -339,6 +427,19 @@ async function loadState(path) {
       sendLedger: parsed?.sendLedger && typeof parsed.sendLedger === "object"
         ? Object.fromEntries(Object.entries(parsed.sendLedger).slice(-1_000))
         : {},
+      responsibilityReactions: parsed?.responsibilityReactions &&
+          typeof parsed.responsibilityReactions === "object" &&
+          !Array.isArray(parsed.responsibilityReactions)
+        ? Object.fromEntries(Object.entries(parsed.responsibilityReactions)
+          .map(([key, value]) => [key, normalizeResponsibilityReactionEntry(value)])
+          .filter(([key, value]) =>
+            value && key === responsibilityReactionKey(value.conversationId, value.messageId)
+          )
+          .slice(-1_000))
+        : {},
+      reactionAutomationOps: Array.isArray(parsed?.reactionAutomationOps)
+        ? parsed.reactionAutomationOps.map(normalizeReactionAutomationOp).filter(Boolean).slice(-200)
+        : [],
       sendBlocked: parsed?.sendBlocked === true,
       sendBlockReason: typeof parsed?.sendBlockReason === "string"
         ? parsed.sendBlockReason.slice(0, 80)
@@ -389,6 +490,26 @@ async function loadState(path) {
       eventWake: parsed?.eventWake && typeof parsed.eventWake === "object"
         ? parsed.eventWake
         : { enabled: false, ready: false, errorCode: null, updatedAt: null },
+      reactionWake: parsed?.reactionWake && typeof parsed.reactionWake === "object"
+        ? {
+            enabled: parsed.reactionWake.enabled === true,
+            readyCount: Number.isSafeInteger(parsed.reactionWake.readyCount)
+              ? Math.max(0, parsed.reactionWake.readyCount)
+              : 0,
+            errorCount: Number.isSafeInteger(parsed.reactionWake.errorCount)
+              ? Math.max(0, parsed.reactionWake.errorCount)
+              : 0,
+            lastErrorCode: typeof parsed.reactionWake.lastErrorCode === "string"
+              ? parsed.reactionWake.lastErrorCode.slice(0, 80)
+              : null,
+            updatedAt: typeof parsed.reactionWake.updatedAt === "string"
+              ? parsed.reactionWake.updatedAt
+              : null,
+          }
+        : {
+            enabled: false, readyCount: 0, errorCount: 0,
+            lastErrorCode: null, updatedAt: null,
+          },
     };
   } catch (error) {
     if (error?.code === "ENOENT") return emptyState();
@@ -419,6 +540,15 @@ export function sidecarConfig(environment = process.env) {
   const controlFile = String(environment.FOURSDAY_CONTROL_FILE ?? "").trim();
   if (controlFile && !isAbsolute(controlFile)) {
     throw new Error("FOURSDAY_CONTROL_FILE must be absolute");
+  }
+  const responsibilityReactionName = String(
+    environment.DWS_PERSONAL_RESPONSIBILITY_REACTION ?? "OK",
+  ).trim();
+  if (
+    !responsibilityReactionName || responsibilityReactionName.length > 100 ||
+    /[\u0000-\u001f\u007f]/u.test(responsibilityReactionName)
+  ) {
+    throw new Error("DWS responsibility reaction name is invalid");
   }
   return {
     dwsPath: resolve(dwsPath),
@@ -497,6 +627,10 @@ export function sidecarConfig(environment = process.env) {
       5_000,
       60_000,
     ),
+    responsibilityReactionsEnabled: String(
+      environment.DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED ?? "false",
+    ).toLowerCase() === "true",
+    responsibilityReactionName,
     sendEnabled: String(environment.DWS_PERSONAL_SEND_ENABLED ?? "false").toLowerCase() === "true",
   };
 }
@@ -513,6 +647,7 @@ export async function createSidecarRuntime({
     ? new FoursdayControlStore({ path: config.controlFile })
     : null,
   semanticInterventionClassifier = resolveOwnerIntervention,
+  responsibilityGroupingResolver = resolveResponsibilityGroups,
   classifierEnvironment = process.env,
 } = {}) {
   if (config.outboundQuietMs > config.outboundMaxQuietMs) {
@@ -556,6 +691,7 @@ export async function createSidecarRuntime({
     1_000,
   );
   const seen = new Set(state.recentMessageIds);
+  const seenReactionEvents = new Set(state.recentReactionEventIds);
   const enterpriseIdentityQueue = new Map(Object.entries(state.enterpriseIdentityQueue));
   while (enterpriseIdentityQueue.size > enterpriseIdentityRetryCapacity) {
     enterpriseIdentityQueue.delete(enterpriseIdentityQueue.keys().next().value);
@@ -570,6 +706,8 @@ export async function createSidecarRuntime({
     normalizedControlState(value),
   ]));
   const sendLedger = new Map(Object.entries(state.sendLedger));
+  const responsibilityReactions = new Map(Object.entries(state.responsibilityReactions));
+  let reactionAutomationOps = [...state.reactionAutomationOps];
   const automatedSendEvidence = [...sendLedger.values()]
     .filter((entry) => entry && typeof entry === "object")
     .map((entry) => ({
@@ -589,6 +727,10 @@ export async function createSidecarRuntime({
   };
   const watchers = [];
   let eventWakeController = null;
+  const reactionWakeControllers = new Map();
+  const reactionWakeReady = new Set();
+  const reactionWakeFailed = new Set();
+  let ownerOpenDingTalkId = null;
   let fallbackTimer = null;
   let debounceTimer = null;
   let running = false;
@@ -597,6 +739,11 @@ export async function createSidecarRuntime({
   let stateWrite = Promise.resolve();
   const syncEnterpriseIdentityQueue = () => {
     state.enterpriseIdentityQueue = Object.fromEntries(enterpriseIdentityQueue);
+  };
+  const syncResponsibilityState = () => {
+    state.responsibilityReactions = Object.fromEntries(responsibilityReactions);
+    state.reactionAutomationOps = reactionAutomationOps.slice(-200);
+    state.recentReactionEventIds = [...seenReactionEvents].slice(-5_000);
   };
   const identityRetryDelayMs = (attempts) => Math.min(
     5 * 60_000,
@@ -720,6 +867,375 @@ export async function createSidecarRuntime({
     const current = stateWrite.catch(() => {}).then(() => saveState(config.stateFile, snapshot));
     stateWrite = current;
     return current;
+  };
+  let handleReactionEvent = async () => {};
+  const reactionTargetKey = ({ chatType, conversationId, participantOpenDingTalkId }) =>
+    chatType === "group"
+      ? `group:${conversationId}`
+      : `direct:${participantOpenDingTalkId}`;
+  const updateReactionWakeState = () => {
+    state.reactionWake = {
+      enabled: config.responsibilityReactionsEnabled === true,
+      readyCount: reactionWakeReady.size,
+      errorCount: reactionWakeFailed.size,
+      lastErrorCode: state.reactionWake?.lastErrorCode ?? null,
+      updatedAt: now().toISOString(),
+    };
+  };
+  const ensureReactionWake = async ({
+    chatType,
+    conversationId,
+    participantUserId = null,
+    participantOpenDingTalkId = null,
+    participantName = null,
+  }) => {
+    if (
+      config.responsibilityReactionsEnabled !== true ||
+      typeof dws.createReactionEventWake !== "function"
+    ) return false;
+    let openId = String(participantOpenDingTalkId ?? "").trim() || null;
+    const targetFailureKey = `target:${hash(participantUserId ?? participantName ?? "unknown")}`;
+    if (chatType === "direct" && !openId && typeof dws.resolveUserOpenDingTalkId === "function") {
+      try {
+        openId = await dws.resolveUserOpenDingTalkId(participantUserId, participantName, {
+          allowPolicyFallback: false,
+        });
+        reactionWakeFailed.delete(targetFailureKey);
+      } catch (error) {
+        reactionWakeFailed.add(targetFailureKey);
+        state.reactionWake.lastErrorCode = diagnosticCode(error, "reaction_target_unavailable");
+        updateReactionWakeState();
+        await persistState();
+        return false;
+      }
+    }
+    if (openId) reactionWakeFailed.delete(targetFailureKey);
+    const target = {
+      chatType,
+      conversationId: String(conversationId ?? "").trim(),
+      participantOpenDingTalkId: openId,
+    };
+    const key = reactionTargetKey(target);
+    if (reactionWakeReady.has(key)) return true;
+    if (reactionWakeControllers.has(key)) {
+      try {
+        await reactionWakeControllers.get(key).ready;
+        return reactionWakeReady.has(key);
+      } catch {
+        return false;
+      }
+    }
+    if (reactionWakeControllers.size >= 128) {
+      reactionWakeFailed.add(key);
+      state.reactionWake.lastErrorCode = "reaction_watcher_capacity_exceeded";
+      updateReactionWakeState();
+      await persistState();
+      diagnose("dws_reaction_event_unavailable:reaction_watcher_capacity_exceeded");
+      return false;
+    }
+    let controller;
+    try {
+      controller = dws.createReactionEventWake({
+        ...target,
+        readyTimeoutMs: 8_000,
+        onEvent: (event) => {
+          Promise.resolve(handleReactionEvent(event)).catch((error) => {
+            diagnose(`dws_reaction_event_failed:${diagnosticCode(error, "reaction_event_failed")}`);
+          });
+        },
+        onDiagnostic: (value) => {
+          diagnose(value);
+          if (String(value).startsWith("dws_event_closed:")) {
+            reactionWakeReady.delete(key);
+            reactionWakeFailed.add(key);
+            state.reactionWake.lastErrorCode = "reaction_event_closed";
+            updateReactionWakeState();
+            persistState().catch(() => {});
+          }
+        },
+      });
+      reactionWakeControllers.set(key, controller);
+      updateReactionWakeState();
+      await persistState();
+      await controller.ready;
+      reactionWakeReady.add(key);
+      reactionWakeFailed.delete(key);
+      state.reactionWake.lastErrorCode = null;
+      updateReactionWakeState();
+      await persistState();
+      return true;
+    } catch (error) {
+      reactionWakeFailed.add(key);
+      state.reactionWake.lastErrorCode = diagnosticCode(error, "reaction_event_unavailable");
+      updateReactionWakeState();
+      await persistState();
+      diagnose(`dws_reaction_event_unavailable:${state.reactionWake.lastErrorCode}`);
+      return false;
+    }
+  };
+  const pruneReactionAutomationOps = (at = clock()) => {
+    reactionAutomationOps = reactionAutomationOps.filter((entry) =>
+      (epoch(entry?.expiresAt) ?? 0) > at
+    ).slice(-200);
+    syncResponsibilityState();
+  };
+  const beginReactionAutomation = ({ action, conversationId, messageId, reactionName }) => {
+    pruneReactionAutomationOps();
+    const startedAt = now().toISOString();
+    const entry = {
+      id: createHash("sha256").update(
+        `${action}\0${conversationId}\0${messageId}\0${reactionName}\0${startedAt}`,
+      ).digest("hex"),
+      action,
+      conversationId,
+      messageId,
+      reactionName,
+      startedAt,
+      expiresAt: new Date(clock() + 30_000).toISOString(),
+      status: "intent",
+    };
+    reactionAutomationOps.push(entry);
+    syncResponsibilityState();
+    return entry;
+  };
+  const consumeAutomatedReactionEvent = (event) => {
+    pruneReactionAutomationOps(epoch(event?.occurredAt) ?? clock());
+    const index = reactionAutomationOps.findIndex((entry) =>
+      entry.conversationId === event.conversationId &&
+      entry.messageId === event.messageId &&
+      entry.reactionName === event.reactionName &&
+      entry.action === event.action
+    );
+    if (index < 0) return false;
+    reactionAutomationOps.splice(index, 1);
+    syncResponsibilityState();
+    return true;
+  };
+  const writeResponsibilityReaction = async ({ action, entry }) => {
+    if (config.responsibilityReactionsEnabled !== true || config.sendEnabled !== true) {
+      return { success: true, sendDisabled: true };
+    }
+    const method = action === "added" ? dws.addEmojiReaction : dws.removeEmojiReaction;
+    if (typeof method !== "function") {
+      return { success: false, error: "dws_reaction_write_unavailable" };
+    }
+    const operation = beginReactionAutomation({
+      action,
+      conversationId: entry.conversationId,
+      messageId: entry.messageId,
+      reactionName: entry.reactionName,
+    });
+    await persistState();
+    try {
+      const result = await method.call(dws, {
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        emoji: entry.reactionName,
+      });
+      operation.status = result?.success === true ? "completed" : "failed";
+      syncResponsibilityState();
+      await persistState();
+      return result?.success === true
+        ? { success: true }
+        : { success: false, error: "dws_reaction_write_failed" };
+    } catch (error) {
+      operation.status = "unknown";
+      syncResponsibilityState();
+      await persistState();
+      diagnose(`dws_reaction_write_failed:${diagnosticCode(error, "reaction_write_failed")}`);
+      return { success: false, error: diagnosticCode(error, "reaction_write_failed") };
+    }
+  };
+  const claimResponsibility = async (payload) => {
+    if (config.responsibilityReactionsEnabled !== true) {
+      return { success: true, disabled: true };
+    }
+    const conversationId = String(payload?.conversationId ?? "").trim();
+    const messageId = String(payload?.messageId ?? "").trim();
+    const sourceMessageIds = Array.isArray(payload?.sourceMessageIds)
+      ? [...new Set(payload.sourceMessageIds.map(String).filter(Boolean))].slice(0, 32)
+      : [];
+    const ownerRevision = Number(payload?.ownerRevision);
+    const sendGeneration = Number(payload?.sendGeneration);
+    const active = activeConversations.get(conversationId);
+    if (
+      !active || !conversationId || conversationId.length > 500 ||
+      !messageId || messageId.length > 500 ||
+      !sourceMessageIds.includes(messageId) ||
+      !Number.isSafeInteger(ownerRevision) || ownerRevision < 0 ||
+      !Number.isSafeInteger(sendGeneration) || sendGeneration < 0 ||
+      ownerRevision !== Number(active.ownerRevision ?? 0) ||
+      sendGeneration !== Number(active.sendGeneration ?? 0)
+    ) return { success: false, error: "responsibility_claim_stale" };
+    if (!await resolveOwnerOpenDingTalkId()) {
+      return { success: false, error: "reaction_owner_identity_unavailable" };
+    }
+    const targetKey = reactionTargetKey({
+      chatType: active.chatType,
+      conversationId,
+      participantOpenDingTalkId: active.participantOpenDingTalkId,
+    });
+    if (
+      config.responsibilityReactionsEnabled === true &&
+      !reactionWakeReady.has(targetKey) &&
+      !await ensureReactionWake({
+        chatType: active.chatType,
+        conversationId,
+        participantUserId: active.participantUserId,
+        participantOpenDingTalkId: active.participantOpenDingTalkId,
+      })
+    ) {
+      return { success: false, error: "reaction_event_not_ready" };
+    }
+    const key = responsibilityReactionKey(conversationId, messageId);
+    const existing = responsibilityReactions.get(key);
+    if (
+      existing &&
+      existing.ownerRevision === ownerRevision &&
+      existing.sendGeneration === sendGeneration
+    ) {
+      return ["claimed", "handled_no_reply", "shadow"].includes(existing.status)
+        ? {
+            success: true,
+            idempotent: true,
+            ...(existing.status === "shadow" ? { sendDisabled: true } : {}),
+          }
+        : {
+            success: false,
+            idempotent: true,
+            error: existing.status === "unavailable"
+              ? "responsibility_reaction_unavailable"
+              : "responsibility_reaction_in_progress",
+          };
+    }
+    for (const previous of [...responsibilityReactions.values()]) {
+      if (
+        previous.conversationId === conversationId &&
+        previous.messageId !== messageId &&
+        ["claiming", "claimed", "clearing"].includes(previous.status) &&
+        Number(previous.sendGeneration) < sendGeneration
+      ) {
+        await releaseResponsibility({
+          conversationId: previous.conversationId,
+          messageId: previous.messageId,
+        });
+      }
+    }
+    const entry = {
+      conversationId,
+      messageId,
+      sourceMessageIds,
+      reactionName: config.responsibilityReactionName,
+      ownerRevision,
+      sendGeneration,
+      status: "claiming",
+      claimedAt: now().toISOString(),
+      clearedAt: null,
+    };
+    responsibilityReactions.set(key, entry);
+    while (responsibilityReactions.size > 1_000) {
+      responsibilityReactions.delete(responsibilityReactions.keys().next().value);
+    }
+    syncResponsibilityState();
+    await persistState();
+    const result = await writeResponsibilityReaction({ action: "added", entry });
+    entry.status = result.sendDisabled === true
+      ? "shadow"
+      : result.success === true
+        ? "claimed"
+        : "unavailable";
+    syncResponsibilityState();
+    await persistState();
+    return result;
+  };
+  const releaseResponsibility = async (payload) => {
+    if (config.responsibilityReactionsEnabled !== true) {
+      return { success: true, disabled: true };
+    }
+    const conversationId = String(payload?.conversationId ?? "").trim();
+    const messageId = String(payload?.messageId ?? "").trim();
+    const key = responsibilityReactionKey(conversationId, messageId);
+    const entry = responsibilityReactions.get(key);
+    if (!entry || entry.status === "cleared") return { success: true, idempotent: true };
+    if (!["claimed", "handled_no_reply"].includes(entry.status)) {
+      entry.status = "cleared";
+      entry.clearedAt = now().toISOString();
+      syncResponsibilityState();
+      await persistState();
+      return { success: true, idempotent: true };
+    }
+    entry.status = "clearing";
+    syncResponsibilityState();
+    await persistState();
+    const result = await writeResponsibilityReaction({ action: "removed", entry });
+    entry.status = result.success === true ? "cleared" : "claimed";
+    if (result.success === true) entry.clearedAt = now().toISOString();
+    syncResponsibilityState();
+    await persistState();
+    return result;
+  };
+  const settleResponsibility = async (payload) => {
+    if (config.responsibilityReactionsEnabled !== true) {
+      return { success: true, disabled: true };
+    }
+    const conversationId = String(payload?.conversationId ?? "").trim();
+    const messageId = String(payload?.messageId ?? "").trim();
+    const entry = responsibilityReactions.get(
+      responsibilityReactionKey(conversationId, messageId),
+    );
+    if (!entry || entry.status === "cleared") return { success: true, idempotent: true };
+    if (entry.status === "shadow") return { success: true, sendDisabled: true, idempotent: true };
+    if (entry.status === "claimed") {
+      entry.status = "handled_no_reply";
+      syncResponsibilityState();
+      await persistState();
+      return { success: true };
+    }
+    return { success: false, error: "responsibility_reaction_not_settleable" };
+  };
+  const groupResponsibilityMessages = async (payload) => {
+    const messages = Array.isArray(payload?.messages)
+      ? payload.messages.slice(0, 32).map((message) => ({
+          id: boundedReactionValue(message?.id),
+          content: String(message?.content ?? "").slice(0, 2_000),
+        }))
+      : [];
+    if (
+      messages.length < 1 ||
+      messages.some((message) => !message.id) ||
+      new Set(messages.map((message) => message.id)).size !== messages.length
+    ) return { success: false, error: "responsibility_grouping_invalid" };
+    if (config.responsibilityReactionsEnabled !== true || messages.length === 1) {
+      return {
+        success: true,
+        groups: [messages.map((_message, index) => index)],
+        source: messages.length === 1 ? "single" : "disabled",
+      };
+    }
+    const result = await responsibilityGroupingResolver(messages, {
+      environment: classifierEnvironment,
+      timeoutMs: Math.min(20_000, config.semanticInterventionTimeoutMs),
+    });
+    return {
+      success: true,
+      groups: result.groups,
+      source: result.source,
+      confidence: result.confidence,
+    };
+  };
+  const releaseConversationResponsibilities = async (conversationId, messageId = null) => {
+    for (const entry of [...responsibilityReactions.values()]) {
+      if (
+        entry.conversationId === conversationId &&
+        (!messageId || entry.sourceMessageIds.includes(messageId)) &&
+        ["claiming", "claimed", "handled_no_reply", "clearing"].includes(entry.status)
+      ) {
+        await releaseResponsibility({
+          conversationId: entry.conversationId,
+          messageId: entry.messageId,
+        });
+      }
+    }
   };
   const persistCheckHealth = () => {
     const health = structuredClone({
@@ -901,6 +1417,165 @@ export async function createSidecarRuntime({
     return control;
   };
 
+  const rememberReactionEvent = (eventId) => {
+    if (seenReactionEvents.has(eventId)) return false;
+    seenReactionEvents.add(eventId);
+    if (seenReactionEvents.size > 5_000) {
+      seenReactionEvents.delete(seenReactionEvents.values().next().value);
+    }
+    syncResponsibilityState();
+    return true;
+  };
+  const resolveOwnerOpenDingTalkId = async () => {
+    if (ownerOpenDingTalkId) return ownerOpenDingTalkId;
+    if (!config.selfUserId || typeof dws.resolveUserOpenDingTalkId !== "function") {
+      reactionWakeFailed.add("owner_identity");
+      state.reactionWake.lastErrorCode = "reaction_owner_identity_unavailable";
+      updateReactionWakeState();
+      await persistState();
+      return null;
+    }
+    try {
+      ownerOpenDingTalkId = await dws.resolveUserOpenDingTalkId(config.selfUserId, null, {
+        allowPolicyFallback: false,
+      });
+      reactionWakeFailed.delete("owner_identity");
+      updateReactionWakeState();
+      await persistState();
+      return ownerOpenDingTalkId;
+    } catch (error) {
+      reactionWakeFailed.add("owner_identity");
+      state.reactionWake.lastErrorCode = diagnosticCode(error, "owner_identity_failed");
+      updateReactionWakeState();
+      await persistState();
+      diagnose(`dws_reaction_owner_identity_failed:${diagnosticCode(error, "owner_identity_failed")}`);
+      return null;
+    }
+  };
+  handleReactionEvent = async (event) => {
+    if (
+      config.responsibilityReactionsEnabled !== true ||
+      !event || typeof event !== "object" || Array.isArray(event) ||
+      !String(event.eventId ?? "").trim() ||
+      seenReactionEvents.has(String(event.eventId))
+    ) return;
+    const eventId = String(event.eventId);
+    if (consumeAutomatedReactionEvent(event)) {
+      rememberReactionEvent(eventId);
+      await persistState();
+      return;
+    }
+    const ownerOpenId = await resolveOwnerOpenDingTalkId();
+    if (!ownerOpenId || event.operatorOpenDingTalkId !== ownerOpenId) {
+      rememberReactionEvent(eventId);
+      await persistState();
+      return;
+    }
+    const active = activeConversations.get(event.conversationId);
+    if (!active) {
+      rememberReactionEvent(eventId);
+      await persistState();
+      return;
+    }
+    if (
+      event.senderOpenDingTalkId && active.participantOpenDingTalkId &&
+      event.senderOpenDingTalkId !== active.participantOpenDingTalkId
+    ) {
+      rememberReactionEvent(eventId);
+      await persistState();
+      return;
+    }
+    const messageResponsibilities = [...responsibilityReactions.values()].filter((entry) =>
+      entry.conversationId === event.conversationId &&
+      Array.isArray(entry.sourceMessageIds) &&
+      entry.sourceMessageIds.includes(event.messageId)
+    );
+    const claims = messageResponsibilities.filter((entry) =>
+      ["claiming", "claimed", "clearing"].includes(entry.status)
+    );
+    const terminalResponsibility = messageResponsibilities.some((entry) =>
+      ["cleared", "handled_no_reply"].includes(entry.status)
+    );
+    const removesHandledLabel = event.action === "removed" && messageResponsibilities.some((entry) =>
+      entry.status === "handled_no_reply" &&
+      entry.messageId === event.messageId &&
+      entry.reactionName === event.reactionName
+    );
+    if (removesHandledLabel) {
+      if (!rememberReactionEvent(eventId)) return;
+      for (const entry of messageResponsibilities) {
+        if (
+          entry.status === "handled_no_reply" &&
+          entry.messageId === event.messageId &&
+          entry.reactionName === event.reactionName
+        ) {
+          entry.status = "cleared";
+          entry.clearedAt = event.occurredAt;
+        }
+      }
+      syncResponsibilityState();
+      await persistState();
+      return;
+    }
+    const currentAnchor = active.sourceMessageId === event.messageId && !terminalResponsibility;
+    if (claims.length === 0 && !currentAnchor) {
+      rememberReactionEvent(eventId);
+      await persistState();
+      return;
+    }
+    const removesResponsibility = event.action === "removed" && claims.some((entry) =>
+      entry.messageId === event.messageId && entry.reactionName === event.reactionName
+    );
+    if (event.action === "removed" && !removesResponsibility) {
+      rememberReactionEvent(eventId);
+      await persistState();
+      return;
+    }
+    if (!rememberReactionEvent(eventId)) return;
+    const stableTaskId = taskId(event.conversationId, active.participantUserId);
+    const externalControl = controlStore ? await controlStore.snapshot() : null;
+    const externalTask = externalControl?.tasks?.[stableTaskId] ?? null;
+    const localControl = normalizedControlState(controlStates.get(event.conversationId));
+    const frozenControl = {
+      ownerRevision: Math.max(localControl.ownerRevision, externalTask?.ownerRevision ?? 0),
+      sendGeneration: Math.max(localControl.sendGeneration, externalTask?.sendGeneration ?? 0) + 1,
+      lastOwnerMessageId: localControl.lastOwnerMessageId,
+    };
+    controlStates.set(event.conversationId, frozenControl);
+    state.controlStates = Object.fromEntries(controlStates);
+    await persistState();
+    await dispatchIntervention({
+      conversationId: event.conversationId,
+      active,
+      ownerMessageId: eventId,
+      ownerContent: "",
+      createTime: event.occurredAt,
+      frozenControl,
+      classification: {
+        intent: "communication_takeover",
+        source: "owner_reaction",
+        confidence: 1,
+      },
+    });
+    for (const entry of claims) {
+      if (
+        event.action === "removed" &&
+        event.reactionName === entry.reactionName &&
+        entry.messageId === event.messageId
+      ) {
+        entry.status = "cleared";
+        entry.clearedAt = event.occurredAt;
+        continue;
+      }
+      await releaseResponsibility({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+      });
+    }
+    syncResponsibilityState();
+    await persistState();
+  };
+
   const emitMessage = async (message, chatType, mentionedSelf, emitFrame = emit) => {
     const id = String(message.id ?? "").trim();
     const conversationId = String(message.conversationId ?? "").trim();
@@ -910,6 +1585,7 @@ export async function createSidecarRuntime({
     if (!id || !conversationId || !senderUserId || seen.has(id)) return;
     if (message.isWithdrawn === true) {
       if (!remember(id)) return;
+      await releaseConversationResponsibilities(conversationId, id);
       emitFrame({
         type: "event",
         record: {
@@ -935,11 +1611,18 @@ export async function createSidecarRuntime({
     const selfInterventionCandidate = Boolean(
       ownerSelfMessage && priorActive && ownerInterventionCandidate(message.content),
     );
+    const globalPaused = externalControl?.global?.state === "paused";
+    const taskPaused = externalTask?.state === "paused";
+    const taskTakenOver = externalTask?.state === "taken_over";
     if (
-      externalControl?.global?.state === "paused" ||
-      ["paused", "taken_over"].includes(externalTask?.state)
+      globalPaused || taskPaused || taskTakenOver
     ) {
       if (!selfInterventionCandidate) {
+        if (taskTakenOver && !globalPaused && !taskPaused) {
+          if (!remember(id)) return;
+          diagnose(`dws_taken_over_message_suppressed:${hash(id)}`);
+          return;
+        }
         const error = new Error("Foursday control paused this task");
         error.code = "FOURSDAY_CONTROL_PAUSED";
         throw error;
@@ -975,15 +1658,23 @@ export async function createSidecarRuntime({
           classification,
           emitFrame,
         });
+        if (["communication_takeover", "task_takeover"].includes(classification.intent)) {
+          await releaseConversationResponsibilities(
+            conversationId,
+            priorActive?.sourceMessageId ?? null,
+          );
+        }
         return;
       }
       controlStates.set(conversationId, priorControl);
       state.controlStates = Object.fromEntries(controlStates);
     }
-    if (
-      externalControl?.global?.state === "paused" ||
-      ["paused", "taken_over"].includes(externalTask?.state)
-    ) {
+    if (taskTakenOver && !globalPaused && !taskPaused) {
+      if (!remember(id)) return;
+      diagnose(`dws_taken_over_message_suppressed:${hash(id)}`);
+      return;
+    }
+    if (globalPaused || taskPaused) {
       const error = new Error("Foursday control paused this task");
       error.code = "FOURSDAY_CONTROL_PAUSED";
       throw error;
@@ -1028,6 +1719,7 @@ export async function createSidecarRuntime({
     state.recipients = Object.fromEntries(recipients);
     activeConversations.set(conversationId, {
       participantUserId: senderUserId,
+      participantOpenDingTalkId: senderOpenDingTalkId || null,
       chatType,
       after: createTime,
       sourceMessageId: id,
@@ -1047,6 +1739,15 @@ export async function createSidecarRuntime({
     state.activeConversations = Object.fromEntries(activeConversations);
     recentTaskText.set(conversationId, String(message.content ?? "").trim().slice(0, 2_000));
     if (recentTaskText.size > 1_000) recentTaskText.delete(recentTaskText.keys().next().value);
+    if (config.responsibilityReactionsEnabled === true) {
+      await ensureReactionWake({
+        chatType,
+        conversationId,
+        participantUserId: senderUserId,
+        participantOpenDingTalkId: senderOpenDingTalkId || null,
+        participantName: message.senderName,
+      });
+    }
     emitFrame({
       type: "event",
       record: {
@@ -1243,8 +1944,9 @@ export async function createSidecarRuntime({
           } catch (error) {
             errors.push(error);
             targetFailed = true;
+            const code = diagnosticCode(error, "message_processing_failed");
             diagnose(
-              `dws_sidecar_target_failed:${target.kind}:${index}:${hash(target.id)}:message_processing_failed`,
+              `dws_sidecar_target_failed:${target.kind}:${index}:${hash(target.id)}:${code}`,
             );
             break;
           }
@@ -1427,6 +2129,28 @@ export async function createSidecarRuntime({
         state.sendBlockReason = null;
         state.sendBlockedAt = null;
       }
+      if (config.responsibilityReactionsEnabled === true) {
+        await resolveOwnerOpenDingTalkId();
+        for (const groupId of config.groupIds) {
+          await ensureReactionWake({
+            chatType: "group",
+            conversationId: groupId,
+          });
+        }
+        for (const [conversationId, active] of activeConversations) {
+          await ensureReactionWake({
+            chatType: active.chatType,
+            conversationId,
+            participantUserId: active.participantUserId,
+            participantOpenDingTalkId: active.participantOpenDingTalkId,
+          });
+        }
+      } else {
+        state.reactionWake = {
+          enabled: false, readyCount: 0, errorCount: 0,
+          lastErrorCode: null, updatedAt: now().toISOString(),
+        };
+      }
       let initialFrames = [];
       try {
         initialFrames = await check({
@@ -1527,12 +2251,20 @@ export async function createSidecarRuntime({
         const task = active
           ? external?.tasks?.[taskId(conversationId, active.participantUserId)]
           : null;
+        const reactionReady = config.responsibilityReactionsEnabled !== true || Boolean(
+          ownerOpenDingTalkId && active && reactionWakeReady.has(reactionTargetKey({
+            chatType: active.chatType,
+            conversationId,
+            participantOpenDingTalkId: active.participantOpenDingTalkId,
+          }))
+        );
         return Boolean(
           Number.isSafeInteger(ownerRevision) &&
           Number.isSafeInteger(sendGeneration) &&
           local && local.ownerRevision === ownerRevision &&
           local.sendGeneration === sendGeneration &&
           external?.global?.state !== "paused" &&
+          reactionReady &&
           !["paused", "taken_over"].includes(task?.state) &&
           (!task || (
             task.ownerRevision === ownerRevision &&
@@ -1810,11 +2542,21 @@ export async function createSidecarRuntime({
       const result = await controlStore.consumeEvent(task, eventId);
       return { success: result.result.consumed === true };
     },
+    claimResponsibility,
+    releaseResponsibility,
+    settleResponsibility,
+    groupResponsibilityMessages,
     async stop() {
       clearInterval(fallbackTimer);
       clearTimeout(debounceTimer);
       for (const watcher of watchers) watcher.close();
       if (eventWakeController) await eventWakeController.stop();
+      for (const controller of reactionWakeControllers.values()) {
+        await controller.stop();
+      }
+      reactionWakeControllers.clear();
+      reactionWakeReady.clear();
+      reactionWakeFailed.clear();
       await persistState();
     },
     check,
@@ -1838,6 +2580,14 @@ async function runProtocol() {
         ? await runtime.send(frame.payload)
         : frame.action === "ack-control"
           ? await runtime.ackControl(frame.payload)
+        : frame.action === "claim-responsibility"
+          ? await runtime.claimResponsibility(frame.payload)
+        : frame.action === "release-responsibility"
+          ? await runtime.releaseResponsibility(frame.payload)
+        : frame.action === "settle-responsibility"
+          ? await runtime.settleResponsibility(frame.payload)
+        : frame.action === "group-responsibility"
+          ? await runtime.groupResponsibilityMessages(frame.payload)
         : frame.action === "shutdown"
           ? { success: true }
           : { success: false, error: "Unsupported DWS sidecar action" };

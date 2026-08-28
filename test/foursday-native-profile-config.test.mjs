@@ -87,6 +87,8 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /DWS_PERSONAL_OUTBOUND_MAX_QUIET_MS="20000"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEMANTIC_INTERVENTION_ENABLED="true"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEMANTIC_INTERVENTION_TIMEOUT_MS="30000"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED="false"/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_RESPONSIBILITY_REACTION="OK"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_SEND_ENABLED="false"/u);
   assert.match(plan.envContent, /DWS_PERSONAL_COMMAND_LOCK=.*dws-command\.lock/u);
   assert.match(plan.envContent, /CODEX_HOME=/u);

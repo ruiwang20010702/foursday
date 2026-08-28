@@ -205,6 +205,13 @@ export async function inspectFoursdayNativeGateway({
   let eventWakeEnabled = false;
   let eventWakeReady = false;
   let eventWakeDegraded = false;
+  const responsibilityReactionsEnabled = /^(?:1|true|yes)$/iu.test(String(
+    envDocument.values.get("DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED") ?? "false",
+  ));
+  let reactionWakeReadyCount = 0;
+  let reactionWakeErrorCount = 0;
+  let reactionWakeLastErrorCode = null;
+  let responsibilityReactionCount = 0;
   let lastWakeSource = null;
   let lastDetectionLatencyMs = null;
   let enterpriseIdentityRetryPending = 0;
@@ -222,6 +229,22 @@ export async function inspectFoursdayNativeGateway({
       eventWakeEnabled = state.eventWake?.enabled === true;
       eventWakeReady = state.eventWake?.ready === true;
       eventWakeDegraded = eventWakeEnabled && !eventWakeReady;
+      reactionWakeReadyCount = Number.isSafeInteger(state.reactionWake?.readyCount)
+        ? Math.max(0, state.reactionWake.readyCount)
+        : 0;
+      reactionWakeErrorCount = Number.isSafeInteger(state.reactionWake?.errorCount)
+        ? Math.max(0, state.reactionWake.errorCount)
+        : 0;
+      reactionWakeLastErrorCode = typeof state.reactionWake?.lastErrorCode === "string"
+        ? state.reactionWake.lastErrorCode.slice(0, 80)
+        : null;
+      responsibilityReactionCount = state.responsibilityReactions &&
+          typeof state.responsibilityReactions === "object" &&
+          !Array.isArray(state.responsibilityReactions)
+        ? Object.values(state.responsibilityReactions).filter((entry) =>
+            ["claiming", "claimed", "handled_no_reply", "clearing"].includes(entry?.status)
+          ).length
+        : 0;
       lastWakeSource = typeof state.lastWakeSource === "string"
         ? state.lastWakeSource.slice(0, 40)
         : null;
@@ -286,6 +309,7 @@ export async function inspectFoursdayNativeGateway({
     (mode === "shadow" && !configuredSendEnabled) ||
     (mode === "active" && configuredSendEnabled && !sendBlocked);
   const safeStopped = !running && serviceEnabled === false && mode === "shadow" && !configuredSendEnabled;
+  const reactionControlHealthy = !responsibilityReactionsEnabled || reactionWakeErrorCount === 0;
   return {
     schema: "foursday-native-gateway-status/v1",
     label: nativeFoursdayGatewayLabel,
@@ -317,11 +341,18 @@ export async function inspectFoursdayNativeGateway({
     eventWakeEnabled,
     eventWakeReady,
     eventWakeDegraded,
+    responsibilityReactionsEnabled,
+    reactionWakeReadyCount,
+    reactionWakeErrorCount,
+    reactionWakeDegraded: responsibilityReactionsEnabled && reactionWakeErrorCount > 0,
+    reactionControlHealthy,
+    reactionWakeLastErrorCode,
+    responsibilityReactionCount,
     lastWakeSource,
     lastDetectionLatencyMs,
     modeConsistent,
     safeStopped,
-    ready: running && modeConsistent && checkpointHealthy,
+    ready: running && modeConsistent && checkpointHealthy && reactionControlHealthy,
   };
 }
 

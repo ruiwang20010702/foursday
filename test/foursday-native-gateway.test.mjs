@@ -25,6 +25,10 @@ async function fixture(t) {
       lastErrorCode: "dws_enterprise_identity_unavailable",
     },
     eventWake: { enabled: true, ready: true, errorCode: null },
+    reactionWake: { enabled: true, readyCount: 1, errorCount: 0, lastErrorCode: null },
+    responsibilityReactions: {
+      ["b".repeat(64)]: { status: "claimed" },
+    },
     lastWakeSource: "dws_event",
     lastDetection: { latencyMs: 250 },
   }), { mode: 0o600 });
@@ -33,6 +37,7 @@ async function fixture(t) {
     `DWS_PERSONAL_STATE_FILE=${JSON.stringify(checkpoint)}`,
     'DWS_PERSONAL_FALLBACK_MS="300000"',
     'DWS_PERSONAL_ENTERPRISE_USERS_ENABLED="true"',
+    'DWS_PERSONAL_RESPONSIBILITY_REACTIONS_ENABLED="true"',
     'FOURSDAY_MODE="shadow"',
     "",
   ].join("\n"), { mode: 0o600 });
@@ -121,6 +126,12 @@ test("native Gateway status is derived from the official profile and send mode",
   );
   assert.equal(status.eventWakeReady, true);
   assert.equal(status.eventWakeDegraded, false);
+  assert.equal(status.responsibilityReactionsEnabled, true);
+  assert.equal(status.reactionWakeReadyCount, 1);
+  assert.equal(status.reactionWakeErrorCount, 0);
+  assert.equal(status.reactionWakeDegraded, false);
+  assert.equal(status.reactionControlHealthy, true);
+  assert.equal(status.responsibilityReactionCount, 1);
   assert.equal(status.lastWakeSource, "dws_event");
   assert.equal(status.lastDetectionLatencyMs, 250);
   const stopped = await inspectFoursdayNativeGateway({
@@ -130,6 +141,27 @@ test("native Gateway status is derived from the official profile and send mode",
   });
   assert.equal(stopped.ready, false);
   assert.equal(stopped.safeStopped, false);
+});
+
+test("native Gateway fails readiness when enabled reaction control is degraded", async (t) => {
+  const value = await fixture(t);
+  const checkpointPath = join(value.root, "dws.json");
+  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+  checkpoint.reactionWake = {
+    enabled: true,
+    readyCount: 0,
+    errorCount: 1,
+    lastErrorCode: "reaction_event_unavailable",
+  };
+  await writeFile(checkpointPath, JSON.stringify(checkpoint), { mode: 0o600 });
+  const status = await inspectFoursdayNativeGateway({
+    layout: value.layout,
+    run: async () => ({ stdout: "Gateway is running\n" }),
+    now: Date.now() + 1_000,
+  });
+  assert.equal(status.reactionWakeDegraded, true);
+  assert.equal(status.reactionControlHealthy, false);
+  assert.equal(status.ready, false);
 });
 
 test("native Gateway exposes a degraded manual-reply probe without failing message intake", async (t) => {

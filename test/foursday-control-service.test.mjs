@@ -72,6 +72,12 @@ async function fixture(t) {
       enterpriseIdentityRejectionCount: 4,
       enterpriseIdentityLastErrorCode: "dws_enterprise_identity_unavailable",
       eventWakeEnabled: true, eventWakeReady: false, eventWakeDegraded: true,
+      responsibilityReactionsEnabled: true,
+      reactionWakeReadyCount: 2,
+      reactionWakeErrorCount: 1,
+      reactionWakeDegraded: true,
+      reactionWakeLastErrorCode: "reaction_event_unavailable",
+      responsibilityReactionCount: 3,
       lastWakeSource: "filesystem", lastDetectionLatencyMs: 1250,
     }),
     memoryCatalogReader: async () => ({
@@ -89,6 +95,13 @@ test("control service projects tasks, schedules, memory and evidence without pri
   const { service } = await fixture(t);
   const status = await service.status();
   assert.equal(status.gateway.eventWakeDegraded, true);
+  assert.equal(status.gateway.responsibilityReactionsEnabled, true);
+  assert.equal(status.gateway.reactionWakeReadyCount, 2);
+  assert.equal(status.gateway.reactionWakeErrorCount, 1);
+  assert.equal(status.gateway.reactionWakeDegraded, true);
+  assert.equal(status.gateway.reactionControlHealthy, true);
+  assert.equal(status.gateway.reactionWakeLastErrorCode, "reaction_event_unavailable");
+  assert.equal(status.gateway.responsibilityReactionCount, 3);
   assert.equal(status.gateway.checkpointState, "busy_but_bounded");
   assert.equal(status.gateway.checkpointBusy, true);
   assert.equal(status.gateway.checkpointGeneration, 9);

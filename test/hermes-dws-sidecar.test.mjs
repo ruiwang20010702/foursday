@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   classifyOwnerIntervention,
   createSidecarRuntime,
+  sidecarConfig,
 } from "../src/hermes-dws-sidecar.mjs";
 import { FoursdayControlStore } from "../src/foursday-control-store.mjs";
 
@@ -18,6 +19,59 @@ async function waitFor(predicate, { timeoutMs = 2_000, intervalMs = 20 } = {}) {
   }
   return true;
 }
+
+test("responsibility reaction configuration is bounded and disabled by default", () => {
+  const defaults = sidecarConfig({ DWS_PATH: process.execPath });
+  assert.equal(defaults.responsibilityReactionsEnabled, false);
+  assert.equal(defaults.responsibilityReactionName, "OK");
+  assert.throws(() => sidecarConfig({
+    DWS_PATH: process.execPath,
+    DWS_PERSONAL_RESPONSIBILITY_REACTION: "bad\nreaction",
+  }), /reaction name is invalid/u);
+});
+
+test("sidecar exposes bounded Codex responsibility grouping only when enabled", async () => {
+  const calls = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: null,
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      semanticInterventionTimeoutMs: 30_000,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws: new FakeDws(),
+    responsibilityGroupingResolver: async (messages) => {
+      calls.push(messages);
+      return { groups: [[0], [1]], confidence: 0.99, source: "codex" };
+    },
+  });
+  try {
+    assert.deepEqual(await runtime.groupResponsibilityMessages({
+      messages: [
+        { id: "message-1", content: "任务一" },
+        { id: "message-2", content: "任务二" },
+      ],
+    }), {
+      success: true,
+      groups: [[0], [1]],
+      source: "codex",
+      confidence: 0.99,
+    });
+    assert.equal(calls.length, 1);
+  } finally {
+    await runtime.stop();
+  }
+});
 
 test("owner intervention classifier keeps communication, task and unrelated ownership distinct", () => {
   assert.equal(classifyOwnerIntervention("我已经回复对方了"), "communication_takeover");
@@ -193,7 +247,12 @@ class FakeDws {
     this.media = false;
     this.downloadFailures = 0;
     this.eventWakeStopped = false;
+    this.reactionWakeStopped = false;
+    this.reactionWatchers = [];
+    this.reactionWrites = [];
+    this.reactionWakeFailure = false;
     this.downloadInputs = [];
+    this.messages = null;
   }
 
   createPersonalEventWake({ onEvent }) {
@@ -204,9 +263,37 @@ class FakeDws {
     };
   }
 
+  createReactionEventWake(input) {
+    if (this.reactionWakeFailure) {
+      throw Object.assign(new Error("reaction unavailable"), {
+        code: "reaction_event_unavailable",
+      });
+    }
+    const watcher = { ...input };
+    this.reactionWatchers.push(watcher);
+    return {
+      ready: Promise.resolve({ ready: true }),
+      stop: async () => { this.reactionWakeStopped = true; },
+    };
+  }
+
+  async resolveUserOpenDingTalkId(userId) {
+    return userId === "owner-user" ? "open-owner" : `open-${userId}`;
+  }
+
+  async addEmojiReaction(input) {
+    this.reactionWrites.push({ action: "added", ...input });
+    return { success: true };
+  }
+
+  async removeEmojiReaction(input) {
+    this.reactionWrites.push({ action: "removed", ...input });
+    return { success: true };
+  }
+
   async fetchBySender({ senderUserId }) {
     this.directCalls += 1;
-    return [{
+    return this.messages ?? [{
       id: "dws-1",
       senderUserId,
       senderOpenDingTalkId: "open-trusted",
@@ -420,6 +507,90 @@ test("enterprise mode scans verified organization direct messages without explic
     const state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
     assert.match(state.lastEnterpriseAt, /^2026-/u);
     assert.equal(enterpriseCalls, 1);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("task takeover suppresses later enterprise messages without poisoning the shared checkpoint", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-enterprise-taken-over-")));
+  const controlFile = join(root, "control.json");
+  const stateFile = join(root, "state.json");
+  const control = await new FoursdayControlStore({ path: controlFile }).open();
+  const conversationId = "taken-over-conversation";
+  const senderUserId = "taken-over-user";
+  const controlledTaskId = createHash("sha256")
+    .update(`${conversationId}:${senderUserId}`)
+    .digest("hex");
+  await control.observeTask({
+    taskId: controlledTaskId,
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-26T14:00:00+08:00",
+  });
+  await control.apply({
+    action: "task_takeover",
+    expectedRevision: 1,
+    taskId: controlledTaskId,
+  });
+  const frames = [];
+  const diagnostics = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: "owner-user",
+      stateFile,
+      mediaRoot: null,
+      controlFile,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      sendEnabled: false,
+    },
+    controlStore: control,
+    dws: {
+      async fetchEnterpriseDirectScan() {
+        return {
+          messages: [{
+            id: "message-after-takeover",
+            senderUserId,
+            senderOpenDingTalkId: "open-taken-over",
+            senderName: "Taken over user",
+            conversationId,
+            content: "owner is handling this conversation",
+            createTime: "2026-08-26T14:00:30+08:00",
+            isSelf: false,
+            isWithdrawn: false,
+            enterpriseVerified: true,
+            media: [],
+          }],
+          pending: [],
+          rejected: [],
+        };
+      },
+      async fetchBySender() { return []; },
+      async fetchGroupMentions() { return []; },
+    },
+    emit: (frame) => frames.push(frame),
+    diagnose: (value) => diagnostics.push(value),
+    now: () => new Date("2026-08-26T14:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(state.checkLifecycle.status, "completed");
+    assert.equal(state.lastErrorCount, 0);
+    assert.match(state.lastEnterpriseAt, /^2026-/u);
+    assert.equal(state.recentMessageIds.includes("message-after-takeover"), true);
+    assert.equal(frames.some((frame) => frame.record?.id === "message-after-takeover"), false);
+    assert.equal(
+      diagnostics.some((value) => value.startsWith("dws_taken_over_message_suppressed:")),
+      true,
+    );
   } finally {
     await runtime.stop();
   }
@@ -1685,6 +1856,462 @@ test("semantic self-chat takeover freezes the old reply before Codex classificat
   } finally {
     releaseClassifier?.();
     await runtime.stop();
+  }
+});
+
+test("responsibility reaction is idempotent and clears only after an explicit terminal action", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-responsibility-reaction-"));
+  const frames = [];
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: true,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-28T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    const claim = {
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      sourceMessageIds: ["dws-1"],
+      ownerRevision: 0,
+      sendGeneration: 1,
+    };
+    assert.deepEqual(await runtime.claimResponsibility(claim), { success: true });
+    assert.deepEqual(await runtime.claimResponsibility(claim), {
+      success: true,
+      idempotent: true,
+    });
+    assert.deepEqual(dws.reactionWrites, [{
+      action: "added",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      emoji: "OK",
+    }]);
+    assert.deepEqual(await runtime.settleResponsibility(claim), { success: true });
+    assert.deepEqual(await runtime.claimResponsibility(claim), {
+      success: true,
+      idempotent: true,
+    });
+    assert.deepEqual(await runtime.releaseResponsibility(claim), { success: true });
+    assert.deepEqual(await runtime.releaseResponsibility(claim), {
+      success: true,
+      idempotent: true,
+    });
+    assert.equal(dws.reactionWrites.at(-1).action, "removed");
+    dws.reactionWatchers[0].onEvent({
+      eventId: "post-completion-feedback",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "赞",
+      action: "added",
+      occurredAt: "2026-08-28T02:03:00.000Z",
+    });
+    await new Promise((accept) => setTimeout(accept, 25));
+    assert.equal(frames.some((frame) =>
+      frame.record?.ownerMessageId === "post-completion-feedback"
+    ), false);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("a newer generation migrates only an in-flight responsibility label", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-reaction-migration-"));
+  const dws = new FakeDws();
+  const firstMessage = {
+    id: "message-1",
+    senderUserId: "trusted-user",
+    senderOpenDingTalkId: "open-trusted",
+    senderName: "娜娜老师",
+    conversationId: "conversation-1",
+    content: "第一段任务",
+    createTime: "2026-08-28T10:00:00+08:00",
+    isSelf: false,
+    isWithdrawn: false,
+    media: [],
+  };
+  dws.messages = [firstMessage];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+  });
+  try {
+    await runtime.start();
+    await runtime.claimResponsibility({
+      conversationId: "conversation-1",
+      messageId: "message-1",
+      sourceMessageIds: ["message-1"],
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    dws.messages = [firstMessage, {
+      ...firstMessage,
+      id: "message-2",
+      content: "第二段补充",
+      createTime: "2026-08-28T10:00:05+08:00",
+    }];
+    await runtime.check();
+    await runtime.claimResponsibility({
+      conversationId: "conversation-1",
+      messageId: "message-2",
+      sourceMessageIds: ["message-2"],
+      ownerRevision: 0,
+      sendGeneration: 2,
+    });
+    assert.deepEqual(dws.reactionWrites.map((entry) => ({
+      action: entry.action,
+      messageId: entry.messageId,
+    })), [
+      { action: "added", messageId: "message-1" },
+      { action: "removed", messageId: "message-1" },
+      { action: "added", messageId: "message-2" },
+    ]);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("owner reaction itself completes external communication without an AI text reply", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-owner-reaction-"));
+  const frames = [];
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: true,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+    now: () => new Date("2026-08-28T10:01:00+08:00"),
+  });
+  try {
+    await runtime.start();
+    await runtime.claimResponsibility({
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      sourceMessageIds: ["dws-1"],
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    const onReaction = dws.reactionWatchers[0].onEvent;
+    onReaction({
+      eventId: "automated-add",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "OK",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:01.000Z",
+    });
+    onReaction({
+      eventId: "other-member-add",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-other-member",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "赞",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:02.000Z",
+    });
+    onReaction({
+      eventId: "owner-wrong-message",
+      conversationId: "conversation-1",
+      messageId: "unrelated-message",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "赞",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:02.500Z",
+    });
+    await new Promise((accept) => setTimeout(accept, 50));
+    assert.equal(frames.some((frame) => frame.record?.control), false);
+
+    onReaction({
+      eventId: "owner-adds-reply",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "赞",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:03.000Z",
+    });
+    assert.equal(await waitFor(() => frames.some((frame) =>
+      frame.record?.control === "communication_takeover" &&
+      frame.record?.ownerMessageId === "owner-adds-reply"
+    )), true);
+    const takeover = frames.find((frame) =>
+      frame.record?.control === "communication_takeover" &&
+      frame.record?.ownerMessageId === "owner-adds-reply"
+    );
+    assert.ok(takeover);
+    assert.equal(takeover.record.classificationSource, "owner_reaction");
+    assert.equal(takeover.record.ownerContent, "");
+    assert.equal(takeover.record.ownerRevision, 1);
+    assert.equal(takeover.record.sendGeneration, 2);
+    assert.equal(dws.sent.length, 0);
+    assert.equal(dws.reactionWrites.at(-1).action, "removed");
+    onReaction({
+      eventId: "owner-adds-reply",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "赞",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:03.000Z",
+    });
+    await new Promise((accept) => setTimeout(accept, 25));
+    assert.equal(frames.filter((frame) =>
+      frame.record?.control === "communication_takeover" &&
+      frame.record?.ownerMessageId === "owner-adds-reply"
+    ).length, 1);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("responsibility reactions stay write-free while sending is disabled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-responsibility-shadow-"));
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+  });
+  try {
+    await runtime.start();
+    const result = await runtime.claimResponsibility({
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      sourceMessageIds: ["dws-1"],
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.deepEqual(result, { success: true, sendDisabled: true });
+    assert.deepEqual(dws.reactionWrites, []);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("a degraded reaction watcher suppresses text delivery instead of risking a collision", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-reaction-degraded-"));
+  const dws = new FakeDws();
+  dws.reactionWakeFailure = true;
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      sendEnabled: true,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+  });
+  try {
+    await runtime.start();
+    const result = await runtime.send({
+      conversationId: "conversation-1",
+      content: "旧AI回复",
+      ownerRevision: 0,
+      sendGeneration: 1,
+    });
+    assert.equal(result.staleGeneration, true);
+    assert.equal(dws.sent.length, 0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("owner reaction freezes the current task even before the responsibility label is written", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-owner-fast-reaction-"));
+  const frames = [];
+  const dws = new FakeDws();
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: ["trusted-user"],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: false,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: true,
+    },
+    dws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+  });
+  try {
+    await runtime.start();
+    dws.reactionWatchers[0].onEvent({
+      eventId: "owner-fast-reply",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "OK",
+      action: "added",
+      occurredAt: "2026-08-28T02:01:01.000Z",
+    });
+    assert.equal(await waitFor(() => frames.some((frame) =>
+      frame.record?.control === "communication_takeover" &&
+      frame.record?.ownerMessageId === "owner-fast-reply"
+    )), true);
+    const takeover = frames.find((frame) => frame.record?.ownerMessageId === "owner-fast-reply");
+    assert.equal(takeover.record.classificationSource, "owner_reaction");
+    assert.equal(takeover.record.sendGeneration, 2);
+    assert.equal(dws.reactionWrites.length, 0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("responsibility label and reaction takeover survive a sidecar restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-reaction-restart-"));
+  const stateFile = join(root, "state.json");
+  const config = {
+    dwsPath: process.execPath,
+    dingtalkRoot: "",
+    userIds: ["trusted-user"],
+    groupIds: [],
+    selfUserId: "owner-user",
+    stateFile,
+    mediaRoot: null,
+    controlFile: null,
+    initialLookbackMs: 120_000,
+    fallbackMs: 300_000,
+    eventWakeEnabled: false,
+    responsibilityReactionsEnabled: true,
+    responsibilityReactionName: "OK",
+    sendEnabled: true,
+  };
+  const firstDws = new FakeDws();
+  const first = await createSidecarRuntime({ config, dws: firstDws, emit: () => {}, diagnose: () => {} });
+  await first.start();
+  await first.claimResponsibility({
+    conversationId: "conversation-1",
+    messageId: "dws-1",
+    sourceMessageIds: ["dws-1"],
+    ownerRevision: 0,
+    sendGeneration: 1,
+  });
+  await first.stop();
+
+  const frames = [];
+  const secondDws = new FakeDws();
+  const second = await createSidecarRuntime({
+    config,
+    dws: secondDws,
+    emit: (frame) => frames.push(frame),
+    diagnose: () => {},
+  });
+  try {
+    await second.start();
+    assert.deepEqual(secondDws.reactionWrites, []);
+    secondDws.reactionWatchers[0].onEvent({
+      eventId: "owner-after-restart",
+      conversationId: "conversation-1",
+      messageId: "dws-1",
+      operatorOpenDingTalkId: "open-owner",
+      senderOpenDingTalkId: "open-trusted",
+      reactionName: "赞",
+      action: "added",
+      occurredAt: "2026-08-28T02:02:00.000Z",
+    });
+    assert.equal(await waitFor(() => frames.some((frame) =>
+      frame.record?.ownerMessageId === "owner-after-restart"
+    )), true);
+    assert.equal(secondDws.reactionWrites.at(-1).action, "removed");
+  } finally {
+    await second.stop();
   }
 });
 
