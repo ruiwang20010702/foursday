@@ -1007,6 +1007,8 @@ export async function createSidecarRuntime({
       await persistState();
       return true;
     } catch (error) {
+      reactionWakeControllers.delete(key);
+      reactionWakeReady.delete(key);
       reactionWakeFailed.add(key);
       state.reactionWake.lastErrorCode = diagnosticCode(error, "reaction_event_unavailable");
       updateReactionWakeState();

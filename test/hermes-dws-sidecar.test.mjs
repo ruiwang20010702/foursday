@@ -995,8 +995,20 @@ test("DWS message event prewarms the direct reaction stream before history proje
   try {
     await runtime.start();
     assert.equal(dws.reactionWatchers.length, 0);
+    dws.reactionWakeFailure = true;
     dws.eventOnEvent({
       eventId: "message-wake-before-projection",
+      type: "message",
+      conversationId: "future-conversation",
+      messageId: "future-message",
+      senderOpenDingTalkId: "open-future-sender",
+    });
+    await new Promise((accept) => setTimeout(accept, 25));
+    let state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.equal(state.reactionWake.errorCount, 1);
+    dws.reactionWakeFailure = false;
+    dws.eventOnEvent({
+      eventId: "message-wake-retry-before-projection",
       type: "message",
       conversationId: "future-conversation",
       messageId: "future-message",
@@ -1009,6 +1021,10 @@ test("DWS message event prewarms the direct reaction stream before history proje
       dws.reactionWatchers[0].participantOpenDingTalkId,
       "open-future-sender",
     );
+    await new Promise((accept) => setTimeout(accept, 25));
+    state = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    assert.equal(state.reactionWake.readyCount, 1);
+    assert.equal(state.reactionWake.errorCount, 0);
   } finally {
     await runtime.stop();
   }
