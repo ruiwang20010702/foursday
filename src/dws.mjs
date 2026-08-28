@@ -671,9 +671,23 @@ export class DwsAdapter {
           data.event_id ?? data.eventId ?? data.message_id ?? data.messageId ?? "",
         ).trim();
         if (!eventId || eventId.length > 500) return null;
+        const conversationId = normalizeDwsIdentity(
+          event.conversation_id ?? event.conversationId ??
+          data.conversation_id ?? data.conversationId,
+        );
+        const senderOpenDingTalkId = normalizeDwsIdentity(
+          event.sender_open_dingtalk_id ?? event.senderOpenDingTalkId ??
+          data.sender_open_dingtalk_id ?? data.senderOpenDingTalkId,
+        );
+        const messageId = normalizeDwsIdentity(
+          event.message_id ?? event.messageId ?? data.message_id ?? data.messageId,
+        );
         return {
           eventId,
           type: String(event.event_type ?? data.event_type ?? data.type ?? event.type ?? "message"),
+          ...(conversationId ? { conversationId } : {}),
+          ...(senderOpenDingTalkId ? { senderOpenDingTalkId } : {}),
+          ...(messageId ? { messageId } : {}),
         };
       },
     });

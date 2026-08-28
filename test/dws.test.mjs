@@ -995,11 +995,23 @@ test("DWS personal event wake waits for ready and forwards only valid event sign
   child.stderr.write("[event] ready event_key=user_im_message_receive_o2o_all bus_pid=1 subscribe_id=test\n");
   await wake.ready;
   child.stdout.write("not-json\n");
-  child.stdout.write(`${JSON.stringify({ event_id: "event-1", type: "message" })}\n`);
+  child.stdout.write(`${JSON.stringify({
+    event_id: "event-1",
+    type: "message",
+    conversation_id: "conversation-1",
+    message_id: "message-1",
+    sender_open_dingtalk_id: "open-sender",
+  })}\n`);
   child.stdout.write(`${JSON.stringify({ event_type: "message", data: { event_id: "event-2" } })}\n`);
   await new Promise((accept) => setImmediate(accept));
   assert.deepEqual(events, [
-    { eventId: "event-1", type: "message" },
+    {
+      eventId: "event-1",
+      type: "message",
+      conversationId: "conversation-1",
+      messageId: "message-1",
+      senderOpenDingTalkId: "open-sender",
+    },
     { eventId: "event-2", type: "message" },
   ]);
   assert.deepEqual(invocation[1], [

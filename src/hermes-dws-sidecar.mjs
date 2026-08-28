@@ -2242,6 +2242,18 @@ export async function createSidecarRuntime({
         for (const conversationId of takeoverReported) {
           await releaseConversationResponsibilities(conversationId);
         }
+        for (const [conversationId, active] of activeConversations) {
+          if (
+            active.chatType === "direct" && active.participantOpenDingTalkId ||
+            active.chatType === "group" && config.groupIds.includes(conversationId)
+          ) {
+            await ensureReactionWake({
+              chatType: active.chatType,
+              conversationId,
+              participantOpenDingTalkId: active.participantOpenDingTalkId,
+            });
+          }
+        }
         const claimedConversations = new Set([...responsibilityReactions.values()]
           .filter((entry) => !["clearing", "cleared"].includes(entry.status))
           .map((entry) => entry.conversationId));
@@ -2300,7 +2312,24 @@ export async function createSidecarRuntime({
         await persistState();
         try {
           eventWakeController = dws.createPersonalEventWake({
-            onEvent: () => trigger("dws_event"),
+            onEvent: (event) => {
+              if (
+                config.responsibilityReactionsEnabled === true &&
+                event?.conversationId && event?.senderOpenDingTalkId
+              ) {
+                ensureReactionWake({
+                  chatType: "direct",
+                  conversationId: event.conversationId,
+                  participantOpenDingTalkId: event.senderOpenDingTalkId,
+                }).catch((error) => {
+                  diagnose(`dws_reaction_event_unavailable:${diagnosticCode(
+                    error,
+                    "reaction_event_unavailable",
+                  )}`);
+                });
+              }
+              trigger("dws_event");
+            },
             onDiagnostic: (value) => {
               diagnose(value);
               if (String(value).startsWith("dws_event_closed:")) {

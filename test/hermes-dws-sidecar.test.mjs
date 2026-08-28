@@ -965,6 +965,55 @@ test("DWS event wake triggers the same allowlisted history read with event laten
   assert.equal(dws.eventWakeStopped, true);
 });
 
+test("DWS message event prewarms the direct reaction stream before history projection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "foursday-dws-reaction-prewarm-"));
+  const dws = new FakeDws();
+  dws.messages = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [],
+      groupIds: [],
+      enterpriseUsersEnabled: true,
+      selfUserId: "owner-user",
+      stateFile: join(root, "state.json"),
+      mediaRoot: null,
+      controlFile: null,
+      initialLookbackMs: 120_000,
+      historySettleMs: 120_000,
+      fallbackMs: 300_000,
+      eventWakeEnabled: true,
+      responsibilityReactionsEnabled: true,
+      responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws,
+    emit: () => {},
+    diagnose: () => {},
+  });
+  try {
+    await runtime.start();
+    assert.equal(dws.reactionWatchers.length, 0);
+    dws.eventOnEvent({
+      eventId: "message-wake-before-projection",
+      type: "message",
+      conversationId: "future-conversation",
+      messageId: "future-message",
+      senderOpenDingTalkId: "open-future-sender",
+    });
+    assert.equal(await waitFor(() => dws.reactionWatchers.length === 1), true);
+    assert.equal(dws.reactionWatchers[0].chatType, "direct");
+    assert.equal(dws.reactionWatchers[0].conversationId, "future-conversation");
+    assert.equal(
+      dws.reactionWatchers[0].participantOpenDingTalkId,
+      "open-future-sender",
+    );
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("DWS event wake source survives a check already in progress", async () => {
   const root = await mkdtemp(join(tmpdir(), "foursday-dws-event-pending-"));
   const frames = [];
