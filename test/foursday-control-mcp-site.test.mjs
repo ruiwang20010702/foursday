@@ -12,7 +12,15 @@ function service() {
     status: async () => ({
       ready: true,
       control: { revision: 4, state: "running" },
-      gateway: { checkpointState: "busy_but_bounded", checkpointGeneration: 7 },
+      gateway: {
+        mode: "active",
+        sendEnabled: true,
+        running: true,
+        sendBlocked: false,
+        modeConsistent: true,
+        checkpointState: "busy_but_bounded",
+        checkpointGeneration: 7,
+      },
       taskCounts: {},
     }),
     tasks: async () => ({ revision: 4, items: [{ taskId: "a".repeat(64), projectId: "p", state: "active" }] }),
@@ -70,15 +78,22 @@ test("optional status page is loopback-only, read-only and uses the same service
   const page = await fetch(started.url);
   assert.equal(page.status, 200);
   const pageText = await page.text();
-  assert.match(pageText, /不保存第二套状态/u);
+  assert.match(pageText, /不维护第二套状态/u);
   assert.match(pageText, /已暂停/u);
-  assert.match(pageText, /filter\(x=>x\.enabled\)/u);
-  assert.match(pageText, /DWS检查点/u);
-  assert.match(pageText, /检查中（有界）/u);
-  assert.match(pageText, /固定绑定/u);
-  assert.match(pageText, /gbrain 可发现/u);
-  assert.match(pageText, /th:nth-child\(n\+3\),td:nth-child\(n\+3\)\{display:none\}/u);
+  assert.match(pageText, /filter\(item=>item\.enabled\)/u);
+  assert.match(pageText, /DWS 检查点/u);
+  assert.match(pageText, /有界检查中/u);
+  assert.match(pageText, /固定/u);
+  assert.match(pageText, /可发现/u);
+  assert.match(pageText, /打开Foursday任务/u);
+  assert.match(pageText, /现在由我负责/u);
+  assert.match(pageText, /waiting_acceptance:'等待验收'/u);
+  assert.match(pageText, /prefers-reduced-motion/u);
   assert.match(pageText, /taken_over:'已接管'/u);
+  assert.match(pageText, /task\.state!==['"]taken_over['"]/u);
+  assert.match(pageText, /status\.gateway\.sendBlocked===true/u);
+  assert.match(pageText, /status\.gateway\.mode!==['"]active['"]/u);
+  assert.match(pageText, /stale:stopped\?['"]未运行['"]:['"]已过期['"]/u);
   assert.match(page.headers.get("content-security-policy"), /default-src 'none'/u);
   const status = await fetch(`${started.url}api/status`).then((response) => response.json());
   assert.equal(status.control.revision, 4);

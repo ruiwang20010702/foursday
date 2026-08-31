@@ -94,6 +94,7 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /CODEX_HOME=/u);
   assert.match(plan.envContent, /FOURSDAY_PYTHON_PATH=.*python-runtime/u);
   assert.match(plan.envContent, /FOURSDAY_CONTROL_FILE=.*control\.json/u);
+  assert.match(plan.envContent, /FOURSDAY_TASK_LEDGER_FILE=.*task-ledger\.json/u);
   assert.match(plan.envContent, /FOURSDAY_PROFILE_RELEASE_FILE=.*foursday-release\.json/u);
   assert.match(plan.envContent, /FOURSDAY_RELEASE_SHA="a{40}"/u);
   assert.match(plan.codexConfigContent, /default_permissions = "foursday-workspace"/u);
@@ -123,6 +124,8 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.codexConfigContent, /foursday_read_project_source/u);
   assert.match(plan.codexConfigContent, /foursday_list_projects/u);
   assert.match(plan.codexConfigContent, /foursday_select_project/u);
+  assert.match(plan.codexConfigContent, /foursday_update_task_contract/u);
+  assert.match(plan.codexConfigContent, /FOURSDAY_TASK_LEDGER_FILE/u);
   assert.match(plan.codexConfigContent, /FOURSDAY_ROUTE_STATE_FILE/u);
   assert.match(plan.codexConfigContent, /\[mcp_servers\.foursday\.env\][\s\S]*DWS_PATH/u);
   assert.match(plan.codexConfigContent, /FOURSDAY_DWS_HOME/u);

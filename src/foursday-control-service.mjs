@@ -1,8 +1,9 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { inspectFoursdayNativeGateway } from "./foursday-native-gateway.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
+import { FoursdayTaskLedgerStore } from "./foursday-task-ledger.mjs";
 import { createHermesPersonalMemoryClient } from "./hermes-personal-memory-context.mjs";
 import { normalizeWorkScopeRegistry } from "./foursday-work-scope-registry.mjs";
 
@@ -145,6 +146,7 @@ export class FoursdayControlService {
     threadBindingRoot,
     evidencePath,
     productionConfigPath,
+    taskLedgerPath,
     gatewayInspector = inspectFoursdayNativeGateway,
     memoryCatalogReader = defaultMemoryCatalogReader,
     memoryCatalogTtlMs = 5 * 60_000,
@@ -156,12 +158,14 @@ export class FoursdayControlService {
     this.threadBindingRoot = threadBindingRoot;
     this.evidencePath = evidencePath;
     this.productionConfigPath = productionConfigPath;
+    this.taskLedgerPath = taskLedgerPath || join(dirname(controlPath), "task-ledger.json");
     this.gatewayInspector = gatewayInspector;
     this.memoryCatalogReader = memoryCatalogReader;
     this.memoryCatalogTtlMs = memoryCatalogTtlMs;
     this.now = now;
     this.memoryCatalogCache = null;
     this.store = new FoursdayControlStore({ path: controlPath });
+    this.taskLedgerStore = new FoursdayTaskLedgerStore({ path: this.taskLedgerPath });
   }
 
   async memoryDiscovery(readEnabled) {
@@ -274,15 +278,21 @@ export class FoursdayControlService {
   }
 
   async tasks(controlSnapshot = null) {
-    const [control, bindings] = await Promise.all([
+    const [control, bindings, taskLedger] = await Promise.all([
       controlSnapshot ? Promise.resolve(controlSnapshot) : this.store.snapshot(),
       threadBindings(this.threadBindingRoot),
+      this.taskLedgerStore.snapshot(),
     ]);
     const bindingByTask = new Map(bindings.map((item) => [item.taskId, item]));
     const ids = new Set([...Object.keys(control.tasks), ...bindingByTask.keys()]);
     const items = [...ids].sort().map((taskId) => {
       const task = control.tasks[taskId];
       const binding = bindingByTask.get(taskId);
+      const contract = taskLedger.tasks[taskId] ?? null;
+      const evidenceCounts = (contract?.evidence ?? []).reduce((counts, item) => {
+        counts[item.status] = (counts[item.status] ?? 0) + 1;
+        return counts;
+      }, {});
       return {
         taskId,
         projectId: task?.projectId ?? binding?.projectId ?? null,
@@ -296,9 +306,25 @@ export class FoursdayControlService {
         pendingIntervention: task?.pendingEvent && !task.pendingEvent.consumed
           ? { type: task.pendingEvent.type, createdAt: task.pendingEvent.createdAt }
           : null,
+        taskContract: contract ? {
+          title: contract.title,
+          goal: contract.goal,
+          deliverables: contract.deliverables,
+          acceptanceCriteria: contract.acceptanceCriteria,
+          lifecycleState: contract.lifecycleState,
+          confidence: contract.confidence,
+          evidenceCounts,
+          updatedAt: contract.updatedAt,
+          businessAccepted: contract.lifecycleState === "accepted",
+        } : null,
       };
     });
-    return { schema: "foursday-control-tasks/v1", revision: control.revision, items };
+    return {
+      schema: "foursday-control-tasks/v1",
+      revision: control.revision,
+      taskLedgerRevision: taskLedger.revision,
+      items,
+    };
   }
 
   async schedules() {
@@ -368,6 +394,7 @@ export function controlServicePaths({ layout, environment = process.env } = {}) 
     threadBindingRoot: environment.FOURSDAY_THREAD_BINDINGS_ROOT || join(stateRoot, "thread-bindings"),
     evidencePath: environment.FOURSDAY_SHADOW_EVIDENCE_FILE || join(stateRoot, "shadow-evidence.jsonl"),
     productionConfigPath: environment.FOURSDAY_PRODUCTION_CONFIG || join(localRoot, "production.json"),
+    taskLedgerPath: environment.FOURSDAY_TASK_LEDGER_FILE || join(stateRoot, "task-ledger.json"),
     displayName: basename(layout.profileDirectory),
   };
 }

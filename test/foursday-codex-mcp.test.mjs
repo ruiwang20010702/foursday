@@ -16,6 +16,7 @@ import {
   selectFoursdayProject,
   discoverFoursdayWorkScopes,
   selectFoursdayWorkScope,
+  updateFoursdayTaskContract,
 } from "../src/foursday-codex-mcp.mjs";
 
 async function fixture(t, {
@@ -45,6 +46,8 @@ async function fixture(t, {
         sourceSessionHash: "b".repeat(64),
         sourceScope,
         requesterRole,
+        ownerRevision: 2,
+        sendGeneration: 3,
         providedDingtalkSources,
         attachments: [{
           path: attachmentPath,
@@ -111,6 +114,7 @@ async function fixture(t, {
       FOURSDAY_PRODUCTION_CONFIG: join(root, "production.json"),
       FOURSDAY_PROJECT_REGISTRY: join(root, "projects.json"),
       FOURSDAY_ROUTE_STATE_FILE: join(root, "routes.json"),
+      FOURSDAY_TASK_LEDGER_FILE: join(root, "task-ledger.json"),
       FOURSDAY_PROFILE_RELEASE_FILE: join(root, "foursday-release.json"),
       FOURSDAY_RELEASE_SHA: "e".repeat(40),
       FOURSDAY_MODE: "active",
@@ -159,19 +163,57 @@ test("Codex MCP advertises bounded memory, attachment, project-source and live-s
     "foursday_select_project",
     "foursday_discover_work_scopes",
     "foursday_select_work_scope",
+    "foursday_update_task_contract",
   ]);
   assert.ok(listed.result.tools[0].inputSchema.required.includes("contextToken"));
   assert.deepEqual(listed.result.tools.map((tool) => tool.annotations.readOnlyHint), [
-    false, true, false, true, true, true, true, true, false, true, false,
+    false, true, false, true, true, true, true, true, false, true, false, false,
   ]);
   assert.equal(listed.result.tools.every((tool) => tool.annotations.destructiveHint === false), true);
   assert.equal(listed.result.tools.every((tool) => tool.annotations.idempotentHint === true), true);
   assert.deepEqual(listed.result.tools.map((tool) => tool.annotations.openWorldHint), [
-    true, false, false, true, false, true, true, false, false, true, false,
+    true, false, false, true, false, true, true, false, false, true, false, false,
   ]);
 
   const ping = await handleFoursdayMcpRequest({ jsonrpc: "2.0", id: 21, method: "ping" });
   assert.deepEqual(ping.result, {});
+});
+
+test("Codex semantically projects a task contract without self-acceptance", async (t) => {
+  const value = await fixture(t);
+  const result = await updateFoursdayTaskContract({
+    contextToken: value.token,
+    title: "核对项目交付状态",
+    goal: "从真实证据判断当前交付是否达到验收条件。",
+    deliverables: ["交付状态", "风险与下一步"],
+    acceptanceCriteria: ["结论有当前证据", "缺口明确标注"],
+    lifecycleState: "waiting_acceptance",
+    confidence: 0.98,
+    evidence: [{ kind: "source", status: "verified", summary: "当前项目来源已读取" }],
+  }, { environment: value.environment, cwd: value.root });
+  assert.equal(result.accepted, true);
+  assert.equal(result.lifecycleState, "waiting_acceptance");
+  assert.equal(result.businessAccepted, false);
+  assert.deepEqual(result.evidenceCounts, { verified: 1 });
+  const ledger = JSON.parse(await readFile(value.environment.FOURSDAY_TASK_LEDGER_FILE, "utf8"));
+  assert.equal(ledger.tasks["b".repeat(64)].title, "核对项目交付状态");
+
+  const denied = await handleFoursdayMcpRequest({
+    jsonrpc: "2.0",
+    id: 99,
+    method: "tools/call",
+    params: { name: "foursday_update_task_contract", arguments: {
+      contextToken: value.token,
+      title: "任务",
+      goal: "模型自行宣布验收。",
+      deliverables: [],
+      acceptanceCriteria: [],
+      lifecycleState: "accepted",
+      confidence: 1,
+      evidence: [],
+    } },
+  }, { environment: value.environment, cwd: value.root });
+  assert.equal(denied.result.structuredContent.error, "task_contract_rejected");
 });
 
 test("project source tools bind live DingTalk reads to the routed project", async (t) => {

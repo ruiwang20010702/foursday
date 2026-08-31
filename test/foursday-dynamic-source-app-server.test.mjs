@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -46,7 +47,21 @@ test("real Codex App Server reads one owner-provided DingTalk source without exp
     return;
   }
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-dynamic-appserver-")));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let child = null;
+  t.after(async () => {
+    if (child?.exitCode == null) {
+      child.kill("SIGTERM");
+      await Promise.race([
+        once(child, "close"),
+        new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+      ]);
+      if (child.exitCode == null) {
+        child.kill("SIGKILL");
+        await once(child, "close");
+      }
+    }
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
   const codexHome = join(root, "codex");
   const workspace = join(root, "workspace");
   await mkdir(codexHome, { mode: 0o700 });
@@ -122,7 +137,7 @@ DWS_PERSONAL_COMMAND_LOCK = ${JSON.stringify(join(root, "dws-command.lock"))}
 [projects.${JSON.stringify(workspace)}]
 trust_level = "trusted"
 `, { mode: 0o600 });
-  const child = spawn(codex, ["app-server"], {
+  child = spawn(codex, ["app-server"], {
     cwd: workspace,
     env: {
       HOME: process.env.HOME,
@@ -138,7 +153,6 @@ trust_level = "trusted"
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  t.after(() => { if (child.exitCode == null) child.kill("SIGTERM"); });
   const stderr = [];
   child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
   const request = rpcClient(child);

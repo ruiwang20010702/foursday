@@ -41,10 +41,12 @@ flowchart LR
     G["Personal gbrain project graph"] --> C["Private context"]
     R --> C
     C --> X["Codex Agent Loop"]
+    X --> L["Semantic task contract + evidence manifest"]
     X --> W["Real project workspace"]
     W --> X
     X --> V["Read-back evidence"]
     V --> T
+    L --> U["Codex / Claude / optional desktop companion"]
     T --> M
     X --> B{"Sandbox + rules + review"}
     B -->|"reversible"| W
@@ -58,9 +60,10 @@ Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousRese
 - an isolated Codex home with an App Server policy proxy, workspace sandboxing, forbidden command rules, automatic approval review, and a Foursday MCP;
 - scope-bound live DingTalk reads through that MCP: common sources may be registered, while exact links from verified current-enterprise direct-message senders become short-lived `provided_N` sources outside the model. DWS, node IDs, URLs, contact/global search, writes, and paths outside the current primary workspace remain unavailable to the Codex shell;
 - a project-work Skill;
+- a private semantic task ledger: Codex derives the goal, deliverables, acceptance criteria and evidence state from full context, while Foursday enforces identity, revision and lifecycle boundaries; the model cannot mark its own work accepted;
 - small host-side bridges for credentials and personal-memory promotion.
 - an owner-intervention fence that invalidates stale delivery first, then asks a no-tool Codex classification turn for one bounded control intent; the connector—not the model—applies the revisioned state change;
-- one host-neutral Foursday Control MCP, with thin Codex and Claude plugins plus an optional read-only local status page.
+- one host-neutral Foursday Control MCP, with thin Codex and Claude plugins, an optional read-only local status page, and a macOS desktop-companion source candidate that reuses installed Codex pet spritesheets.
 
 The installation gate verifies that the pinned runtime bypasses its own foreground tool loop in `codex_app_server` mode. Foursday also disables upstream built-in memory, memory/skill nudges, background review, automatic title generation, and the curator; durable learning goes only through the Foursday MCP and personal-gbrain promotion path.
 
@@ -174,6 +177,16 @@ npx --no-install foursday dashboard
 
 The page stores no independent state and exposes no write endpoint. Port `9465` belongs to the removed legacy administration runtime and is not a current source of truth. Upgrades may stop and archive the old service, but never remove PostgreSQL, Keychain entries or gbrain data as part of that cleanup.
 
+The optional macOS companion can be built locally without installing it:
+
+```bash
+npm run pet:build
+npm run pet:build -- --apply
+open ".runtime/foursday-pet/Foursday Pet.app"
+```
+
+It is a transparent, draggable, always-on-top task surface. It reuses an installed Codex pet when available, maps Foursday lifecycle states to idle/work/wait/review/failure animation rows, waves on hover, jumps on click or task completion, runs in the drag direction, and expands on click to show the same read-only task ledger. Interaction animation never changes business state. It does not patch the Codex app, access public network services, send messages, install itself into `~/Applications`, or create another task state machine.
+
 ## Memory ownership
 
 | Store | Responsibility |
@@ -181,6 +194,7 @@ The page stores no independent state and exposes no write endpoint. Port `9465` 
 | Personal PRIVATE gbrain Git | Durable business knowledge |
 | gbrain PostgreSQL | Rebuildable search and graph projection |
 | Foursday Session store | Conversation and tool history, provided by the embedded control plane |
+| Foursday private task ledger | Current task contract, lifecycle and bounded evidence summary |
 | Foursday PostgreSQL | Encrypted memory-promotion queue only |
 
 Foursday does not create a second knowledge repository or copy personal pages into its own Git repository.

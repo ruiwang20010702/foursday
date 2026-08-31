@@ -11,12 +11,14 @@ flowchart LR
     G["Personal gbrain project graph"] --> C["Private context"]
     R --> C
     C --> X["Codex Agent Loop"]
+    X --> L["Semantic task contract<br/>lifecycle + evidence summary"]
     X --> W["Real project workspace"]
     W --> X
     X --> V["Read-back evidence"]
     V --> A
     A --> M
     X --> B["Codex sandbox + Foursday rules + auto-review"]
+    L --> O["Codex / Claude / optional macOS companion"]
 ```
 
 ## Ownership
@@ -31,6 +33,7 @@ flowchart LR
 | Memory promotion | Foursday MCP with short-lived message-bound tokens |
 | Risk enforcement | isolated Codex home, App Server policy proxy, OS sandbox, forbidden rules, and automatic approval review |
 | Work behavior | Foursday Profile and project-work Skill |
+| Current task contract | private Foursday task ledger, semantically written by Codex and revision-fenced by Foursday |
 | Durable business knowledge | personal PRIVATE gbrain Git |
 | Memory promotion queue | minimal Foursday PostgreSQL schema |
 
@@ -44,7 +47,7 @@ Foursday has no Hermes fork, core patch, second Agent Loop, capability-manifest 
 
 Codex and Claude are the primary operator hosts. Their thin plugins call one local Foursday Control MCP for privacy-safe status, tasks, schedules, project-memory scope, evidence, and revision-fenced pause/takeover/correction/resume actions. The control file contains no task body or identity and is checked by DWS before message processing and again before transport.
 
-`foursday dashboard` is an optional loopback-only, GET-only projection of the same service. It stores no state and exposes no control endpoint. The legacy service on port 9465 is not part of the current architecture.
+`foursday dashboard` is an optional loopback-only, GET-only projection of the same service. It stores no state and exposes no control endpoint. An optional macOS companion reuses installed Codex pet spritesheets and all nine standard animation rows: lifecycle state selects idle, work, wait, review, or failure, while hover, click, drag direction, and completion create short-lived wave, jump, or travel feedback. Those interactions never mutate task state. Clicking also expands the same task projection. The companion never patches the Codex app or connects to public network services. The legacy service on port 9465 is not part of the current architecture.
 
 ## Codex-first capability boundary
 
@@ -56,6 +59,8 @@ The v2 private registry separates executable `workspaces` from business `scopes`
 
 An authorized request grants the reversible work needed to finish its goal; Foursday does not ask for approval before every tool call. Codex may select another registered workspace for ordinary reversible work on the next turn. Business meaning, priority, content, and acceptance questions return to the requester. Production, unregistered workspaces, personal high-authority MCPs, secrets, privilege expansion, and irreversible actions return to the owner.
 
+Codex also projects its semantic understanding into a private current-task contract: title, goal, deliverables, acceptance criteria, lifecycle, and a bounded Evidence Manifest. This is not a capability manifest or keyword classifier. Foursday derives the anonymous task identity, project, owner revision, and send generation from the current context token; stale generations are rejected, `waiting_acceptance` needs verified evidence, and the Agent cannot set `accepted` for its own work.
+
 Owner intervention is fenced before it is interpreted: the connector first invalidates the previous delivery generation, then a separate ephemeral Codex turn with MCP, web, images, memory, file access and network disabled returns one bounded intent enum. The connector alone applies the revisioned control event. Regex is limited to broad candidate detection and emergency stops; timeout, invalid output, low confidence and third-party ambiguity conservatively become communication takeover.
 
 The Foursday Profile fixes Hermes busy input to `queue`. Text fragments that arrive after a Codex turn has started are merged into the next turn instead of being redirected into a turn that still owns an older delivery generation. The old answer remains suppressed; the queued turn rebinds delivery from its final event metadata, so only an answer that owns the latest `ownerRevision/sendGeneration` can become visible.
@@ -64,7 +69,7 @@ The current source candidate implements this contract. Bound `thread/resume` and
 
 ## Version scope
 
-The source candidate covers personal DingTalk through DWS, Stream-event wake with explicit degradation, adaptive outbound stability for 5–8 second message fragments, allowlist enforcement, project routing, personal gbrain context, Codex Thread resume/same-task fork, subagents, web/image, scoped MCP, isolated Skills/Memory, attachments, read-back, five-state owner intervention, safety boundaries, and shadow verification. It also contains the local-only Hermes Cron/Monitor-to-Codex core. Feishu, Slack, Teams, cross-platform Session recovery, user-facing scheduled-work configuration and proactive-work recipes remain P1. Enterprise governance and ecosystem features remain P2.
+The source candidate covers personal DingTalk through DWS, Stream-event wake with explicit degradation, adaptive outbound stability for 5–8 second message fragments, allowlist enforcement, project routing, personal gbrain context, a semantic task contract, Codex Thread resume/same-task fork, subagents, web/image, scoped MCP, isolated Skills/Memory, attachments, read-back, five-state owner intervention, safety boundaries, and shadow verification. It also contains a buildable optional macOS companion and the local-only Hermes Cron/Monitor-to-Codex core. Feishu, Slack, Teams, cross-platform Session recovery, user-facing scheduled-work configuration and proactive-work recipes remain P1. Enterprise governance and ecosystem features remain P2.
 
 Installation verifies the locked upstream source still bypasses its foreground tool loop in `codex_app_server` mode. The Foursday Profile disables upstream built-in memory, memory/skill nudges, background-review forks, automatic title generation, and the curator so no post-turn auxiliary model or Agent Loop reappears behind Codex.
 

@@ -22,6 +22,7 @@ import {
 import {
   legacyProjectsFromWorkScopes,
 } from "./foursday-work-scope-registry.mjs";
+import { FoursdayTaskLedgerStore } from "./foursday-task-ledger.mjs";
 import { isMainModule } from "./main-module.mjs";
 
 const toolName = "foursday_remember_project_fact";
@@ -35,6 +36,7 @@ const listProjectsToolName = "foursday_list_projects";
 const selectProjectToolName = "foursday_select_project";
 const discoverWorkScopesToolName = "foursday_discover_work_scopes";
 const selectWorkScopeToolName = "foursday_select_work_scope";
+const updateTaskContractToolName = "foursday_update_task_contract";
 const fullReleaseSha = /^[a-f0-9]{40}$/u;
 const projectSourceId = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const dingtalkNodeId = /^[A-Za-z0-9]{20,80}$/u;
@@ -311,6 +313,61 @@ export const foursdaySelectWorkScopeTool = Object.freeze({
       rationale: { type: "string", minLength: 1, maxLength: 500 },
     },
     required: ["contextToken", "primaryScopeId", "rationale"],
+    additionalProperties: false,
+  },
+});
+
+export const foursdayUpdateTaskContractTool = Object.freeze({
+  name: updateTaskContractToolName,
+  description: "Project the current Codex semantic understanding into Foursday's private task ledger. Use this after understanding an actionable task and again before delivery, rework or escalation. This does not mark business acceptance and does not authorize external actions.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      contextToken: { type: "string", description: "Opaque Foursday token from the current message context." },
+      title: { type: "string", minLength: 1, maxLength: 120 },
+      goal: { type: "string", minLength: 1, maxLength: 1000 },
+      deliverables: {
+        type: "array", maxItems: 8, uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 200 },
+      },
+      acceptanceCriteria: {
+        type: "array", maxItems: 8, uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 240 },
+      },
+      lifecycleState: {
+        type: "string",
+        enum: [
+          "intake", "planning", "working", "verifying", "waiting_acceptance",
+          "rework_requested", "escalated", "failed",
+        ],
+      },
+      confidence: { type: "number", minimum: 0.7, maximum: 1 },
+      evidence: {
+        type: "array", maxItems: 16,
+        items: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: [
+              "message", "memory", "source", "file", "tool", "test", "delivery", "runtime",
+            ] },
+            status: { type: "string", enum: ["observed", "verified", "missing"] },
+            summary: { type: "string", minLength: 1, maxLength: 240 },
+          },
+          required: ["kind", "status", "summary"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: [
+      "contextToken", "title", "goal", "deliverables", "acceptanceCriteria",
+      "lifecycleState", "confidence", "evidence",
+    ],
     additionalProperties: false,
   },
 });
@@ -1172,6 +1229,39 @@ export async function callFoursdayCodexTool(input, {
   };
 }
 
+export async function updateFoursdayTaskContract(input, {
+  environment = process.env,
+  cwd = process.cwd(),
+  now = Date.now(),
+  createStore = (path) => new FoursdayTaskLedgerStore({ path }),
+} = {}) {
+  const context = await attachmentContext(input, { environment, cwd, now });
+  if (context.sourceScope !== "direct") throw new Error("work_context_mcp_scope_denied");
+  const ledgerPath = String(environment.FOURSDAY_TASK_LEDGER_FILE ?? "").trim();
+  if (!ledgerPath) throw new Error("foursday_mcp_unconfigured");
+  const store = await createStore(ledgerPath).open({ createParent: true });
+  const { contextToken: _discarded, ...contract } = input ?? {};
+  const result = await store.upsertFromAgent({
+    ...contract,
+    taskId: context.sourceSessionHash,
+    projectId: context.primaryScopeId ?? context.projectId ?? null,
+    ownerRevision: context.ownerRevision,
+    sendGeneration: context.sendGeneration,
+  });
+  return {
+    accepted: true,
+    taskId: context.sourceSessionHash,
+    projectId: result.result.task.projectId,
+    lifecycleState: result.result.task.lifecycleState,
+    ledgerRevision: result.revision,
+    evidenceCounts: result.result.task.evidence.reduce((counts, item) => {
+      counts[item.status] = (counts[item.status] ?? 0) + 1;
+      return counts;
+    }, {}),
+    businessAccepted: false,
+  };
+}
+
 function response(id, result) {
   return { jsonrpc: "2.0", id, result };
 }
@@ -1206,6 +1296,7 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
         foursdaySelectProjectTool,
         foursdayDiscoverWorkScopesTool,
         foursdaySelectWorkScopeTool,
+        foursdayUpdateTaskContractTool,
       ],
     });
   }
@@ -1216,6 +1307,7 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
       runtimeStatusToolName, listProjectSourcesToolName, readProjectSourceToolName,
       listProjectsToolName, selectProjectToolName,
       discoverWorkScopesToolName, selectWorkScopeToolName,
+      updateTaskContractToolName,
     ].includes(name)) {
       return errorResponse(request.id, -32601, "Unknown tool");
     }
@@ -1240,7 +1332,9 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
                         ? await selectFoursdayProject(request.params?.arguments, options)
                         : name === discoverWorkScopesToolName
                           ? await discoverFoursdayWorkScopes(request.params?.arguments, options)
-                          : await selectFoursdayWorkScope(request.params?.arguments, options);
+                          : name === selectWorkScopeToolName
+                            ? await selectFoursdayWorkScope(request.params?.arguments, options)
+                            : await updateFoursdayTaskContract(request.params?.arguments, options);
       return response(request.id, {
         content: [{ type: "text", text: JSON.stringify(result) }],
         structuredContent: result,
@@ -1278,6 +1372,7 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
         "work_scope_query_invalid",
         "work_scope_selection_invalid",
         "work_scope_selection_evidence_missing",
+        "foursday_task_ledger_revision_conflict",
       ]);
       const candidate = String(error?.message ?? "");
       const code = knownErrors.has(candidate)
@@ -1292,6 +1387,8 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
               ? "project_source_read_failed"
               : [listProjectsToolName, selectProjectToolName, discoverWorkScopesToolName, selectWorkScopeToolName].includes(name)
                 ? "project_selection_unavailable"
+                : name === updateTaskContractToolName
+                  ? "task_contract_rejected"
               : "attachment_rejected";
       return response(request.id, {
         content: [{ type: "text", text: JSON.stringify({ accepted: false, error: code }) }],

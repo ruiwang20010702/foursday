@@ -180,6 +180,7 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
     FOURSDAY_PROJECT_REGISTRY: "/private/projects.json",
     FOURSDAY_ROUTE_STATE_FILE: "/private/routes.json",
     FOURSDAY_WORK_CONTEXT_FILE: "/private/contexts.json",
+    FOURSDAY_TASK_LEDGER_FILE: "/private/task-ledger.json",
     FOURSDAY_PROFILE_RELEASE_FILE: "/private/release.json",
     FOURSDAY_RELEASE_SHA: "a".repeat(40),
     FOURSDAY_MODE: "shadow",
@@ -200,6 +201,7 @@ test("proxy gives Codex only runtime essentials and read-only MCP status binding
   assert.equal(environment.HOME, "/home/foursday");
   assert.equal(environment.FOURSDAY_PROJECT_REGISTRY, "/private/projects.json");
   assert.equal(environment.FOURSDAY_ROUTE_STATE_FILE, "/private/routes.json");
+  assert.equal(environment.FOURSDAY_TASK_LEDGER_FILE, "/private/task-ledger.json");
   assert.equal(environment.FOURSDAY_PROFILE_RELEASE_FILE, "/private/release.json");
   assert.equal(environment.FOURSDAY_RELEASE_SHA, "a".repeat(40));
   assert.equal(environment.FOURSDAY_MODE, "shadow");

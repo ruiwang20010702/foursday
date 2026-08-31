@@ -329,6 +329,7 @@ export function codexProcessEnvironment(source, realCodex, configuredCodex = rea
     "FOURSDAY_PROJECT_REGISTRY",
     "FOURSDAY_ROUTE_STATE_FILE",
     "FOURSDAY_WORK_CONTEXT_FILE",
+    "FOURSDAY_TASK_LEDGER_FILE",
     "FOURSDAY_PROFILE_RELEASE_FILE",
     "FOURSDAY_RELEASE_SHA",
     "FOURSDAY_MODE",

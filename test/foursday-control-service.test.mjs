@@ -22,6 +22,7 @@ async function fixture(t) {
   const productionConfigPath = join(profileDirectory, "local", "foursday", "production.json");
   const evidencePath = join(state, "shadow-evidence.jsonl");
   const controlPath = join(state, "control.json");
+  const taskLedgerPath = join(state, "task-ledger.json");
   await writeFile(registryPath, `${JSON.stringify({
     schemaVersion: 1,
     projects: [{ id: "project", name: "Project", aliases: [], root, gbrainSlugs: ["projects/example"] }],
@@ -49,6 +50,29 @@ async function fixture(t) {
     JSON.stringify({ type: "reply_attempt", occurredAt: "2026-08-24T09:01:00Z", private: "reply" }),
     "",
   ].join("\n"), { mode: 0o600 });
+  await writeFile(taskLedgerPath, `${JSON.stringify({
+    schema: "foursday-task-ledger/v1",
+    revision: 1,
+    tasks: {
+      [taskId]: {
+        taskId,
+        projectId: "project",
+        title: "核对项目交付状态",
+        goal: "判断当前项目是否具备验收证据。",
+        deliverables: ["交付结论"],
+        acceptanceCriteria: ["结论有真实证据"],
+        lifecycleState: "waiting_acceptance",
+        confidence: 0.98,
+        evidence: [
+          { kind: "test", status: "verified", summary: "回归测试通过" },
+          { kind: "delivery", status: "missing", summary: "等待业务签收" },
+        ],
+        ownerRevision: 2,
+        sendGeneration: 3,
+        updatedAt: "2026-08-24T10:01:00.000Z",
+      },
+    },
+  })}\n`, { mode: 0o600 });
   const layout = { profileDirectory, userHome: root };
   const service = new FoursdayControlService({
     layout,
@@ -57,6 +81,7 @@ async function fixture(t) {
     threadBindingRoot: bindings,
     evidencePath,
     productionConfigPath,
+    taskLedgerPath,
     gatewayInspector: async () => ({
       ready: true, installed: true, mode: "shadow", sendEnabled: false,
       sendBlocked: false,
@@ -124,6 +149,7 @@ test("control service projects tasks, schedules, memory and evidence without pri
   assert.equal(status.gateway.lastDetectionLatencyMs, 1250);
   const tasks = await service.tasks();
   assert.equal(tasks.revision, 0);
+  assert.equal(tasks.taskLedgerRevision, 1);
   assert.deepEqual(tasks.items[0], {
     taskId,
     projectId: "project",
@@ -135,6 +161,17 @@ test("control service projects tasks, schedules, memory and evidence without pri
     lastInboundAt: null,
     updatedAt: "2026-08-24T10:00:00.000Z",
     pendingIntervention: null,
+    taskContract: {
+      title: "核对项目交付状态",
+      goal: "判断当前项目是否具备验收证据。",
+      deliverables: ["交付结论"],
+      acceptanceCriteria: ["结论有真实证据"],
+      lifecycleState: "waiting_acceptance",
+      confidence: 0.98,
+      evidenceCounts: { verified: 1, missing: 1 },
+      updatedAt: "2026-08-24T10:01:00.000Z",
+      businessAccepted: false,
+    },
   });
   const schedules = await service.schedules();
   assert.equal(schedules.items[0].continuity, true);

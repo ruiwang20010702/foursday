@@ -24,6 +24,7 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
     "check:python",
     "check:security",
     "memory:promote",
+    "pet:build",
     "reuse:verify",
     "runtime:accept",
     "runtime:activate",
@@ -42,7 +43,7 @@ test("private attachment staging can never become an ordinary Git candidate", as
 
 test("documentation tree has one small current set and no history mirror", async () => {
   const files = async (directory) => (await readdir(resolve(root, directory), { withFileTypes: true }))
-    .filter((entry) => entry.isFile())
+    .filter((entry) => entry.isFile() && entry.name !== ".DS_Store")
     .map((entry) => entry.name)
     .sort();
   assert.deepEqual(await files("docs"), ["产品需求文档.md", "技术设计文档.md", "设计总览.md"]);
