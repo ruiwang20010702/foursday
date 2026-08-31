@@ -40,13 +40,33 @@ try {
       DWS_PERSONAL_COMMAND_LOCK: join(root, "dws-command.lock"),
     },
   });
-  const fetchEnterpriseDirect = dws.fetchEnterpriseDirect.bind(dws);
-  dws.fetchEnterpriseDirect = async (input) => {
+  const runDws = dws.run.bind(dws);
+  dws.run = async (args, options) => {
     try {
-      return await fetchEnterpriseDirect(input);
+      return await runDws(args, options);
+    } catch (error) {
+      const marker = `${String(error?.stderr ?? "")} ${String(error?.message ?? "")}`;
+      failureTrace.push({
+        stage: `dws:${args.slice(0, 3).join(":")}`,
+        code: String(error?.code ?? error?.name ?? "error").slice(0, 80),
+        signals: {
+          authentication: /auth|unauthorized|forbidden/iu.test(marker),
+          ciphertextMismatch: /ciphertext_key_mismatch/iu.test(marker),
+          timeout: /timeout|timed out|ETIMEDOUT/iu.test(marker),
+          unknownCommand: /unknown command|unknown flag/iu.test(marker),
+        },
+        frames: [],
+      });
+      throw error;
+    }
+  };
+  const fetchEnterpriseDirectScan = dws.fetchEnterpriseDirectScan.bind(dws);
+  dws.fetchEnterpriseDirectScan = async (input) => {
+    try {
+      return await fetchEnterpriseDirectScan(input);
     } catch (error) {
       failureTrace.push({
-        stage: "fetchEnterpriseDirect",
+        stage: "fetchEnterpriseDirectScan",
         code: String(error?.code ?? error?.name ?? "error").slice(0, 80),
         frames: String(error?.stack ?? "").split(/\r?\n/u).slice(1, 8)
           .map((line) => line.trim().replace(homedir(), "<home>"))
@@ -55,6 +75,29 @@ try {
       throw error;
     }
   };
+  for (const stage of [
+    "verifyEnterpriseMessage",
+    "verifyEnterpriseUser",
+    "resolveEnterpriseOpenDingTalkId",
+    "enrichMessageResources",
+  ]) {
+    const operation = dws[stage]?.bind(dws);
+    if (!operation) continue;
+    dws[stage] = async (...input) => {
+      try {
+        return await operation(...input);
+      } catch (error) {
+        failureTrace.push({
+          stage,
+          code: String(error?.code ?? error?.name ?? "error").slice(0, 80),
+          frames: String(error?.stack ?? "").split(/\r?\n/u).slice(1, 8)
+            .map((line) => line.trim().replace(homedir(), "<home>"))
+            .filter((line) => /^at\s/u.test(line)),
+        });
+        throw error;
+      }
+    };
+  }
   const initialLookbackMs = Number(values.get("DWS_PERSONAL_INITIAL_LOOKBACK_MS") || 600_000);
   runtime = await createSidecarRuntime({
     config: {
