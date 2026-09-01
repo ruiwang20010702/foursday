@@ -49,6 +49,7 @@
     "memory:promote": "node scripts/运行个人gbrain记忆晋升.mjs --once",
     "reuse:verify": "node --test test/foursday-cli.test.mjs test/hermes-package.test.mjs test/foursday-hermes-native-install.test.mjs",
     "check": "node scripts/运行代码检查.mjs",
+    "check:golden": "node scripts/验证Foursday黄金路径.mjs",
     "check:full": "node scripts/运行完整测试.mjs",
     "check:python": "PYTHONPATH=\"$HOME/.hermes/hermes-agent:$PWD/distribution/plugins:$PWD\" \"$HOME/.hermes/hermes-agent/venv/bin/python\" -m unittest discover -s distribution/tests -p 'test_*.py'",
     "check:security": "npm audit --audit-level=high"

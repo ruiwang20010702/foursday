@@ -21,6 +21,7 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
   assert.deepEqual(Object.keys(packageJson.scripts).sort(), [
     "check",
     "check:full",
+    "check:golden",
     "check:python",
     "check:security",
     "memory:promote",

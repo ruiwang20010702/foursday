@@ -215,6 +215,7 @@ Run the verified checks locally:
 
 ```bash
 npm run check:full
+npm run check:golden
 npm run check:python
 npm run reuse:verify
 npm run check:security
