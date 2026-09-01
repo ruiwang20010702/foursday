@@ -1058,6 +1058,23 @@ export async function finishFoursdayNativeProfileInstall({
     const directory = await mkdtemp(join(tmpdir(), "foursday-profile-backup-"));
     await chmod(directory, 0o700);
     const archive = join(directory, "foursday.tar.gz");
+    const codexTemporaryRoot = join(
+      layout.profileDirectory, "local", "foursday", "codex", "tmp",
+    );
+    const codexTemporaryMetadata = await lstat(codexTemporaryRoot).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    let codexTemporaryHolding = null;
+    if (codexTemporaryMetadata) {
+      if (!codexTemporaryMetadata.isDirectory() || codexTemporaryMetadata.isSymbolicLink()) {
+        await rm(directory, { recursive: true, force: true });
+        throw new Error("Foursday Codex temporary directory is unsafe");
+      }
+      codexTemporaryHolding = await mkdtemp(join(tmpdir(), "foursday-codex-tmp-"));
+      await chmod(codexTemporaryHolding, 0o700);
+      await rename(codexTemporaryRoot, join(codexTemporaryHolding, "tmp"));
+    }
     try {
       await run(layout.hermesCommand, [
         "profile", "export", "foursday", "--output", archive,
@@ -1071,6 +1088,12 @@ export async function finishFoursdayNativeProfileInstall({
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
       throw error;
+    } finally {
+      if (codexTemporaryHolding) {
+        await mkdir(dirname(codexTemporaryRoot), { recursive: true, mode: 0o700 });
+        await rename(join(codexTemporaryHolding, "tmp"), codexTemporaryRoot);
+        await rm(codexTemporaryHolding, { recursive: true, force: true });
+      }
     }
   }
   const profile = await stageProfile({

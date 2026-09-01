@@ -520,6 +520,13 @@ test("failed native profile update restores the official exported profile", asyn
   await writeFile(layout.profileAlias, "#!/bin/sh\n", { mode: 0o700 });
   await writeSingleLoopRuntime(layout);
   await writeSingleLoopProfile(layout);
+  const codexTemporaryDirectory = join(
+    layout.profileDirectory,
+    "local", "foursday", "codex", "tmp", "arg0",
+  );
+  const codexTemporaryExecutable = join(codexTemporaryDirectory, "apply_patch");
+  await mkdir(codexTemporaryDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(codexTemporaryExecutable, "temporary runtime helper", { mode: 0o700 });
   const calls = [];
   await assert.rejects(
     finishFoursdayNativeProfileInstall({
@@ -539,6 +546,7 @@ test("failed native profile update restores the official exported profile", asyn
         if (path === "/usr/bin/git" && args.includes("ls-files")) return { stdout: "H agent/conversation_loop.py\n" };
         if (args[0] === "gateway") return { stdout: "Gateway is not running\n" };
         if (args[0] === "profile" && args[1] === "export") {
+          await assert.rejects(access(codexTemporaryExecutable));
           await writeFile(args.at(-1), "private profile backup", { mode: 0o600 });
           return { stdout: "" };
         }
@@ -558,4 +566,5 @@ test("failed native profile update restores the official exported profile", asyn
   assert.deepEqual(profileActions, [
     "export", "install", "update", "alias", "delete", "import", "alias",
   ]);
+  assert.equal(await readFile(codexTemporaryExecutable, "utf8"), "temporary runtime helper");
 });
