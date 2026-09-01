@@ -2,7 +2,16 @@
 
 > Current release: `v0.8.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
 
-## 1. Install Foursday
+## 1. Run the ten-minute trial setup
+
+```bash
+npx --no-install foursday setup
+npx --no-install foursday setup --apply
+```
+
+The setup command composes prerequisite detection, DingTalk profile selection, Codex saved-project discovery, private configuration, Profile installation, isolated Codex login, send-disabled startup and one real read-only verification. It is resumable and never activates real sending. Use the commands below only for advanced diagnosis or recovery.
+
+### Advanced installation
 
 ```bash
 git clone https://github.com/ruiwang20010702/foursday.git
@@ -75,10 +84,11 @@ Operate from Codex/Claude through the packaged Control MCP, or inspect the same 
 ```bash
 npx --no-install foursday control status
 npx --no-install foursday control tasks
-npx --no-install foursday dashboard
+npm run pet:build -- --apply
+open ".runtime/foursday-pet/Foursday Pet.app"
 ```
 
-The optional dashboard binds only to `127.0.0.1:9466` by default and is read-only. It does not depend on the removed legacy 9465 administration service.
+On macOS the companion is the default visual worksite and starts the loopback Control service when needed. If the companion is unavailable, or on non-macOS hosts, run `npx --no-install foursday dashboard` as a hidden read-only fallback. It binds only to `127.0.0.1:9466`, has no write endpoint, and does not depend on the removed legacy 9465 administration service.
 
 ## 5. Activate
 

@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createInterface } from "node:readline/promises";
 import {
   foursdayNativeHermesLayout,
   inspectFoursdaySourceCommit,
@@ -13,6 +14,12 @@ import { runFoursdayCodexLogin } from "../src/foursday-codex-auth.mjs";
 import { runFoursdayCodexShadow } from "../src/foursday-codex-shadow.mjs";
 import { runFoursdayControlMcp } from "../src/foursday-control-mcp.mjs";
 import { runFoursdayControlSite } from "../src/foursday-control-site.mjs";
+import {
+  inspectFoursdaySetupEnvironment,
+  resolveFoursdaySetupSelections,
+  runFoursdaySetup,
+} from "../src/foursday-setup.mjs";
+import { createHermesPersonalMemoryClient } from "../src/hermes-personal-memory-context.mjs";
 import { defaultProductionConfigPath } from "../src/production-config-file.mjs";
 import { isMainModule } from "../src/main-module.mjs";
 
@@ -21,6 +28,7 @@ const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 
 export const foursdayHelp = Object.freeze({
   usage: [
+    "foursday setup [--apply] [--config FILE] [--account PROFILE] [--root DIR ...]",
     "foursday install [--apply]",
     "foursday configure [--apply] [--replace] [--cron] --registry /absolute/private/projects.json",
     "foursday projects discover --catalog /absolute/private/codex-projects.json [--existing FILE] [--output FILE --apply]",
@@ -36,6 +44,16 @@ export const foursdayHelp = Object.freeze({
   architecture: "Foursday Gateway + Codex work loop + personal memory",
   defaultSafety: "install and configure preview changes; Gateway starts send-disabled; activation requires exact shadow evidence",
 });
+
+export function formatFoursdaySetup(result) {
+  const lines = [result.title, result.detail, ""];
+  for (const step of result.steps ?? []) {
+    const mark = step.state === "ready" ? "✓" : step.state === "needs_action" ? "!" : "·";
+    lines.push(`${mark} ${step.step}：${step.detail}`);
+  }
+  lines.push("", `下一步：${result.recommendedAction}`);
+  return lines.join("\n");
+}
 
 async function install({ apply }) {
   const [lock, packageDocument, foursdayCommit] = await Promise.all([
@@ -117,6 +135,18 @@ async function runBundledScript(script, args, { transform = (value) => value } =
   }
 }
 
+function optionValues(args, name) {
+  const output = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === name) output.push(args[index + 1]);
+  }
+  return output.filter(Boolean);
+}
+
+function optionValue(args, name) {
+  return optionValues(args, name).at(-1) ?? null;
+}
+
 export async function runFoursdayCli(args = process.argv.slice(2), {
   codexLogin = runFoursdayCodexLogin,
   codexShadow = runFoursdayCodexShadow,
@@ -125,6 +155,89 @@ export async function runFoursdayCli(args = process.argv.slice(2), {
 } = {}) {
   const [command = "help", ...rest] = args;
   if (["help", "--help", "-h"].includes(command)) return foursdayHelp;
+  if (command === "setup") {
+    const valueFlags = new Set(["--config", "--account", "--root"]);
+    if (rest.some((value, index) =>
+      value !== "--apply" && !valueFlags.has(value) && !valueFlags.has(rest[index - 1]))) {
+      throw new Error("Usage: foursday setup [--apply] [--config FILE] [--account PROFILE] [--root DIR ...]");
+    }
+    const configPath = optionValue(rest, "--config") ??
+      process.env.FOURSDAY_CONFIG_FILE ?? defaultProductionConfigPath();
+    const detected = await inspectFoursdaySetupEnvironment();
+    const packageDocument = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    const sourceCommit = await execFileAsync("/usr/bin/git", ["-C", packageRoot, "rev-parse", "HEAD"], {
+      timeout: 5_000,
+      maxBuffer: 64 * 1024,
+    }).then(({ stdout }) => stdout.trim()).catch(() => "package");
+    const releaseIdentity = `${packageDocument.version}:${sourceCommit}`;
+    let setupAccount = optionValue(rest, "--account");
+    let setupRoots = optionValues(rest, "--root");
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      const prompt = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const selected = await resolveFoursdaySetupSelections(detected, {
+          account: setupAccount,
+          roots: setupRoots,
+          askOne: async ({ prompt: question, options }) => {
+            process.stdout.write(`${question}：\n${options.map((value, index) => `${index + 1}. ${value}`).join("\n")}\n`);
+            const answer = await prompt.question("请输入序号：");
+            const index = Number(answer) - 1;
+            return Number.isSafeInteger(index) ? index : null;
+          },
+          askMany: async ({ prompt: question, options }) => {
+            process.stdout.write(`${question}：\n${options.map((value, index) => `${index + 1}. ${value}`).join("\n")}\n`);
+            const answer = await prompt.question("请输入序号，多个项目用逗号分隔：");
+            return answer.split(/[,，]/u).map((value) => Number(value.trim()) - 1)
+              .filter(Number.isSafeInteger);
+          },
+        });
+        setupAccount = selected.account;
+        setupRoots = selected.roots;
+      } finally { prompt.close(); }
+    }
+    try { return await runFoursdaySetup({
+      apply: rest.includes("--apply"),
+      configPath,
+      account: setupAccount,
+      roots: setupRoots,
+      releaseIdentity,
+      inspect: async () => detected,
+      listMemoryProjects: async ({ configPath: path }) => {
+        const client = await createHermesPersonalMemoryClient({ configPath: path });
+        const result = await client.listProjects({ maximum: 1_000 });
+        return result.projects;
+      },
+      install,
+      configure: async ({ configPath: path, registryPath }) => {
+        const prior = process.env.FOURSDAY_CONFIG_FILE;
+        process.env.FOURSDAY_CONFIG_FILE = path;
+        try { return await runBundledScript("./配置Foursday运行时.mjs", ["--apply", "--registry", registryPath]); }
+        finally {
+          if (prior == null) delete process.env.FOURSDAY_CONFIG_FILE;
+          else process.env.FOURSDAY_CONFIG_FILE = prior;
+        }
+      },
+      login: ({ apply, configPath: path }) => codexLogin({
+        layout: foursdayNativeHermesLayout({ projectRoot: packageRoot }), configPath: path, apply,
+      }),
+      gateway: (action, { apply }) => runBundledScript("./管理FoursdayGateway.mjs", [action, ...(apply ? ["--apply"] : [])]),
+      verify: ({ apply, configPath: path }) => codexShadow({
+        layout: foursdayNativeHermesLayout({ projectRoot: packageRoot }), configPath: path, apply,
+      }),
+    }); } catch (error) {
+      return {
+        schema: "foursday-setup/v1",
+        state: "failed",
+        ready: false,
+        apply: rest.includes("--apply"),
+        title: "上岗没有完成",
+        detail: "已停止在当前步骤，没有开启自动回复",
+        recommendedAction: error?.recommendedAction ?? "在 Codex 中查看失败摘要并让 AI 继续修复",
+        errorCode: /^[a-z0-9_-]{1,80}$/u.test(String(error?.code ?? "")) ? error.code : "setup_step_failed",
+        steps: [],
+      };
+    }
+  }
   if (command === "install") {
     if (rest.some((value) => value !== "--apply")) {
       throw new Error("Usage: foursday install [--apply]");
@@ -198,7 +311,13 @@ export async function runFoursdayCli(args = process.argv.slice(2), {
 if (isMainModule(import.meta.url)) {
   try {
     const result = await runFoursdayCli();
-    if (result != null) console.log(JSON.stringify(result, null, 2));
+    if (result != null) {
+      if (result.schema === "foursday-setup/v1" && process.stdout.isTTY) {
+        console.log(formatFoursdaySetup(result));
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+    }
   } catch (error) {
     if (error?.stdout) {
       const output = String(error.stdout).trim();

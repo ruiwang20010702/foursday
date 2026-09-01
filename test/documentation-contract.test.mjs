@@ -24,6 +24,7 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
     "check:golden",
     "check:python",
     "check:security",
+    "experience:verify",
     "memory:promote",
     "pet:build",
     "reuse:verify",
@@ -33,8 +34,20 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
     "runtime:gateway",
     "runtime:setup",
     "runtime:verify-mcp",
+    "setup",
   ]);
   assert.equal(packageJson.dependencies["@larksuiteoapi/node-sdk"], undefined);
+});
+
+test("public CLI installation copies a tarball instead of linking the protected checkout", async () => {
+  for (const path of [
+    "README.md", "docs/en/integrations.md", "docs/指南/中文首页.md", "docs/指南/集成扩展指南.md",
+  ]) {
+    const document = await text(path);
+    assert.match(document, /npm pack --ignore-scripts --pack-destination/u);
+    assert.match(document, /npm install --global --ignore-scripts .*foursday-\*\.tgz/u);
+    assert.doesNotMatch(document, /npm install --global --ignore-scripts \.\s*$/mu);
+  }
 });
 
 test("private attachment staging can never become an ordinary Git candidate", async () => {
@@ -49,7 +62,7 @@ test("documentation tree has one small current set and no history mirror", async
     .sort();
   assert.deepEqual(await files("docs"), ["产品需求文档.md", "技术设计文档.md", "设计总览.md"]);
   assert.deepEqual(await files("docs/en"), ["architecture.md", "deployment.md", "integrations.md"]);
-  assert.deepEqual(await files("docs/指南"), ["中文首页.md", "参与贡献.md", "同企业真实工作灰度测试指南.md", "安全说明.md", "生产迁移与回滚.md", "集成扩展指南.md"]);
+  assert.deepEqual(await files("docs/指南"), ["中文首页.md", "十分钟上岗与体验验收.md", "参与贡献.md", "同企业真实工作灰度测试指南.md", "安全说明.md", "生产迁移与回滚.md", "集成扩展指南.md"]);
   const history = await readdir(resolve(root, "docs/历史")).catch((error) => {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -63,7 +76,7 @@ test("current Markdown links resolve locally", async () => {
     "docs/产品需求文档.md", "docs/技术设计文档.md", "docs/设计总览.md",
     "docs/en/architecture.md", "docs/en/deployment.md", "docs/en/integrations.md",
     "docs/指南/中文首页.md", "docs/指南/参与贡献.md", "docs/指南/同企业真实工作灰度测试指南.md", "docs/指南/安全说明.md",
-    "docs/指南/生产迁移与回滚.md", "docs/指南/集成扩展指南.md",
+    "docs/指南/生产迁移与回滚.md", "docs/指南/集成扩展指南.md", "docs/指南/十分钟上岗与体验验收.md",
   ];
   for (const path of paths) {
     const document = await text(path);

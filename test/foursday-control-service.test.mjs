@@ -18,6 +18,10 @@ async function fixture(t, { now = Date.parse("2026-09-01T02:45:00.000Z") } = {})
     mkdir(bindings, { recursive: true, mode: 0o700 }),
     mkdir(cron, { recursive: true, mode: 0o700 }),
   ]);
+  await writeFile(join(profileDirectory, "foursday-release.json"), `${JSON.stringify({
+    foursdayVersion: "0.9.0-rc.1",
+    foursdayCommit: "e".repeat(40),
+  })}\n`, { mode: 0o600 });
   const registryPath = join(profileDirectory, "local", "foursday", "projects.json");
   const productionConfigPath = join(profileDirectory, "local", "foursday", "production.json");
   const evidencePath = join(state, "shadow-evidence.jsonl");
@@ -130,6 +134,10 @@ async function fixture(t, { now = Date.parse("2026-09-01T02:45:00.000Z") } = {})
 test("control service projects tasks, schedules, memory and evidence without private bodies", async (t) => {
   const { service } = await fixture(t);
   const status = await service.status();
+  assert.deepEqual(status.release, {
+    version: "0.9.0-rc.1",
+    commit: "e".repeat(40),
+  });
   assert.equal(status.gateway.eventWakeDegraded, true);
   assert.equal(status.gateway.responsibilityReactionsEnabled, true);
   assert.equal(status.gateway.reactionWakeReadyCount, 2);
@@ -211,6 +219,13 @@ test("control service projects tasks, schedules, memory and evidence without pri
       evidenceCounts: { verified: 1, missing: 1 },
       updatedAt: "2026-08-24T10:01:00.000Z",
       businessAccepted: false,
+    },
+    userState: {
+      state: "waiting_acceptance",
+      title: "等待你确认",
+      detail: "工作结果已经准备好",
+      owner: "you",
+      waitTier: "needs_you",
     },
   });
   const schedules = await service.schedules();

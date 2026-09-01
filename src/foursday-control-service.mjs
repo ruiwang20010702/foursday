@@ -6,8 +6,11 @@ import { FoursdayControlStore } from "./foursday-control-store.mjs";
 import { FoursdayTaskLedgerStore } from "./foursday-task-ledger.mjs";
 import { createHermesPersonalMemoryClient } from "./hermes-personal-memory-context.mjs";
 import { normalizeWorkScopeRegistry } from "./foursday-work-scope-registry.mjs";
+import { userFacingRuntimeState, userFacingTaskState } from "./foursday-user-experience.mjs";
+import { analyzeFoursdayExperience } from "./foursday-experience-metrics.mjs";
 
 const digest = /^[a-f0-9]{64}$/u;
+const fullSha = /^[a-f0-9]{40}$/u;
 
 async function privateJson(path, { optional = false, maximum = 1024 * 1024 } = {}) {
   if (!isAbsolute(path)) throw new Error("Foursday control source path must be absolute");
@@ -181,9 +184,9 @@ function taskProgress(task, contract, activityTrail, binding, execution) {
 }
 
 async function evidenceSummary(path) {
-  if (!path || !isAbsolute(path)) return { count: 0, byType: {}, lastEventAt: null };
+  if (!path || !isAbsolute(path)) return { count: 0, byType: {}, lastEventAt: null, experience: analyzeFoursdayExperience([]) };
   const metadata = await lstat(path).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
-  if (!metadata) return { count: 0, byType: {}, lastEventAt: null };
+  if (!metadata) return { count: 0, byType: {}, lastEventAt: null, experience: analyzeFoursdayExperience([]) };
   if (
     !metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0 ||
     metadata.size > 16 * 1024 * 1024 ||
@@ -193,16 +196,23 @@ async function evidenceSummary(path) {
   }
   const rows = (await readFile(path, "utf8")).split("\n").filter(Boolean).slice(-10_000);
   const byType = {};
+  const events = [];
   let lastEventAt = null;
   for (const row of rows) {
     let event;
     try { event = JSON.parse(row); } catch { continue; }
+    events.push(event);
     const type = String(event?.type ?? "unknown").replaceAll(/[^A-Za-z0-9_.-]/gu, "_").slice(0, 80);
     byType[type] = (byType[type] ?? 0) + 1;
     const occurredAt = event?.occurredAt;
     if (typeof occurredAt === "string" && (!lastEventAt || occurredAt > lastEventAt)) lastEventAt = occurredAt;
   }
-  return { count: Object.values(byType).reduce((sum, value) => sum + value, 0), byType, lastEventAt };
+  return {
+    count: Object.values(byType).reduce((sum, value) => sum + value, 0),
+    byType,
+    lastEventAt,
+    experience: analyzeFoursdayExperience(events),
+  };
 }
 
 export class FoursdayControlService {
@@ -271,14 +281,16 @@ export class FoursdayControlService {
   }
 
   async status() {
-    const [gateway, control] = await Promise.all([
+    const [gateway, control, release] = await Promise.all([
       this.gatewayInspector({ layout: this.layout }),
       this.store.snapshot(),
+      privateJson(join(this.layout.profileDirectory, "foursday-release.json"), { optional: true }),
     ]);
     const tasks = await this.tasks(control);
+    const ready = gateway.ready === true && control.global.state === "running";
     return {
       schema: "foursday-control-status/v1",
-      ready: gateway.ready === true && control.global.state === "running",
+      ready,
       gateway: {
         installed: gateway.installed === true,
         mode: gateway.mode,
@@ -339,10 +351,19 @@ export class FoursdayControlService {
           : null,
       },
       control: { revision: control.revision, state: control.global.state },
+      release: {
+        version: typeof release?.foursdayVersion === "string"
+          ? release.foursdayVersion.slice(0, 80)
+          : null,
+        commit: fullSha.test(String(release?.foursdayCommit ?? ""))
+          ? release.foursdayCommit
+          : null,
+      },
       taskCounts: tasks.items.reduce((counts, item) => {
         counts[item.state] = (counts[item.state] ?? 0) + 1;
         return counts;
       }, {}),
+      experience: userFacingRuntimeState({ gateway, control: control.global, ready, tasks: tasks.items }),
     };
   }
 
@@ -389,7 +410,7 @@ export class FoursdayControlService {
         summary.sendGeneration === sendGeneration ? summary.title : null;
       const execution = rawExecution && rawExecution.ownerRevision === ownerRevision &&
         rawExecution.sendGeneration === sendGeneration ? rawExecution : null;
-      return {
+      const item = {
         taskId,
         projectId: effectiveProjectId,
         projectName: effectiveProjectId == null ? null : projectNameById.get(effectiveProjectId) ?? null,
@@ -451,6 +472,7 @@ export class FoursdayControlService {
           businessAccepted: contract.lifecycleState === "accepted",
         } : null,
       };
+      return { ...item, userState: userFacingTaskState(item) };
     });
     const priority = new Map([["needs_me", 0], ["working", 1], ["recent", 2]]);
     items.sort((left, right) => {

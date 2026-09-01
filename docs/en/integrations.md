@@ -19,7 +19,9 @@ Agent-host integrations are thin clients of `foursday control-mcp`. They must re
 The repository is an installable marketplace for both supported hosts:
 
 ```bash
-npm install --global --ignore-scripts .
+foursday_cli_package=$(mktemp -d)
+npm pack --ignore-scripts --pack-destination "$foursday_cli_package"
+npm install --global --ignore-scripts "$foursday_cli_package"/foursday-*.tgz
 
 codex plugin marketplace add .
 codex plugin add foursday@foursday-local

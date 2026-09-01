@@ -3,16 +3,63 @@ import Observation
 import SwiftUI
 
 private struct StatusEnvelope: Decodable {
+    struct Experience: Decodable {
+        struct Responsibility: Decodable {
+            let needsYou: Int
+            let aiOwned: Int
+            let recentlyCompleted: Int
+            let owner: String
+        }
+        struct Recommendation: Decodable {
+            let code: String
+            let label: String
+        }
+        let state: String
+        let title: String
+        let detail: String
+        let responsibility: Responsibility
+        let recommendation: Recommendation
+    }
     struct Gateway: Decodable {
+        let installed: Bool?
         let mode: String
         let sendEnabled: Bool
         let checkpointState: String
+        let checkpointBusy: Bool?
+        let checkpointGeneration: Int?
+        let checkpointOperation: String?
         let running: Bool?
         let sendBlocked: Bool?
         let modeConsistent: Bool?
+        let eventWakeEnabled: Bool?
+        let eventWakeReady: Bool?
+        let eventWakeDegraded: Bool?
+        let reactionWakeReadyCount: Int?
+        let reactionWakeErrorCount: Int?
+        let reactionWakeDegraded: Bool?
+        let reactionWakeLastErrorCode: String?
+        let manualReplyProbeReady: Bool?
+        let manualReplyProbeDegraded: Bool?
+        let manualReplyProbeErrorCode: String?
+        let enterpriseIdentityRetryPending: Int?
+        let enterpriseIdentityRejectionCount: Int?
+        let enterpriseIdentityLastErrorCode: String?
+        let lastWakeSource: String?
+        let lastDetectionLatencyMs: Double?
+    }
+    struct Control: Decodable {
+        let revision: Int
+        let state: String
+    }
+    struct Release: Decodable {
+        let version: String?
+        let commit: String?
     }
     let ready: Bool
     let gateway: Gateway
+    let control: Control
+    let release: Release?
+    let experience: Experience?
 }
 
 private struct TasksEnvelope: Decodable {
@@ -21,7 +68,55 @@ private struct TasksEnvelope: Decodable {
     let items: [TaskItem]
 }
 
+private struct SchedulesEnvelope: Decodable {
+    struct Item: Decodable, Identifiable {
+        let id: String
+        let name: String
+        let enabled: Bool
+        let state: String
+        let schedule: String
+        let nextRunAt: String?
+        let lastRunAt: String?
+        let lastStatus: String?
+        let monitor: Bool
+        let continuity: Bool
+        let delivery: String
+    }
+    let items: [Item]
+}
+
+private struct MemoryEnvelope: Decodable {
+    struct FixedBindings: Decodable {
+        let projectCount: Int
+        let pageCount: Int
+    }
+    struct Discovery: Decodable {
+        let enabled: Bool
+        let state: String
+        let projectCount: Int?
+        let truncated: Bool
+    }
+    let sourceId: String
+    let readEnabled: Bool
+    let writeEnabled: Bool
+    let fixedBindings: FixedBindings
+    let discovery: Discovery
+}
+
+private struct EvidenceEnvelope: Decodable {
+    let count: Int
+    let byType: [String: Int]
+    let lastEventAt: String?
+}
+
 private struct TaskItem: Decodable, Identifiable {
+    struct UserState: Decodable {
+        let state: String
+        let title: String
+        let detail: String
+        let owner: String
+        let waitTier: String
+    }
     struct Contract: Decodable {
         let title: String
         let goal: String
@@ -91,6 +186,7 @@ private struct TaskItem: Decodable, Identifiable {
     let activityTrail: [Activity]?
     let missingEvidence: [String]?
     let threadView: ThreadView?
+    let userState: UserState?
     var id: String { taskId }
 }
 
@@ -151,7 +247,7 @@ private enum WorksiteGroup: String, CaseIterable, Identifiable {
         switch self {
         case .needsMe: "需要我"
         case .working: "AI负责"
-        case .recent: "最近处理"
+        case .recent: "最近完成"
         }
     }
     var icon: String {
@@ -278,14 +374,21 @@ private struct PetAtlas {
 private final class PetModel {
     var status: StatusEnvelope?
     var tasks: [TaskItem] = []
+    var schedules: SchedulesEnvelope?
+    var memory: MemoryEnvelope?
+    var evidence: EvidenceEnvelope?
     var tasksRevision = 0
     var selectedGroup = WorksiteGroup.needsMe
     var selectedTaskId: String?
     var collapsedProjectIds: Set<String> = []
+    var showingDiagnostics = false
     var controlInFlight = false
     var controlMessage: String?
     var expanded = false {
-        didSet { onExpansionChanged?(expanded) }
+        didSet {
+            if !expanded { showingDiagnostics = false }
+            onExpansionChanged?(expanded)
+        }
     }
     var lastError: String?
     let atlas = PetAtlas.load()
@@ -330,6 +433,57 @@ private final class PetModel {
                 ["waiting_acceptance", "escalated", "rework_requested", "failed"].contains(item.taskContract?.lifecycleState)
             )
         }.count
+    }
+
+    var userStatusTitle: String {
+        if lastError != nil { return "状态暂不可用" }
+        guard let status else { return "正在读取状态" }
+        if let experience = status.experience { return experience.title }
+        if status.control.state == "paused" { return "已暂停" }
+        if status.gateway.sendBlocked == true || status.gateway.modeConsistent == false {
+            return "自动回复已暂停"
+        }
+        if status.gateway.running != true { return "Foursday未运行" }
+        if ["failed", "error", "blocked", "unknown_send"].contains(status.gateway.checkpointState) {
+            return "消息同步异常"
+        }
+        if status.gateway.checkpointBusy == true { return "正在同步新消息" }
+        if status.gateway.mode == "shadow" { return "试用中" }
+        if status.ready && status.gateway.sendEnabled { return "已上岗" }
+        return "需要检查"
+    }
+
+    var userStatusDetail: String {
+        if lastError != nil { return "正在重新连接Foursday工作服务" }
+        guard let status else { return "正在连接Foursday工作服务" }
+        if let experience = status.experience { return experience.detail }
+        switch userStatusTitle {
+        case "试用中": return "当前不会自动回复钉钉消息"
+        case "已上岗": return "钉钉连接与任务处理正常"
+        case "正在同步新消息": return "Foursday正在补齐消息，任务可以继续"
+        case "已暂停": return "现有任务和自动回复已暂停"
+        case "自动回复已暂停": return "系统无法确认一次发送结果，已停止后续回复"
+        case "消息同步异常": return "新消息可能暂时无法进入Foursday"
+        case "Foursday未运行": return "当前不会接收或处理新任务"
+        default: return status.ready ? "工作服务可用" : "部分工作能力暂不可用"
+        }
+    }
+
+    var recommendedAction: String {
+        if lastError != nil { return "在Codex中检查Foursday状态" }
+        guard let status else { return "等待状态加载完成" }
+        if let experience = status.experience { return experience.recommendation.label }
+        if status.gateway.sendBlocked == true || status.gateway.modeConsistent == false ||
+            status.gateway.running != true || !status.ready {
+            return "在Codex中检查Foursday状态"
+        }
+        if memory?.discovery.state == "unavailable" {
+            return "无需操作，历史背景会自动重试"
+        }
+        if schedules == nil || memory == nil || evidence == nil {
+            return "在Codex中检查Foursday状态"
+        }
+        return "无需操作"
     }
 
     var selectedTask: TaskItem? {
@@ -472,15 +626,16 @@ private final class PetModel {
 
     private func ensureDashboard() async {
         if await dashboardAvailable() { return }
-        guard let executable = locateFoursday() else {
+        guard let executable = locateFoursday(), let node = locateNode() else {
             lastError = "找不到 foursday 命令"
             return
         }
         let process = Process()
-        process.executableURL = executable
-        process.arguments = ["dashboard", "--port", "9466"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.executableURL = node
+        process.arguments = [executable.path, "dashboard", "--port", "9466"]
+        process.environment = foursdayProcessEnvironment()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             dashboardProcess = process
@@ -503,7 +658,21 @@ private final class PetModel {
             "/opt/homebrew/bin/foursday",
             "/usr/local/bin/foursday",
         ].compactMap { $0 }
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+            .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath() }
+    }
+
+    private func locateNode() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/opt/homebrew/opt/node@24/bin/node",
+            "/opt/homebrew/opt/node@22/bin/node",
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            home + "/.local/bin/node",
+        ]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+            .map(URL.init(fileURLWithPath:))
     }
 
     private func dashboardAvailable() async -> Bool {
@@ -517,6 +686,9 @@ private final class PetModel {
         do {
             async let nextStatus: StatusEnvelope = read("status")
             async let nextTasks: TasksEnvelope = read("tasks")
+            async let nextSchedules: SchedulesEnvelope? = try? read("schedules")
+            async let nextMemory: MemoryEnvelope? = try? read("memory")
+            async let nextEvidence: EvidenceEnvelope? = try? read("evidence")
             let refreshedStatus = try await nextStatus
             let refreshedEnvelope = try await nextTasks
             let refreshedTasks = refreshedEnvelope.items
@@ -525,6 +697,9 @@ private final class PetModel {
             }
             status = refreshedStatus
             tasks = refreshedTasks
+            schedules = await nextSchedules
+            memory = await nextMemory
+            evidence = await nextEvidence
             tasksRevision = refreshedEnvelope.revision
             if selectedTaskId == nil || !tasks.contains(where: { $0.taskId == selectedTaskId }) {
                 let preferred = tasks.first(where: { groupForTask($0) == .needsMe })
@@ -586,12 +761,17 @@ private final class PetModel {
     }
 
     private func runControlProcess(_ executable: URL, arguments: [String]) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            guard let node = locateNode() else {
+                continuation.resume(throwing: PetControlError.cliUnavailable)
+                return
+            }
             let process = Process()
-            process.executableURL = executable
-            process.arguments = arguments
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
+            process.executableURL = node
+            process.arguments = [executable.path] + arguments
+            process.environment = foursdayProcessEnvironment()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
             process.terminationHandler = { process in
                 if process.terminationStatus == 0 {
                     continuation.resume()
@@ -602,6 +782,30 @@ private final class PetModel {
             do { try process.run() }
             catch { continuation.resume(throwing: error) }
         }
+    }
+
+    private func foursdayProcessEnvironment() -> [String: String] {
+        let current = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var environment = [
+            "HOME": home,
+            "PATH": [
+                "/opt/homebrew/opt/node@24/bin",
+                "/opt/homebrew/opt/node@22/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                home + "/.local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ].joined(separator: ":"),
+            "LANG": current["LANG"] ?? "C.UTF-8",
+        ]
+        if let temporary = current["TMPDIR"], temporary.hasPrefix("/") {
+            environment["TMPDIR"] = temporary
+        }
+        return environment
     }
 }
 
@@ -870,13 +1074,18 @@ private struct WorksiteDetail: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text(item.displayTitle).font(.title2.bold()).lineLimit(2)
                         Spacer()
-                        Text(item.lifecycleLabel)
+                        Text(item.userState?.title ?? item.lifecycleLabel)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
                     Text(item.taskContract?.goal ?? fallbackGoal)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    if let userState = item.userState {
+                        Label(userState.detail, systemImage: userState.owner == "you" ? "person.crop.circle.badge.exclamationmark" : "sparkles")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(userState.owner == "you" ? .orange : Color(hex: 0x1f765d))
+                    }
                 }
 
                 section("责任关系") {
@@ -905,20 +1114,21 @@ private struct WorksiteDetail: View {
                 }
 
                 if let execution = item.execution {
-                    section("执行方式") {
+                    section("工作方式") {
                         Label(
-                            execution.mode == "background" ? "耐久后台任务" : "当前会话任务",
+                            execution.mode == "background" ? "后台继续处理" : "当前会话内处理",
                             systemImage: execution.mode == "background" ? "clock.arrow.2.circlepath" : "bolt"
                         )
                         .font(.caption.weight(.semibold))
                         Text(execution.planSummary)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if execution.mode == "background" {
-                            Text("尝试次数：\(execution.attemptCount) · 判定：\(execution.decisionSource == "runtime" ? "运行中升级" : "Codex计划")")
-                                .font(.caption2)
+                        DisclosureGroup("技术详情") {
+                            Text("mode=\(execution.mode) · state=\(execution.state) · attempts=\(execution.attemptCount)")
+                                .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
                         }
+                        .font(.caption2)
                     }
                 }
 
@@ -1051,6 +1261,258 @@ private struct WorksiteDetail: View {
     }
 }
 
+private struct DiagnosticStatusRow: View {
+    let title: String
+    let value: String
+    let icon: String
+    let healthy: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .frame(width: 20)
+                .foregroundStyle(healthy ? Color(hex: 0x1f765d) : .orange)
+            Text(title).font(.subheadline.weight(.semibold))
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct SystemDiagnosticsView: View {
+    @Bindable var model: PetModel
+    @State private var technicalDetailsExpanded = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(model.userStatusTitle, systemImage: summaryIcon)
+                            .font(.title3.bold())
+                            .foregroundStyle(summaryColor)
+                        Text(model.userStatusDetail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Divider().padding(.vertical, 3)
+                        Text("建议：\(model.recommendedAction)")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GroupBox("连接与工作环境") {
+                    VStack(spacing: 8) {
+                        DiagnosticStatusRow(
+                            title: "钉钉连接",
+                            value: dingtalkStatus,
+                            icon: "message.badge.waveform",
+                            healthy: dingtalkHealthy
+                        )
+                        Divider()
+                        DiagnosticStatusRow(
+                            title: "Codex工作环境",
+                            value: model.status?.gateway.installed == true ? "已配置" : "未配置",
+                            icon: "sparkles",
+                            healthy: model.status?.gateway.installed == true
+                        )
+                        Divider()
+                        DiagnosticStatusRow(
+                            title: "消息同步",
+                            value: checkpointStatus,
+                            icon: "arrow.triangle.2.circlepath",
+                            healthy: checkpointHealthy
+                        )
+                    }
+                }
+
+                GroupBox("知识与工作记录") {
+                    VStack(spacing: 8) {
+                        DiagnosticStatusRow(
+                            title: "个人记忆",
+                            value: memoryStatus,
+                            icon: "brain.head.profile",
+                            healthy: memoryHealthy
+                        )
+                        Divider()
+                        DiagnosticStatusRow(
+                            title: "运行证据",
+                            value: evidenceStatus,
+                            icon: "checkmark.seal",
+                            healthy: model.evidence != nil
+                        )
+                        Divider()
+                        DiagnosticStatusRow(
+                            title: "主动工作",
+                            value: scheduleStatus,
+                            icon: "calendar.badge.clock",
+                            healthy: model.schedules != nil
+                        )
+                        Divider()
+                        DiagnosticStatusRow(
+                            title: "当前版本",
+                            value: releaseStatus,
+                            icon: "shippingbox",
+                            healthy: model.status?.release?.commit != nil
+                        )
+                    }
+                }
+
+                DisclosureGroup("技术详情", isExpanded: $technicalDetailsExpanded) {
+                    VStack(spacing: 7) {
+                        technicalRow("运行模式", model.status?.gateway.mode.uppercased() ?? "—")
+                        technicalRow("真实发送", model.status?.gateway.sendEnabled == true ? "开启" : "关闭")
+                        technicalRow("Control", model.status?.control.state ?? "—")
+                        technicalRow("Checkpoint", checkpointTechnicalStatus)
+                        technicalRow("Event Wake", model.status?.gateway.eventWakeReady == true ? "ready" : "degraded")
+                        technicalRow("Reaction", reactionTechnicalStatus)
+                        technicalRow("人工回复探针", manualProbeTechnicalStatus)
+                        technicalRow("企业身份重试", "\(model.status?.gateway.enterpriseIdentityRetryPending ?? 0)")
+                        technicalRow("固定记忆", fixedMemoryTechnicalStatus)
+                        technicalRow("可发现项目", discoveredMemoryTechnicalStatus)
+                        technicalRow("证据类型", evidenceTechnicalStatus)
+                        technicalRow("精确提交", model.status?.release?.commit ?? "—")
+                        if let errorCode = primaryErrorCode {
+                            technicalRow("错误码", errorCode)
+                        }
+                    }
+                    .padding(.top, 10)
+                }
+                .font(.caption.weight(.semibold))
+
+                Text("浏览器页面只在桌宠不可用或非macOS环境下作为只读应急入口；这里与它读取同一个Control服务。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.trailing, 4)
+        }
+    }
+
+    private var summaryIcon: String {
+        switch model.userStatusTitle {
+        case "已上岗": "checkmark.circle.fill"
+        case "试用中": "testtube.2"
+        case "正在同步新消息": "arrow.triangle.2.circlepath"
+        case "已暂停": "pause.circle.fill"
+        default: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var summaryColor: Color {
+        ["已上岗", "试用中", "正在同步新消息"].contains(model.userStatusTitle)
+            ? Color(hex: 0x1f765d)
+            : .orange
+    }
+
+    private var dingtalkHealthy: Bool {
+        model.status?.gateway.eventWakeReady == true || checkpointHealthy
+    }
+
+    private var dingtalkStatus: String {
+        if model.status?.gateway.eventWakeReady == true { return "连接正常" }
+        if checkpointHealthy { return "备用同步正常" }
+        return "需要检查"
+    }
+
+    private var checkpointHealthy: Bool {
+        ["healthy", "busy_but_bounded"].contains(model.status?.gateway.checkpointState)
+    }
+
+    private var checkpointStatus: String {
+        switch model.status?.gateway.checkpointState {
+        case "healthy": "同步正常"
+        case "busy_but_bounded": "正在同步新消息"
+        case "stale": "消息同步已过期"
+        case "failed": "消息同步失败"
+        default: "暂不可用"
+        }
+    }
+
+    private var memoryHealthy: Bool {
+        guard let memory = model.memory else { return false }
+        return !memory.readEnabled || ["ready", "disabled"].contains(memory.discovery.state)
+    }
+
+    private var memoryStatus: String {
+        guard let memory = model.memory else { return "暂不可用" }
+        if !memory.readEnabled { return "未开启" }
+        if memory.discovery.state == "unavailable" { return "历史背景暂不可用" }
+        let count = memory.discovery.projectCount.map(String.init) ?? "—"
+        return "读取正常 · 可发现\(count)个项目"
+    }
+
+    private var evidenceStatus: String {
+        guard let evidence = model.evidence else { return "暂不可用" }
+        if let time = evidence.lastEventAt { return "\(evidence.count)条 · \(compactTaskTime(time))" }
+        return "\(evidence.count)条运行证据"
+    }
+
+    private var scheduleStatus: String {
+        guard let schedules = model.schedules else { return "暂不可用" }
+        let enabled = schedules.items.filter(\.enabled).count
+        return enabled == 0 ? "未启用" : "\(enabled)项已启用"
+    }
+
+    private var releaseStatus: String {
+        let version = model.status?.release?.version ?? "版本未知"
+        guard let commit = model.status?.release?.commit else { return version }
+        return "\(version) · \(commit.prefix(7))"
+    }
+
+    private var checkpointTechnicalStatus: String {
+        let gateway = model.status?.gateway
+        let state = gateway?.checkpointState ?? "unknown"
+        let generation = gateway?.checkpointGeneration ?? 0
+        return "\(state) · generation \(generation)"
+    }
+
+    private var reactionTechnicalStatus: String {
+        let ready = model.status?.gateway.reactionWakeReadyCount ?? 0
+        let failed = model.status?.gateway.reactionWakeErrorCount ?? 0
+        return "\(ready) ready / \(failed) failed"
+    }
+
+    private var manualProbeTechnicalStatus: String {
+        if model.status?.gateway.manualReplyProbeReady == true { return "ready" }
+        if model.status?.gateway.manualReplyProbeDegraded == true { return "degraded" }
+        return "unknown"
+    }
+
+    private var fixedMemoryTechnicalStatus: String {
+        guard let memory = model.memory else { return "—" }
+        return "\(memory.fixedBindings.projectCount)个范围 / \(memory.fixedBindings.pageCount)页"
+    }
+
+    private var discoveredMemoryTechnicalStatus: String {
+        guard let discovery = model.memory?.discovery else { return "—" }
+        return discovery.projectCount.map { "\($0) · \(discovery.state)" } ?? discovery.state
+    }
+
+    private var evidenceTechnicalStatus: String {
+        guard let evidence = model.evidence else { return "—" }
+        return evidence.byType.sorted(by: { $0.key < $1.key })
+            .map { "\($0.key):\($0.value)" }.joined(separator: " · ")
+    }
+
+    private var primaryErrorCode: String? {
+        let gateway = model.status?.gateway
+        return gateway?.manualReplyProbeErrorCode ?? gateway?.reactionWakeLastErrorCode ??
+            gateway?.enterpriseIdentityLastErrorCode
+    }
+
+    @ViewBuilder private func technicalRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer(minLength: 14)
+            Text(value).font(.caption.monospaced()).multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 private struct WorksiteView: View {
     @Bindable var model: PetModel
 
@@ -1062,39 +1524,52 @@ private struct WorksiteView: View {
                     Text(statusLine).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    model.showingDiagnostics.toggle()
+                } label: {
+                    Label(
+                        model.showingDiagnostics ? "返回工作现场" : "设置与系统诊断",
+                        systemImage: model.showingDiagnostics ? "arrow.left" : "gearshape"
+                    )
+                }
+                .buttonStyle(.bordered)
                 Button { model.expanded = false } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain)
             }
             Divider()
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(WorksiteGroup.allCases) { group in
-                        HStack {
-                            Label(group.label, systemImage: group.icon)
-                                .font(.caption.weight(.semibold))
-                            Spacer()
-                            Text("\(model.tasks(in: group).count)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+            if model.showingDiagnostics {
+                SystemDiagnosticsView(model: model)
+            } else {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(WorksiteGroup.allCases) { group in
+                            HStack {
+                                Label(group.label, systemImage: group.icon)
+                                    .font(.caption.weight(.semibold))
+                                Spacer()
+                                Text("\(model.tasks(in: group).count)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 8)
                         }
-                        .padding(.horizontal, 8)
+                        Divider().padding(.vertical, 4)
+                        ScrollView {
+                            WorksiteProjectList(model: model)
+                        }
                     }
-                    Divider().padding(.vertical, 4)
-                    ScrollView {
-                        WorksiteProjectList(model: model)
-                    }
-                }
-                .frame(width: 188)
+                    .frame(width: 188)
 
-                Divider()
-                if let task = model.selectedTask {
-                    WorksiteDetail(model: model, item: task)
-                } else {
-                    ContentUnavailableView(
-                        "这个分区暂无任务",
-                        systemImage: "checkmark.circle",
-                        description: Text("Foursday 会在任务状态变化后自动更新。")
-                    )
+                    Divider()
+                    if let task = model.selectedTask {
+                        WorksiteDetail(model: model, item: task)
+                    } else {
+                        ContentUnavailableView(
+                            "这个分区暂无任务",
+                            systemImage: "checkmark.circle",
+                            description: Text("Foursday 会在任务状态变化后自动更新。")
+                        )
+                    }
                 }
             }
         }
@@ -1105,20 +1580,7 @@ private struct WorksiteView: View {
     }
 
     private var statusLine: String {
-        if let error = model.lastError { return error }
-        guard let status = model.status else { return "正在读取任务状态" }
-        let runtimeLabel = if status.gateway.sendBlocked == true || status.gateway.modeConsistent == false {
-            "运行异常"
-        } else if status.gateway.running != true {
-            "未运行"
-        } else if status.gateway.mode == "shadow" {
-            "影子运行"
-        } else if status.gateway.checkpointState == "healthy" {
-            "检查正常"
-        } else {
-            status.gateway.checkpointState
-        }
-        return "\(status.gateway.mode.uppercased()) · \(status.gateway.sendEnabled ? "发送开启" : "发送关闭") · \(runtimeLabel)"
+        "\(model.userStatusTitle) · \(model.userStatusDetail)"
     }
 }
 

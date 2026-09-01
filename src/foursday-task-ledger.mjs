@@ -470,19 +470,20 @@ export class FoursdayTaskLedgerStore {
         const activityCount = document.activities[taskId]?.length ?? 0;
         if (
           !contract || contract.ownerRevision !== ownerRevision ||
-          contract.sendGeneration !== sendGeneration || elapsedMs < 20_000 || activityCount < 2
+          contract.sendGeneration !== sendGeneration || elapsedMs < 15_000 || activityCount < 1
         ) return noWrite({ execution: null, promoted: false });
+        const promoted = elapsedMs >= 20_000 && activityCount >= 2;
         const execution = normalizeExecution({
           executionId: createHash("sha256")
             .update(`${taskId}\0${ownerRevision}\0${sendGeneration}`).digest("hex"),
-          mode: "background",
+          mode: promoted ? "background" : "foreground",
           state: "ack_pending",
           decisionSource: "runtime",
           planSummary: contract.goal,
           acknowledgment: `收到，我正在处理“${contract.title}”，完成并验证后会同步结果。`,
           stepCount: Math.min(32, Math.max(2, contract.deliverables.length + 1)),
           requiresExternalWait: false,
-          requiresDurability: true,
+          requiresDurability: promoted,
           activityCount,
           ownerRevision,
           sendGeneration,
@@ -496,7 +497,7 @@ export class FoursdayTaskLedgerStore {
           lastErrorCode: "",
         }, taskId);
         document.executions[taskId] = execution;
-        return { execution: { ...execution }, promoted: true };
+        return { execution: { ...execution }, promoted, acknowledgmentPending: true };
       }
       if (prior.ownerRevision !== ownerRevision || prior.sendGeneration !== sendGeneration) {
         return noWrite({ execution: null, promoted: false });
@@ -506,16 +507,21 @@ export class FoursdayTaskLedgerStore {
       }
       const activityCount = Math.min(10_000, prior.activityCount + 1);
       const promoted = prior.mode !== "background" && elapsedMs >= 20_000 && activityCount >= 2;
+      const normalAcknowledgment = prior.mode === "foreground" && prior.state === "foreground" &&
+        elapsedMs >= 15_000 && activityCount >= 1;
       const execution = normalizeExecution({
         ...prior,
         mode: promoted ? "background" : prior.mode,
-        state: promoted ? "ack_pending" : prior.state,
+        state: promoted
+          ? (prior.state === "acknowledged" ? "acknowledged" : "ack_pending")
+          : normalAcknowledgment ? "ack_pending" : prior.state,
         decisionSource: promoted ? "runtime" : prior.decisionSource,
+        requiresDurability: promoted ? true : prior.requiresDurability,
         activityCount,
         updatedAt: timestamp,
       }, taskId);
       document.executions[taskId] = execution;
-      return { execution: { ...execution }, promoted };
+      return { execution: { ...execution }, promoted, acknowledgmentPending: normalAcknowledgment };
     });
   }
 

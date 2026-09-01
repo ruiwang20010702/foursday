@@ -151,6 +151,41 @@ test("semantic durability and external waiting force background mode before tool
   assert.doesNotMatch(JSON.stringify(await store.snapshot()), /current_user_request|reasoning/iu);
 });
 
+test("a foreground task gets one 15 second acknowledgment without becoming durable", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-normal-task-plan-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await chmod(root, 0o700);
+  const store = await new FoursdayTaskLedgerStore({ path: join(root, "ledger.json") })
+    .open({ createParent: true });
+  await store.setExecutionPlan({
+    taskId,
+    expectedClass: "foreground",
+    planSummary: "核对一个项目文件并回复结论",
+    stepCount: 2,
+    acknowledgment: "收到，我正在核对项目资料，完成后同步结果。",
+    ownerRevision: 1,
+    sendGeneration: 1,
+  });
+  const before = await store.observeExecutionActivity({
+    taskId, ownerRevision: 1, sendGeneration: 1, elapsedMs: 14_999, kind: "read",
+  });
+  assert.equal(before.result.execution.state, "foreground");
+  const pending = await store.observeExecutionActivity({
+    taskId, ownerRevision: 1, sendGeneration: 1, elapsedMs: 15_000, kind: "verify",
+  });
+  assert.equal(pending.result.execution.mode, "foreground");
+  assert.equal(pending.result.execution.state, "ack_pending");
+  assert.equal(pending.result.promoted, false);
+  const acknowledged = await store.acknowledgeExecution({
+    taskId,
+    executionId: pending.result.execution.executionId,
+    ownerRevision: 1,
+    sendGeneration: 1,
+  });
+  assert.equal(acknowledged.result.execution.state, "acknowledged");
+  assert.equal(acknowledged.result.execution.requiresDurability, false);
+});
+
 test("task ledger rejects self-acceptance, stale generations, missing proof and secrets", async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-task-ledger-negative-")));
   t.after(() => rm(root, { recursive: true, force: true }));

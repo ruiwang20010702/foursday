@@ -111,7 +111,7 @@ export function createDurableExecutionCoordinator({
 
   const inspect = async (payload) => {
     const context = await executionContext(payload);
-    if (!context || context.execution.mode !== "background") {
+    if (!context || !["foreground", "background"].includes(context.execution.mode)) {
       return { success: false, staleGeneration: true };
     }
     if (!sendEnabled) {

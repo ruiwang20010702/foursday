@@ -67,7 +67,7 @@ Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousRese
 - a durable long-task lane: Codex semantically declares the execution shape before substantive tools, runtime activity can promote an underestimated task, DWS sends at most one generation-fenced acknowledgement, and Hermes queues an internal continuation that resumes the same Codex Thread after the acknowledgement Turn; restart recovery replays only the current leased generation;
 - small host-side bridges for credentials and personal-memory promotion.
 - an owner-intervention fence that invalidates stale delivery first, then asks a no-tool Codex classification turn for one bounded control intent; the connector—not the model—applies the revisioned state change;
-- one host-neutral Foursday Control MCP, with thin Codex and Claude plugins, an optional read-only local status page, and a macOS desktop-companion source candidate that reuses installed Codex pet spritesheets.
+- one host-neutral Foursday Control MCP, with thin Codex and Claude plugins, a macOS desktop companion that combines the task worksite with folded system diagnostics, and a hidden read-only browser fallback for non-macOS or recovery use.
 
 The installation gate verifies that the pinned runtime bypasses its own foreground tool loop in `codex_app_server` mode. Foursday also disables upstream built-in memory, memory/skill nudges, background review, automatic title generation, and the curator; durable learning goes only through the Foursday MCP and personal-gbrain promotion path.
 
@@ -101,11 +101,17 @@ Requirements: macOS, Git, Node.js 22+, DWS `v1.0.59+` for Stream event wake-up (
 git clone https://github.com/ruiwang20010702/foursday.git
 cd foursday
 npm ci --ignore-scripts
-npx --no-install foursday install
-npx --no-install foursday install --apply
+npx --no-install foursday setup
+npx --no-install foursday setup --apply
 ```
 
-`foursday install` verifies the pinned upstream installer, skips browser, Computer Use and bundled skills, then atomically prunes optional Node dependency trees only after the runtime and plugin doctor still pass. On the reference macOS host this reduced the installed runtime from 1.8 GB to 454 MB; the first install is still limited by the upstream dependency-install time. It does not start a Gateway or send a message.
+`foursday setup` detects Node, Git, Codex and DWS, reads the current DingTalk profile and Codex saved projects, connects the private configuration, installs the Foursday Profile, starts a send-disabled trial, and runs one real read-only Codex verification. It asks at most for the DingTalk account and allowed project roots. Setup always ends in **trial mode: no automatic DingTalk replies**; activation remains a separate decision.
+
+The setup state is private and resumable. It stores completed step names and counts, never credentials, account IDs, chat content or absolute project paths. Missing PostgreSQL or gbrain configuration produces one action in the Codex/Claude plugin instead of a terminal stack trace.
+
+<details><summary>Advanced and recovery commands</summary>
+
+`foursday install` remains available for diagnosis and recovery. It verifies the pinned upstream installer, skips browser, Computer Use and bundled skills, and atomically prunes optional Node dependencies only after runtime checks still pass.
 
 Then create private copies of:
 
@@ -141,6 +147,8 @@ Activation is deliberately separate and requires a current shadow-acceptance rec
 
 `foursday verify` runs one real Codex turn against an ephemeral fixture. It requires tool evidence, checks an unpredictable fact token, proves the workspace digest is unchanged, and performs no DingTalk send, production write, or deployment.
 
+</details>
+
 ## Operate from Codex or Claude
 
 Foursday is operated from an installed agent host, not from a separate administration product. Both plugin packages call the same local Control MCP:
@@ -151,7 +159,9 @@ Foursday is operated from an installed agent host, not from a separate administr
 Install either or both agent-host entries from the cloned repository:
 
 ```bash
-npm install --global --ignore-scripts .
+foursday_cli_package=$(mktemp -d)
+npm pack --ignore-scripts --pack-destination "$foursday_cli_package"
+npm install --global --ignore-scripts "$foursday_cli_package"/foursday-*.tgz
 
 codex plugin marketplace add .
 codex plugin add foursday@foursday-local
@@ -172,16 +182,7 @@ npx --no-install foursday control tasks
 npx --no-install foursday control schedules
 ```
 
-For occasional visualization, start a read-only loopback page on demand:
-
-```bash
-npx --no-install foursday dashboard
-# http://127.0.0.1:9466/
-```
-
-The page stores no independent state and exposes no write endpoint. Port `9465` belongs to the removed legacy administration runtime and is not a current source of truth. Upgrades may stop and archive the old service, but never remove PostgreSQL, Keychain entries or gbrain data as part of that cleanup.
-
-The optional macOS companion can be built locally without installing it:
+The macOS companion is the default visual worksite. Build it locally without installing it:
 
 ```bash
 npm run pet:build
@@ -189,7 +190,18 @@ npm run pet:build -- --apply
 open ".runtime/foursday-pet/Foursday Pet.app"
 ```
 
-It is a transparent, draggable, always-on-top work surface. It reuses an installed Codex pet, maps the same task ledger to animation, and expands into a native worksite with needs-me, AI-owned, and recent summaries above one project-first task tree. Every project appears once and expands its tasks in place, while each task carries its own responsibility state. AI-owned means responsibility remains with the agent, not that a Turn is running at that instant; actual progress comes from the semantic lifecycle and activity trail. The Control projection first selects a binding that exactly matches the current owner revision and send generation, then falls back to the newest valid binding. A fresh unbound task is shown as routing; a stale legacy record without a project, contract, or Codex Thread moves to recent history instead of appearing as AI-owned. Project discovery is automatic—requesters never need to create a Foursday folder or project entry. The worksite shows a bounded requester label and channel, the Foursday/Codex executor, Thread location, deterministic progress, bounded evidence, missing proof, and sanitized App Server activity such as read/search/edit/test. It never exposes raw reasoning, commands, chat bodies, stable identity IDs, absolute paths, or tool arguments; missing task contracts are reported as evidence-not-started instead of misleading zero counts. Pause, resume, communication takeover, and task takeover reuse the existing revision-fenced Control service rather than creating another state machine or approval workflow. A Codex deep link is shown only when the bound Thread is actually visible to the current desktop data space; isolated Threads are explicitly described as absent from the main sidebar and expose only a copyable diagnostic ID.
+The expanded worksite shows tasks by project and responsibility. Its secondary **Settings & System Diagnostics** surface reads the same status, schedules, memory, evidence and version projections from the Control service; engineering fields stay folded by default. It never exposes raw reasoning, commands, chat bodies, stable identity IDs, absolute paths or tool arguments.
+
+When the companion is unavailable, or on non-macOS hosts, start the hidden read-only browser fallback:
+
+```bash
+npx --no-install foursday dashboard
+# http://127.0.0.1:9466/
+```
+
+The fallback stores no independent state and exposes no write endpoint. Port `9465` belongs to the removed legacy administration runtime and is not a current source of truth. Upgrades may stop and archive the old service, but never remove PostgreSQL, Keychain entries or gbrain data as part of that cleanup.
+
+The companion is a transparent, draggable, always-on-top work surface. It reuses an installed Codex pet, maps the same task ledger to animation, and expands into a native worksite with needs-me, AI-owned, and recent summaries above one project-first task tree. Every project appears once and expands its tasks in place, while each task carries its own responsibility state. AI-owned means responsibility remains with the agent, not that a Turn is running at that instant; actual progress comes from the semantic lifecycle and activity trail. The Control projection first selects a binding that exactly matches the current owner revision and send generation, then falls back to the newest valid binding. A fresh unbound task is shown as routing; a stale legacy record without a project, contract, or Codex Thread moves to recent history instead of appearing as AI-owned. Project discovery is automatic—requesters never need to create a Foursday folder or project entry. The worksite shows a bounded requester label and channel, the Foursday/Codex executor, Thread location, deterministic progress, bounded evidence, missing proof, and sanitized App Server activity such as read/search/edit/test. Missing task contracts are reported as evidence-not-started instead of misleading zero counts. Pause, resume, communication takeover, and task takeover reuse the existing revision-fenced Control service rather than creating another state machine or approval workflow. A Codex deep link is shown only when the bound Thread is actually visible to the current desktop data space; isolated Threads are explicitly described as absent from the main sidebar and expose only a copyable diagnostic ID.
 
 Project folders are expanded by default and collapse locally when their header is clicked; this never changes task ownership or Codex execution. New tasks use the semantic title written by Codex. A local, preview-first backfill can derive a bounded title for legacy tasks from the exact isolated Codex Thread; it stores only the title and generation, never the source conversation, and skips ambiguous or sensitive history.
 
@@ -207,7 +219,7 @@ Foursday does not create a second knowledge repository or copy personal pages in
 
 ## Status
 
-The current public preview is `v0.8.0-rc.1`. It adds the shared Control MCP, Codex/Claude plugins, owner intervention fencing, Thread continuity and an optional read-only status page to the one-Codex-loop architecture. It is a release candidate, not evidence that a production instance has been activated.
+The current public preview is `v0.8.0-rc.1`. It adds the shared Control MCP, Codex/Claude plugins, owner intervention fencing, Thread continuity and the unified macOS worksite with a read-only browser fallback to the one-Codex-loop architecture. It is a release candidate, not evidence that a production instance has been activated.
 
 Installing this repository does not inherit any existing instance's authority, credentials, allowlist, send permission, or production state.
 

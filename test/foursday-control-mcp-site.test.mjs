@@ -79,6 +79,10 @@ test("optional status page is loopback-only, read-only and uses the same service
   assert.equal(page.status, 200);
   const pageText = await page.text();
   assert.match(pageText, /不维护第二套状态/u);
+  assert.match(pageText, /只读应急状态/u);
+  assert.match(pageText, /桌宠不可用或非macOS环境/u);
+  assert.match(pageText, /id="pet"[^>]*hidden/u);
+  assert.match(pageText, /id="drawer"[^>]*hidden/u);
   assert.match(pageText, /已暂停/u);
   assert.match(pageText, /filter\(item=>item\.enabled\)/u);
   assert.match(pageText, /DWS 检查点/u);

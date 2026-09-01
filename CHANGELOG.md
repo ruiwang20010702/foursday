@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed macOS worksite startup to invoke the real CLI with an explicit supported Node and a bounded environment; public local installation now packs and copies a tarball instead of leaving a global symlink into a TCC-protected checkout.
+- Added a resumable `foursday setup` trial-onboarding flow that detects the local toolchain, current DingTalk profile and Codex saved projects, asks at most for account and allowed roots, invalidates stale resume state when selections change, and always stops before real sending.
+- Added one Control-level user-experience contract for on-duty state, responsibility, progress and a single recommended action; the macOS worksite consumes the same translated state while keeping execution fields folded under technical details.
+- Split waiting behavior into instant, normal and durable work: normal work gets one acknowledgment after 15 seconds without becoming a background lease, while external-wait or durable work retains the restart-safe background path.
+- Added privacy-bounded experience metrics and a 30-task acceptance template; missing or sub-30 evidence remains explicitly insufficient instead of being counted as passed.
 - Replaced regex-final owner intervention decisions with send-first fencing plus a no-tool Codex semantic classifier; the connector still owns revisioned state changes, emergency stops stay local, and classifier failures conservatively suppress outbound replies.
 - Added preview-first Codex project discovery that preserves existing authority, generates a private v2 workspace/scope candidate, infers nearest saved parents, excludes over-broad or unsafe roots, and never overwrites the Active registry.
 - Split memory status into fixed bindings and a bounded discoverable-gbrain project count; catalog failures now degrade only that count without making message ingress unhealthy.

@@ -30,6 +30,9 @@ test("pet build refuses arbitrary output paths", async () => {
 test("pet reads only the loopback task projection and reuses Codex pet assets", async () => {
   const source = await readFile(new URL("../distribution/pet/macos/FoursdayPet.swift", import.meta.url), "utf8");
   assert.match(source, /127\.0\.0\.1:9466\/api\/status/u);
+  for (const endpoint of ["status", "tasks", "schedules", "memory", "evidence"]) {
+    assert.match(source, new RegExp(`read\\("${endpoint}"\\)`, "u"));
+  }
   assert.match(source, /\.codex\/pets/u);
   assert.match(source, /FOURSDAY_PET_ID/u);
   assert.match(source, /\.codex\/config\.toml/u);
@@ -85,6 +88,7 @@ test("pet worksite groups tasks and reuses revision-fenced local controls", asyn
   const source = await readFile(new URL("../distribution/pet/macos/FoursdayPet.swift", import.meta.url), "utf8");
   assert.match(source, /Foursday 工作现场/u);
   assert.match(source, /case \.working: "AI负责"/u);
+  assert.match(source, /case \.recent: "最近完成"/u);
   assert.match(source, /历史任务 ·/u);
   assert.match(source, /projectGroupName/u);
   assert.match(source, /未归档记录/u);
@@ -116,9 +120,44 @@ test("pet worksite groups tasks and reuses revision-fenced local controls", asyn
   assert.doesNotMatch(source, /历史任务没有可展示的 Codex 活动/u);
   assert.match(source, /activityTrail/u);
   assert.match(source, /missingEvidence/u);
-  assert.match(source, /耐久后台任务/u);
+  assert.match(source, /后台继续处理/u);
+  assert.match(source, /当前会话内处理/u);
+  assert.match(source, /item\.userState\?\.title/u);
+  assert.match(source, /status\.experience/u);
   assert.match(source, /后台排队/u);
   assert.match(source, /同一 Codex Thread 正在后台继续执行/u);
+  assert.match(source, /设置与系统诊断/u);
+  assert.match(source, /返回工作现场/u);
+  assert.match(source, /SystemDiagnosticsView/u);
+  assert.match(source, /process\.environment = foursdayProcessEnvironment\(\)/u);
+  assert.match(source, /process\.executableURL = node/u);
+  assert.match(source, /process\.arguments = \[executable\.path, "dashboard", "--port", "9466"\]/u);
+  assert.match(source, /process\.arguments = \[executable\.path\] \+ arguments/u);
+  assert.match(source, /private func locateNode\(\)/u);
+  assert.match(source, /resolvingSymlinksInPath\(\)/u);
+  assert.match(source, /process\.standardOutput = FileHandle\.nullDevice/u);
+  assert.match(source, /process\.standardError = FileHandle\.nullDevice/u);
+  assert.match(source, /home \+ "\/\.local\/bin"/u);
+  assert.match(source, /"\/opt\/homebrew\/opt\/node@24\/bin"/u);
+  assert.match(source, /"\/opt\/homebrew\/bin"/u);
+  assert.doesNotMatch(source, /process\.environment\s*=\s*ProcessInfo\.processInfo\.environment/u);
+  assert.match(source, /DisclosureGroup\("技术详情"/u);
+  assert.match(source, /@State private var technicalDetailsExpanded = false/u);
+  assert.match(source, /试用中，不会自动回复|当前不会自动回复钉钉消息/u);
+  assert.match(source, /钉钉连接/u);
+  assert.match(source, /Codex工作环境/u);
+  assert.match(source, /消息同步/u);
+  assert.match(source, /个人记忆/u);
+  assert.match(source, /当前版本/u);
+  assert.match(source, /运行证据/u);
+  assert.match(source, /主动工作/u);
+  assert.match(source, /在Codex中检查Foursday状态/u);
+  assert.match(source, /浏览器页面只在桌宠不可用或非macOS环境/u);
+  assert.match(source, /if !expanded \{ showingDiagnostics = false \}/u);
+  assert.match(source, /正在重新连接Foursday工作服务/u);
+  assert.match(source, /SchedulesEnvelope\? = try\? read\("schedules"\)/u);
+  assert.match(source, /MemoryEnvelope\? = try\? read\("memory"\)/u);
+  assert.match(source, /EvidenceEnvelope\? = try\? read\("evidence"\)/u);
   assert.doesNotMatch(source, /URLRequest\([\s\S]*httpMethod\s*=\s*"POST"/u);
   assert.doesNotMatch(source, /raw reasoning|chain.?of.?thought/iu);
 });

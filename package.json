@@ -40,6 +40,7 @@
   },
   "scripts": {
     "runtime:setup": "node scripts/安装Foursday运行时.mjs",
+    "setup": "node scripts/新环境向导.mjs setup",
     "runtime:configure": "node scripts/配置Foursday运行时.mjs",
     "runtime:gateway": "node scripts/管理FoursdayGateway.mjs",
     "runtime:accept": "node scripts/生成Foursday影子验收.mjs",
@@ -47,6 +48,7 @@
     "runtime:verify-mcp": "node scripts/验证RuntimeMCP可靠性.mjs",
     "pet:build": "node scripts/构建Foursday桌宠.mjs",
     "memory:promote": "node scripts/运行个人gbrain记忆晋升.mjs --once",
+    "experience:verify": "node scripts/验证Foursday真实任务体验.mjs",
     "reuse:verify": "node --test test/foursday-cli.test.mjs test/hermes-package.test.mjs test/foursday-hermes-native-install.test.mjs",
     "check": "node scripts/运行代码检查.mjs",
     "check:golden": "node scripts/验证Foursday黄金路径.mjs",

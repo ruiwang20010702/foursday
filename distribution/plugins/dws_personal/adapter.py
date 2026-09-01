@@ -1638,6 +1638,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             ),
             "receiptKind": str(result.get("receiptKind") or "")[:40]
             if isinstance(result, dict) else None,
+            "deliveryKind": str(
+                payload.get("metadata", {}).get("foursday_delivery_kind") or "final"
+            )[:40],
             "detectionLatencyMs": version.get("detectionLatencyMs"),
             "bundleWaitMs": version.get("bundleWaitMs"),
             "agentDurationMs": agent_duration_ms,

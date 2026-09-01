@@ -2,15 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   foursdayHelp,
+  formatFoursdaySetup,
   publicFoursdayInstall,
   publicFoursdayStatus,
   runFoursdayCli,
 } from "../scripts/新环境向导.mjs";
 
+test("setup terminal summary uses user language and one next action", () => {
+  const text = formatFoursdaySetup({
+    title: "试用已就绪",
+    detail: "不会自动回复钉钉消息",
+    recommendedAction: "先完成一项本人只读试用任务",
+    steps: [{ step: "连接项目与记忆", state: "ready", detail: "已完成" }],
+  });
+  assert.match(text, /试用已就绪/u);
+  assert.match(text, /下一步：先完成一项本人只读试用任务/u);
+  assert.doesNotMatch(text, /Profile|Registry|Shadow|Checkpoint|generation|acceptance/iu);
+});
+
 test("public CLI exposes only the Foursday product lifecycle", async () => {
   const help = await runFoursdayCli(["help"]);
   assert.equal(help, foursdayHelp);
   assert.deepEqual(help.usage, [
+    "foursday setup [--apply] [--config FILE] [--account PROFILE] [--root DIR ...]",
     "foursday install [--apply]",
     "foursday configure [--apply] [--replace] [--cron] --registry /absolute/private/projects.json",
     "foursday projects discover --catalog /absolute/private/codex-projects.json [--existing FILE] [--output FILE --apply]",
