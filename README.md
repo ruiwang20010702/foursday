@@ -42,6 +42,9 @@ flowchart LR
     R --> C
     C --> X["Codex Agent Loop"]
     X --> L["Semantic task contract + evidence manifest"]
+    L --> Q{"Immediate / foreground / durable background"}
+    Q -->|"durable"| D["Ack + persisted continuation"]
+    D --> X
     X --> W["Real project workspace"]
     W --> X
     X --> V["Read-back evidence"]
@@ -61,6 +64,7 @@ Foursday uses a pinned, minimally installed [Hermes](https://github.com/NousRese
 - scope-bound live DingTalk reads through that MCP: common sources may be registered, while exact links from verified current-enterprise direct-message senders become short-lived `provided_N` sources outside the model. DWS, node IDs, URLs, contact/global search, writes, and paths outside the current primary workspace remain unavailable to the Codex shell;
 - a project-work Skill;
 - a private semantic task ledger: Codex derives the goal, deliverables, acceptance criteria and evidence state from full context, while Foursday enforces identity, revision and lifecycle boundaries; the model cannot mark its own work accepted;
+- a durable long-task lane: Codex semantically declares the execution shape before substantive tools, runtime activity can promote an underestimated task, DWS sends at most one generation-fenced acknowledgement, and Hermes queues an internal continuation that resumes the same Codex Thread after the acknowledgement Turn; restart recovery replays only the current leased generation;
 - small host-side bridges for credentials and personal-memory promotion.
 - an owner-intervention fence that invalidates stale delivery first, then asks a no-tool Codex classification turn for one bounded control intent; the connector—not the model—applies the revisioned state change;
 - one host-neutral Foursday Control MCP, with thin Codex and Claude plugins, an optional read-only local status page, and a macOS desktop-companion source candidate that reuses installed Codex pet spritesheets.
@@ -185,7 +189,9 @@ npm run pet:build -- --apply
 open ".runtime/foursday-pet/Foursday Pet.app"
 ```
 
-It is a transparent, draggable, always-on-top task surface. It reuses an installed Codex pet when available, maps Foursday lifecycle states to idle/work/wait/review/failure animation rows, waves on hover, jumps on click or task completion, runs in the drag direction, and expands on click to show the same read-only task ledger. Interaction animation never changes business state. It does not patch the Codex app, access public network services, send messages, install itself into `~/Applications`, or create another task state machine.
+It is a transparent, draggable, always-on-top work surface. It reuses an installed Codex pet, maps the same task ledger to animation, and expands into a native worksite with needs-me, AI-owned, and recent summaries above one project-first task tree. Every project appears once and expands its tasks in place, while each task carries its own responsibility state. AI-owned means responsibility remains with the agent, not that a Turn is running at that instant; actual progress comes from the semantic lifecycle and activity trail. The Control projection first selects a binding that exactly matches the current owner revision and send generation, then falls back to the newest valid binding. A fresh unbound task is shown as routing; a stale legacy record without a project, contract, or Codex Thread moves to recent history instead of appearing as AI-owned. Project discovery is automatic—requesters never need to create a Foursday folder or project entry. The worksite shows a bounded requester label and channel, the Foursday/Codex executor, Thread location, deterministic progress, bounded evidence, missing proof, and sanitized App Server activity such as read/search/edit/test. It never exposes raw reasoning, commands, chat bodies, stable identity IDs, absolute paths, or tool arguments; missing task contracts are reported as evidence-not-started instead of misleading zero counts. Pause, resume, communication takeover, and task takeover reuse the existing revision-fenced Control service rather than creating another state machine or approval workflow. A Codex deep link is shown only when the bound Thread is actually visible to the current desktop data space; isolated Threads are explicitly described as absent from the main sidebar and expose only a copyable diagnostic ID.
+
+Project folders are expanded by default and collapse locally when their header is clicked; this never changes task ownership or Codex execution. New tasks use the semantic title written by Codex. A local, preview-first backfill can derive a bounded title for legacy tasks from the exact isolated Codex Thread; it stores only the title and generation, never the source conversation, and skips ambiguous or sensitive history.
 
 ## Memory ownership
 

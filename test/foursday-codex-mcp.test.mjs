@@ -16,6 +16,7 @@ import {
   selectFoursdayProject,
   discoverFoursdayWorkScopes,
   selectFoursdayWorkScope,
+  setFoursdayExecutionPlan,
   updateFoursdayTaskContract,
 } from "../src/foursday-codex-mcp.mjs";
 
@@ -164,15 +165,16 @@ test("Codex MCP advertises bounded memory, attachment, project-source and live-s
     "foursday_discover_work_scopes",
     "foursday_select_work_scope",
     "foursday_update_task_contract",
+    "foursday_set_execution_plan",
   ]);
   assert.ok(listed.result.tools[0].inputSchema.required.includes("contextToken"));
   assert.deepEqual(listed.result.tools.map((tool) => tool.annotations.readOnlyHint), [
-    false, true, false, true, true, true, true, true, false, true, false, false,
+    false, true, false, true, true, true, true, true, false, true, false, false, false,
   ]);
   assert.equal(listed.result.tools.every((tool) => tool.annotations.destructiveHint === false), true);
   assert.equal(listed.result.tools.every((tool) => tool.annotations.idempotentHint === true), true);
   assert.deepEqual(listed.result.tools.map((tool) => tool.annotations.openWorldHint), [
-    true, false, false, true, false, true, true, false, false, true, false, false,
+    true, false, false, true, false, true, true, false, false, true, false, false, false,
   ]);
 
   const ping = await handleFoursdayMcpRequest({ jsonrpc: "2.0", id: 21, method: "ping" });
@@ -214,6 +216,38 @@ test("Codex semantically projects a task contract without self-acceptance", asyn
     } },
   }, { environment: value.environment, cwd: value.root });
   assert.equal(denied.result.structuredContent.error, "task_contract_rejected");
+});
+
+test("Codex declares one execution plan and deterministic durability promotes it", async (t) => {
+  const value = await fixture(t);
+  const result = await setFoursdayExecutionPlan({
+    contextToken: value.token,
+    expectedClass: "foreground",
+    planSummary: "等待构建、运行回归并整理交付证据",
+    stepCount: 3,
+    requiresExternalWait: true,
+    requiresDurability: false,
+    acknowledgment: "收到，我会等待构建并完成回归，整理好证据后再同步结果。",
+  }, { environment: value.environment, cwd: value.root });
+  assert.equal(result.mode, "background");
+  assert.equal(result.state, "ack_pending");
+  assert.equal(result.acknowledgmentRequired, true);
+  assert.match(result.instruction, /return NO_REPLY/u);
+  const quick = await fixture(t);
+  const called = await handleFoursdayMcpRequest({
+    jsonrpc: "2.0", id: 100, method: "tools/call",
+    params: { name: "foursday_set_execution_plan", arguments: {
+      contextToken: quick.token,
+      expectedClass: "instant",
+      planSummary: "读取一个当前状态",
+      stepCount: 1,
+      requiresExternalWait: false,
+      requiresDurability: false,
+      acknowledgment: "收到，如处理时间超出预期我会及时同步。",
+    } },
+  }, { environment: quick.environment, cwd: quick.root });
+  assert.equal(called.result.structuredContent.mode, "instant");
+  assert.equal(called.result.structuredContent.acknowledgmentRequired, false);
 });
 
 test("project source tools bind live DingTalk reads to the routed project", async (t) => {

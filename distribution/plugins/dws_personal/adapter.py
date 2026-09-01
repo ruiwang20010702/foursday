@@ -532,6 +532,8 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         self._latest_delivery_versions: dict[str, dict[str, Any]] = {}
         self._provided_source_sessions: dict[str, tuple[float, list[dict[str, str]]]] = {}
         self._control_ack_tasks: set[asyncio.Task] = set()
+        self._long_task_watchdogs: dict[str, asyncio.Task] = {}
+        self._final_execution_deliveries: set[str] = set()
         self._startup_release_task: Optional[asyncio.Task] = None
 
     @property
@@ -566,6 +568,76 @@ class DwsPersonalAdapter(BasePlatformAdapter):
 
         super().set_message_handler(tracked_handler)
 
+    @staticmethod
+    def _execution_payload(event: MessageEvent) -> Optional[dict[str, Any]]:
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        conversation_id = str(getattr(event.source, "chat_id", "") or "").strip()
+        participant_id = str(getattr(event, "user_id", "") or "").strip()
+        owner_revision = metadata.get("owner_revision")
+        send_generation = metadata.get("send_generation")
+        if (
+            not conversation_id
+            or not participant_id
+            or not isinstance(owner_revision, int)
+            or owner_revision < 0
+            or not isinstance(send_generation, int)
+            or send_generation < 0
+        ):
+            return None
+        task_id = str(metadata.get("task_id") or "").strip() or hashlib.sha256(
+            f"{conversation_id}:{participant_id}".encode("utf-8")
+        ).hexdigest()
+        execution_id = str(metadata.get("execution_id") or "").strip() or hashlib.sha256(
+            f"{task_id}\0{owner_revision}\0{send_generation}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "taskId": task_id,
+            "executionId": execution_id,
+            "ownerRevision": owner_revision,
+            "sendGeneration": send_generation,
+        }
+
+    async def _ensure_background_ack(self, event: MessageEvent) -> bool:
+        payload = self._execution_payload(event)
+        inspect = getattr(self._bridge, "inspect_background", None)
+        acknowledge = getattr(self._bridge, "acknowledge_background", None)
+        if payload is None or not callable(inspect) or not callable(acknowledge):
+            return False
+        result = await inspect(payload)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return False
+        if result.get("shouldAcknowledge") is not True:
+            return result.get("shadow") is not True and result.get("executionId") == payload["executionId"]
+        acknowledgment = str(result.get("acknowledgment") or "").strip()
+        if not acknowledgment:
+            return False
+        sent = await self.send(
+            str(getattr(event.source, "chat_id", "") or ""),
+            acknowledgment,
+            reply_to=str(getattr(event, "message_id", "") or "") or None,
+            metadata={
+                "foursday_interim_ack": True,
+                "foursday_execution_id": payload["executionId"],
+                "foursday_delivery_kind": "interim_ack",
+            },
+        )
+        if not sent.success:
+            return False
+        acknowledged = await acknowledge(payload)
+        return isinstance(acknowledged, dict) and acknowledged.get("success") is True
+
+    async def _watch_long_task(self, event: MessageEvent) -> None:
+        try:
+            await asyncio.sleep(2)
+            while True:
+                if await self._ensure_background_ack(event):
+                    return
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Bind delivery to the exact event that owns this processing turn.
 
@@ -586,6 +658,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             and isinstance(send_generation, int)
             and send_generation >= 0
         ):
+            execution_payload = self._execution_payload(event)
             _TURN_DELIVERY_VERSION.set({
                 "conversationId": conversation_id,
                 "messageId": str(getattr(event, "message_id", "") or ""),
@@ -595,6 +668,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "detectionLatencyMs": metadata.get("detection_latency_ms"),
                 "bundleWaitMs": metadata.get("bundle_wait_ms"),
                 "wakeSource": metadata.get("wake_source"),
+                "taskId": execution_payload.get("taskId") if execution_payload else None,
+                "executionId": execution_payload.get("executionId") if execution_payload else None,
+                "backgroundExecution": metadata.get("background_execution") is True,
             })
             claim = getattr(self._bridge, "claim_responsibility", None)
             if callable(claim):
@@ -627,6 +703,18 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                         "conversationHash": _digest(conversation_id),
                         "messageHash": _digest(message_id),
                     })
+            if metadata.get("background_execution") is True:
+                start = getattr(self._bridge, "start_background", None)
+                if callable(start) and execution_payload is not None:
+                    await start(execution_payload)
+            else:
+                key = f"{conversation_id}:{owner_revision}:{send_generation}"
+                prior = self._long_task_watchdogs.pop(key, None)
+                if prior is not None:
+                    prior.cancel()
+                self._long_task_watchdogs[key] = asyncio.create_task(
+                    self._watch_long_task(event)
+                )
 
     async def _release_responsibility(self, conversation_id: str, message_id: str) -> None:
         release = getattr(self._bridge, "release_responsibility", None)
@@ -675,9 +763,75 @@ class DwsPersonalAdapter(BasePlatformAdapter):
     ) -> None:
         conversation_id = str(getattr(event.source, "chat_id", "") or "").strip()
         message_id = str(getattr(event, "message_id", "") or "").strip()
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        payload = self._execution_payload(event)
+        if payload is not None:
+            key = f"{conversation_id}:{payload['ownerRevision']}:{payload['sendGeneration']}"
+            watchdog = self._long_task_watchdogs.pop(key, None)
+            if watchdog is not None:
+                watchdog.cancel()
+        if metadata.get("background_execution") is True:
+            finish = getattr(self._bridge, "finish_background", None)
+            finish_result = None
+            if callable(finish) and payload is not None:
+                finish_result = await finish({
+                    **payload,
+                    "outcome": (
+                        "completed" if outcome == ProcessingOutcome.SUCCESS
+                        else "retry"
+                    ),
+                    "errorCode": (
+                        "" if outcome == ProcessingOutcome.SUCCESS
+                        else "background_turn_failed"
+                    ),
+                })
+            if (
+                isinstance(finish_result, dict)
+                and isinstance(finish_result.get("execution"), dict)
+                and finish_result["execution"].get("state") == "queued"
+            ):
+                return
+            if (
+                outcome != ProcessingOutcome.SUCCESS
+                and isinstance(finish_result, dict)
+                and isinstance(finish_result.get("execution"), dict)
+                and finish_result["execution"].get("state") == "failed"
+                and payload is not None
+            ):
+                failure_notice = await self.send(
+                    conversation_id,
+                    "这项任务后台执行连续失败，暂时无法完成。我已停止自动重试，请查看工作现场中的失败状态。",
+                    reply_to=message_id or None,
+                    metadata={
+                        "foursday_execution_id": payload["executionId"],
+                        "foursday_delivery_kind": "background_final",
+                    },
+                )
+                if not failure_notice.success:
+                    return
+            if outcome != ProcessingOutcome.SUCCESS:
+                await self._release_responsibility(conversation_id, message_id)
+            return
         if outcome == ProcessingOutcome.SUCCESS:
+            if payload is not None and payload["executionId"] in self._final_execution_deliveries:
+                self._final_execution_deliveries.discard(payload["executionId"])
+                finish = getattr(self._bridge, "finish_background", None)
+                if callable(finish):
+                    await finish({**payload, "outcome": "completed", "errorCode": ""})
+                await self._settle_responsibility(conversation_id, message_id)
+                return
+            await self._ensure_background_ack(event)
+            activate = getattr(self._bridge, "activate_background", None)
+            activation = await activate(payload) if callable(activate) and payload is not None else None
+            if isinstance(activation, dict) and activation.get("activated") is True:
+                return
             await self._settle_responsibility(conversation_id, message_id)
         else:
+            await self._ensure_background_ack(event)
+            activate = getattr(self._bridge, "activate_background", None)
+            activation = await activate(payload) if callable(activate) and payload is not None else None
+            if isinstance(activation, dict) and activation.get("activated") is True:
+                return
             await self._release_responsibility(conversation_id, message_id)
 
     @staticmethod
@@ -767,6 +921,11 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             self._startup_release_task = None
         pending = list(self._pending.values())
         self._pending.clear()
+        for task in self._long_task_watchdogs.values():
+            task.cancel()
+        if self._long_task_watchdogs:
+            await asyncio.gather(*self._long_task_watchdogs.values(), return_exceptions=True)
+        self._long_task_watchdogs.clear()
         for task in self._bundle_tasks.values():
             task.cancel()
         self._bundle_tasks.clear()
@@ -1031,7 +1190,8 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "confidence": 0.0,
         }
         classify_response_duty = getattr(self._bridge, "classify_response_duty", None)
-        if callable(classify_response_duty) and content:
+        internal_background = latest.get("internalBackground") is True
+        if callable(classify_response_duty) and content and not internal_background:
             try:
                 result = await classify_response_duty({
                     "content": content[:8_000],
@@ -1155,6 +1315,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "detectionLatencyMs": detection_latency_ms,
             "bundleWaitMs": bundle_wait_ms,
             "wakeSource": wake_source,
+            "taskId": str(latest.get("taskId") or "") or None,
+            "executionId": str(latest.get("executionId") or "") or None,
+            "backgroundExecution": internal_background,
         }
         self._latest_delivery_versions.pop(conversation_id, None)
         self._latest_delivery_versions[conversation_id] = latest_delivery_version
@@ -1255,11 +1418,14 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "response_duty": response_duty,
                 "enterprise_verified": latest.get("enterpriseVerified") is True,
                 "resource_enrichment_unavailable": resource_enrichment_unavailable,
+                "background_execution": internal_background,
+                "task_id": str(latest.get("taskId") or "") or None,
+                "execution_id": str(latest.get("executionId") or "") or None,
             },
         )
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
-            "type": "inbound",
+            "type": "background_inbound" if internal_background else "inbound",
             "conversationHash": _digest(conversation_id),
             "participantHash": _digest(user_id),
             "messageHashes": [_digest(value) for value in message_ids],
@@ -1305,6 +1471,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         content = str(record.get("content") or "").strip()
         attachments = list(record.get("attachments") or [])
         chat_type = str(record.get("chatType") or "").strip()
+        internal_background = record.get("internalBackground") is True
         if (
             not message_id
             or not conversation_id
@@ -1315,7 +1482,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 user_id,
                 enterprise_verified=record.get("enterpriseVerified") is True,
             )
-            or not self._remember(message_id)
+            or (not internal_background and not self._remember(message_id))
         ):
             return
         if chat_type == "group":
@@ -1327,7 +1494,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             datetime.fromisoformat(str(record.get("createTime") or "").replace("Z", "+00:00"))
         except ValueError:
             return
-        await self._queue_record({
+        normalized = {
             **record,
             "id": message_id,
             "conversationId": conversation_id,
@@ -1336,7 +1503,11 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "content": content,
             "attachments": attachments,
             "chatType": chat_type,
-        })
+        }
+        if internal_background:
+            await self._deliver_records([normalized], partition=False)
+        else:
+            await self._queue_record(normalized)
 
     async def send(
         self,
@@ -1434,6 +1605,12 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 error="Foursday delivery generation is unavailable",
                 retryable=False,
             )
+        if version.get("executionId"):
+            payload["metadata"]["foursday_execution_id"] = str(version["executionId"])
+            if version.get("backgroundExecution") is True and not payload["metadata"].get(
+                "foursday_delivery_kind"
+            ):
+                payload["metadata"]["foursday_delivery_kind"] = "background_final"
         payload["ownerRevision"] = int(version["ownerRevision"])
         payload["sendGeneration"] = int(version["sendGeneration"])
         agent_duration_ms = None
@@ -1521,14 +1698,20 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 success=False,
                 error="DWS bridge success receipt did not include a message ID",
             )
-        await self._release_responsibility(
-            str(chat_id),
-            str(
-                version.get("messageId")
-                or (reply_to if latest_reply_anchor or processing_root_reply_anchor else "")
-                or ""
-            ).strip(),
+        interim_ack = bool(
+            isinstance(metadata, dict) and metadata.get("foursday_interim_ack") is True
         )
+        if not interim_ack:
+            if version.get("executionId"):
+                self._final_execution_deliveries.add(str(version["executionId"]))
+            await self._release_responsibility(
+                str(chat_id),
+                str(
+                    version.get("messageId")
+                    or (reply_to if latest_reply_anchor or processing_root_reply_anchor else "")
+                    or ""
+                ).strip(),
+            )
         return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

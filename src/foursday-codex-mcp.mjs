@@ -37,6 +37,7 @@ const selectProjectToolName = "foursday_select_project";
 const discoverWorkScopesToolName = "foursday_discover_work_scopes";
 const selectWorkScopeToolName = "foursday_select_work_scope";
 const updateTaskContractToolName = "foursday_update_task_contract";
+const setExecutionPlanToolName = "foursday_set_execution_plan";
 const fullReleaseSha = /^[a-f0-9]{40}$/u;
 const projectSourceId = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const dingtalkNodeId = /^[A-Za-z0-9]{20,80}$/u;
@@ -367,6 +368,37 @@ export const foursdayUpdateTaskContractTool = Object.freeze({
     required: [
       "contextToken", "title", "goal", "deliverables", "acceptanceCriteria",
       "lifecycleState", "confidence", "evidence",
+    ],
+    additionalProperties: false,
+  },
+});
+
+export const foursdaySetExecutionPlanTool = Object.freeze({
+  name: setExecutionPlanToolName,
+  description: "Declare the current task execution shape before substantive tools. Codex provides semantic complexity and a natural acknowledgement; Foursday deterministically chooses immediate, foreground or durable background execution. This does not authorize high-risk actions.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      contextToken: { type: "string", description: "Opaque Foursday token from the current message context." },
+      expectedClass: { type: "string", enum: ["instant", "foreground", "background"] },
+      planSummary: { type: "string", minLength: 1, maxLength: 500 },
+      stepCount: { type: "integer", minimum: 0, maximum: 32 },
+      requiresExternalWait: { type: "boolean" },
+      requiresDurability: { type: "boolean" },
+      acknowledgment: {
+        type: "string", minLength: 1, maxLength: 500,
+        description: "Natural Chinese acknowledgement to send only if the task is promoted to background. Do not claim completion or include secrets.",
+      },
+    },
+    required: [
+      "contextToken", "expectedClass", "planSummary", "stepCount",
+      "requiresExternalWait", "requiresDurability", "acknowledgment",
     ],
     additionalProperties: false,
   },
@@ -1262,6 +1294,41 @@ export async function updateFoursdayTaskContract(input, {
   };
 }
 
+export async function setFoursdayExecutionPlan(input, {
+  environment = process.env,
+  cwd = process.cwd(),
+  now = Date.now(),
+  createStore = (path) => new FoursdayTaskLedgerStore({ path }),
+} = {}) {
+  const context = await attachmentContext(input, { environment, cwd, now });
+  if (context.sourceScope !== "direct") throw new Error("work_context_mcp_scope_denied");
+  const ledgerPath = String(environment.FOURSDAY_TASK_LEDGER_FILE ?? "").trim();
+  if (!ledgerPath) throw new Error("foursday_mcp_unconfigured");
+  const store = await createStore(ledgerPath).open({ createParent: true });
+  const { contextToken: _discarded, ...plan } = input ?? {};
+  const result = await store.setExecutionPlan({
+    ...plan,
+    taskId: context.sourceSessionHash,
+    ownerRevision: context.ownerRevision,
+    sendGeneration: context.sendGeneration,
+  });
+  return {
+    accepted: true,
+    taskId: context.sourceSessionHash,
+    executionId: result.result.execution.executionId,
+    mode: result.result.execution.mode,
+    state: result.result.execution.state,
+    decisionSource: result.result.execution.decisionSource,
+    acknowledgmentRequired: result.result.execution.mode === "background",
+    acknowledgment: result.result.execution.mode === "background"
+      ? result.result.execution.acknowledgment : null,
+    ledgerRevision: result.revision,
+    instruction: result.result.execution.mode === "background"
+      ? "Stop substantive work in this turn and return NO_REPLY. Foursday will send the stored acknowledgement and queue an internal continuation of this same Thread."
+      : "Continue the current turn and complete the task normally.",
+  };
+}
+
 function response(id, result) {
   return { jsonrpc: "2.0", id, result };
 }
@@ -1297,6 +1364,7 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
         foursdayDiscoverWorkScopesTool,
         foursdaySelectWorkScopeTool,
         foursdayUpdateTaskContractTool,
+        foursdaySetExecutionPlanTool,
       ],
     });
   }
@@ -1307,7 +1375,7 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
       runtimeStatusToolName, listProjectSourcesToolName, readProjectSourceToolName,
       listProjectsToolName, selectProjectToolName,
       discoverWorkScopesToolName, selectWorkScopeToolName,
-      updateTaskContractToolName,
+      updateTaskContractToolName, setExecutionPlanToolName,
     ].includes(name)) {
       return errorResponse(request.id, -32601, "Unknown tool");
     }
@@ -1334,7 +1402,9 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
                           ? await discoverFoursdayWorkScopes(request.params?.arguments, options)
                           : name === selectWorkScopeToolName
                             ? await selectFoursdayWorkScope(request.params?.arguments, options)
-                            : await updateFoursdayTaskContract(request.params?.arguments, options);
+                            : name === updateTaskContractToolName
+                              ? await updateFoursdayTaskContract(request.params?.arguments, options)
+                              : await setFoursdayExecutionPlan(request.params?.arguments, options);
       return response(request.id, {
         content: [{ type: "text", text: JSON.stringify(result) }],
         structuredContent: result,
@@ -1389,7 +1459,9 @@ export async function handleFoursdayMcpRequest(request, options = {}) {
                 ? "project_selection_unavailable"
                 : name === updateTaskContractToolName
                   ? "task_contract_rejected"
-              : "attachment_rejected";
+                  : name === setExecutionPlanToolName
+                    ? "execution_plan_rejected"
+                    : "attachment_rejected";
       return response(request.id, {
         content: [{ type: "text", text: JSON.stringify({ accepted: false, error: code }) }],
         structuredContent: { accepted: false, error: code },

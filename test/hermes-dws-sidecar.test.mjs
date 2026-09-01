@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,8 +8,10 @@ import {
   classifyOwnerIntervention,
   createSidecarRuntime,
   sidecarConfig,
+  stableSendKey,
 } from "../src/hermes-dws-sidecar.mjs";
 import { FoursdayControlStore } from "../src/foursday-control-store.mjs";
+import { FoursdayTaskLedgerStore } from "../src/foursday-task-ledger.mjs";
 
 async function waitFor(predicate, { timeoutMs = 2_000, intervalMs = 20 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -28,6 +30,327 @@ test("responsibility reaction configuration is bounded and disabled by default",
     DWS_PATH: process.execPath,
     DWS_PERSONAL_RESPONSIBILITY_REACTION: "bad\nreaction",
   }), /reaction name is invalid/u);
+});
+
+test("durable delivery idempotency ignores regenerated wording but separates ack and final", () => {
+  const base = {
+    conversationId: "conversation",
+    replyTo: "message",
+    ownerRevision: 2,
+    sendGeneration: 4,
+    metadata: {
+      foursday_execution_id: "a".repeat(64),
+      foursday_delivery_kind: "background_final",
+    },
+  };
+  assert.equal(
+    stableSendKey({ ...base, content: "first wording" }),
+    stableSendKey({ ...base, content: "second wording" }),
+  );
+  assert.notEqual(
+    stableSendKey({ ...base, content: "final" }),
+    stableSendKey({
+      ...base,
+      content: "ack",
+      metadata: { ...base.metadata, foursday_delivery_kind: "interim_ack" },
+    }),
+  );
+});
+
+test("durable background execution acknowledges, queues, leases and completes one generation", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-background-sidecar-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const conversationId = "conversation-background";
+  const participantUserId = "user-background";
+  const task = createHash("sha256").update(`${conversationId}:${participantUserId}`).digest("hex");
+  const controlStore = new FoursdayControlStore({ path: join(root, "control.json") });
+  await controlStore.observeTask({
+    taskId: task,
+    projectId: "foursday",
+    ownerRevision: 2,
+    sendGeneration: 4,
+    lastInboundAt: "2026-09-01T02:00:00.000Z",
+  });
+  const taskLedgerStore = await new FoursdayTaskLedgerStore({ path: join(root, "ledger.json") })
+    .open({ createParent: true });
+  const planned = await taskLedgerStore.setExecutionPlan({
+    taskId: task,
+    expectedClass: "background",
+    planSummary: "运行多步骤分析并验证结果",
+    stepCount: 5,
+    requiresExternalWait: false,
+    requiresDurability: true,
+    acknowledgment: "收到，我先完成分析和验证，整理好结果后再同步。",
+    ownerRevision: 2,
+    sendGeneration: 4,
+  });
+  const executionId = planned.result.execution.executionId;
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, `${JSON.stringify({
+    recipients: { [conversationId]: { chatType: "direct", recipientId: participantUserId } },
+    activeConversations: { [conversationId]: {
+      participantUserId,
+      participantOpenDingTalkId: null,
+      chatType: "direct",
+      sourceMessageId: "message-background",
+      ownerRevision: 2,
+      sendGeneration: 4,
+      enterpriseVerified: true,
+    } },
+    controlStates: { [conversationId]: { ownerRevision: 2, sendGeneration: 4 } },
+  })}\n`, { mode: 0o600 });
+  const frames = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [participantUserId],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: statePath,
+      mediaRoot: null,
+      controlFile: join(root, "control.json"),
+      taskLedgerFile: join(root, "ledger.json"),
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      semanticInterventionTimeoutMs: 30_000,
+      responsibilityReactionsEnabled: false,
+      responsibilityReactionName: "OK",
+      sendEnabled: true,
+    },
+    dws: new FakeDws(),
+    controlStore,
+    taskLedgerStore,
+    emit: (frame) => frames.push(frame),
+  });
+  try {
+    const payload = { taskId: task, executionId, ownerRevision: 2, sendGeneration: 4 };
+    const inspected = await runtime.inspectBackground(payload);
+    assert.equal(inspected.shouldAcknowledge, true);
+    assert.match(inspected.acknowledgment, /分析和验证/u);
+    assert.equal((await runtime.acknowledgeBackground(payload)).execution.state, "acknowledged");
+    assert.equal((await runtime.activateBackground(payload)).activated, true);
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].record.internalBackground, true);
+    assert.equal(frames[0].record.executionId, executionId);
+    assert.equal((await runtime.startBackground(payload)).execution.state, "running");
+    await taskLedgerStore.upsertFromAgent({
+      taskId: task,
+      projectId: "foursday",
+      title: "完成多步骤分析",
+      goal: "完成分析并同步证据。",
+      deliverables: ["分析结果"],
+      acceptanceCriteria: ["结果有证据"],
+      lifecycleState: "escalated",
+      confidence: 0.95,
+      evidence: [{ kind: "runtime", status: "missing", summary: "等待必要信息" }],
+      ownerRevision: 2,
+      sendGeneration: 4,
+    });
+    assert.equal((await runtime.finishBackground({
+      ...payload, outcome: "completed", errorCode: "",
+    })).execution.state, "blocked");
+    await taskLedgerStore.upsertFromAgent({
+      taskId: task,
+      projectId: "foursday",
+      title: "完成多步骤分析",
+      goal: "完成分析并同步证据。",
+      deliverables: ["分析结果"],
+      acceptanceCriteria: ["结果有证据"],
+      lifecycleState: "working",
+      confidence: 0.95,
+      evidence: [{ kind: "runtime", status: "observed", summary: "必要信息已经补齐" }],
+      ownerRevision: 2,
+      sendGeneration: 4,
+    });
+    assert.equal((await runtime.finishBackground({
+      ...payload, outcome: "completed", errorCode: "",
+    })).execution.state, "completed");
+    assert.equal((await runtime.activateBackground(payload)).activated, false);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("sidecar restart re-emits only a current queued background generation", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-background-restart-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const conversationId = "conversation-restart";
+  const participantUserId = "user-restart";
+  const task = createHash("sha256").update(`${conversationId}:${participantUserId}`).digest("hex");
+  const controlStore = new FoursdayControlStore({ path: join(root, "control.json") });
+  await controlStore.observeTask({
+    taskId: task, projectId: "foursday", ownerRevision: 1, sendGeneration: 2,
+    lastInboundAt: "2026-09-01T02:00:00.000Z",
+  });
+  const taskLedgerStore = await new FoursdayTaskLedgerStore({ path: join(root, "ledger.json") })
+    .open({ createParent: true });
+  const plan = await taskLedgerStore.setExecutionPlan({
+    taskId: task,
+    expectedClass: "background",
+    planSummary: "跨重启继续验证",
+    stepCount: 4,
+    requiresExternalWait: false,
+    requiresDurability: true,
+    acknowledgment: "收到，我会继续验证并在完成后同步。",
+    ownerRevision: 1,
+    sendGeneration: 2,
+  });
+  const payload = {
+    taskId: task,
+    executionId: plan.result.execution.executionId,
+    ownerRevision: 1,
+    sendGeneration: 2,
+  };
+  await taskLedgerStore.acknowledgeExecution(payload);
+  await taskLedgerStore.queueExecution(payload);
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, `${JSON.stringify({
+    recipients: { [conversationId]: { chatType: "direct", recipientId: participantUserId } },
+    activeConversations: { [conversationId]: {
+      participantUserId,
+      participantOpenDingTalkId: null,
+      chatType: "direct",
+      sourceMessageId: "message-restart",
+      ownerRevision: 1,
+      sendGeneration: 2,
+      enterpriseVerified: true,
+    } },
+    controlStates: { [conversationId]: { ownerRevision: 1, sendGeneration: 2 } },
+  })}\n`, { mode: 0o600 });
+  const frames = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath,
+      dingtalkRoot: "",
+      userIds: [participantUserId],
+      groupIds: [],
+      selfUserId: "owner-user",
+      stateFile: statePath,
+      mediaRoot: null,
+      controlFile: join(root, "control.json"),
+      taskLedgerFile: join(root, "ledger.json"),
+      initialLookbackMs: 120_000,
+      fallbackMs: 300_000,
+      outboundQuietMs: 0,
+      outboundMaxQuietMs: 0,
+      semanticInterventionTimeoutMs: 30_000,
+      responsibilityReactionsEnabled: false,
+      responsibilityReactionName: "OK",
+      sendEnabled: true,
+    },
+    dws: new FakeDws(),
+    controlStore,
+    taskLedgerStore,
+    emit: (frame) => frames.push(frame),
+  });
+  try {
+    await runtime.start({ deferStartupReconcile: true });
+    assert.equal(frames.filter((frame) => frame.record?.internalBackground).length, 1);
+    assert.equal(frames.find((frame) => frame.record?.internalBackground).record.executionId,
+      payload.executionId);
+  } finally {
+    await runtime.stop();
+  }
+
+  await controlStore.apply({
+    action: "task_takeover",
+    expectedRevision: (await controlStore.snapshot()).revision,
+    taskId: task,
+  });
+  const staleFrames = [];
+  const staleRuntime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath, dingtalkRoot: "", userIds: [participantUserId],
+      groupIds: [], selfUserId: "owner-user", stateFile: statePath, mediaRoot: null,
+      controlFile: join(root, "control.json"), taskLedgerFile: join(root, "ledger.json"),
+      initialLookbackMs: 120_000, fallbackMs: 300_000,
+      outboundQuietMs: 0, outboundMaxQuietMs: 0,
+      semanticInterventionTimeoutMs: 30_000,
+      responsibilityReactionsEnabled: false, responsibilityReactionName: "OK", sendEnabled: true,
+    },
+    dws: new FakeDws(), controlStore, taskLedgerStore,
+    emit: (frame) => staleFrames.push(frame),
+  });
+  try {
+    await staleRuntime.start({ deferStartupReconcile: true });
+    assert.equal(staleFrames.filter((frame) => frame.record?.internalBackground).length, 0);
+  } finally {
+    await staleRuntime.stop();
+  }
+});
+
+test("Shadow long-task inspection performs zero acknowledgement sends and zero continuations", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-background-shadow-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const conversationId = "conversation-shadow";
+  const participantUserId = "user-shadow";
+  const task = createHash("sha256").update(`${conversationId}:${participantUserId}`).digest("hex");
+  const controlStore = new FoursdayControlStore({ path: join(root, "control.json") });
+  await controlStore.observeTask({
+    taskId: task, projectId: "foursday", ownerRevision: 1, sendGeneration: 1,
+    lastInboundAt: "2026-09-01T02:00:00.000Z",
+  });
+  const taskLedgerStore = await new FoursdayTaskLedgerStore({ path: join(root, "ledger.json") })
+    .open({ createParent: true });
+  const plan = await taskLedgerStore.setExecutionPlan({
+    taskId: task,
+    expectedClass: "background",
+    planSummary: "Shadow验证长任务接单边界",
+    stepCount: 4,
+    requiresExternalWait: false,
+    requiresDurability: true,
+    acknowledgment: "收到，我会在完成验证后同步。",
+    ownerRevision: 1,
+    sendGeneration: 1,
+  });
+  const statePath = join(root, "state.json");
+  await writeFile(statePath, `${JSON.stringify({
+    recipients: { [conversationId]: { chatType: "direct", recipientId: participantUserId } },
+    activeConversations: { [conversationId]: {
+      participantUserId, participantOpenDingTalkId: null, chatType: "direct",
+      sourceMessageId: "message-shadow", ownerRevision: 1, sendGeneration: 1,
+      enterpriseVerified: true,
+    } },
+    controlStates: { [conversationId]: { ownerRevision: 1, sendGeneration: 1 } },
+  })}\n`, { mode: 0o600 });
+  const dws = new FakeDws();
+  const frames = [];
+  const runtime = await createSidecarRuntime({
+    config: {
+      dwsPath: process.execPath, dingtalkRoot: "", userIds: [participantUserId],
+      groupIds: [], selfUserId: "owner-user", stateFile: statePath, mediaRoot: null,
+      controlFile: join(root, "control.json"), taskLedgerFile: join(root, "ledger.json"),
+      initialLookbackMs: 120_000, fallbackMs: 300_000,
+      outboundQuietMs: 0, outboundMaxQuietMs: 0,
+      semanticInterventionTimeoutMs: 30_000,
+      responsibilityReactionsEnabled: false, responsibilityReactionName: "OK",
+      sendEnabled: false,
+    },
+    dws, controlStore, taskLedgerStore, emit: (frame) => frames.push(frame),
+  });
+  try {
+    const payload = {
+      taskId: task,
+      executionId: plan.result.execution.executionId,
+      ownerRevision: 1,
+      sendGeneration: 1,
+    };
+    assert.deepEqual(await runtime.inspectBackground(payload), {
+      success: true, shadow: true, shouldAcknowledge: false,
+    });
+    assert.deepEqual(await runtime.activateBackground(payload), {
+      success: true, shadow: true, activated: false,
+    });
+    await runtime.start({ deferStartupReconcile: true });
+    assert.equal(dws.sent.length, 0);
+    assert.equal(frames.filter((frame) => frame.record?.internalBackground).length, 0);
+    assert.equal((await taskLedgerStore.snapshot()).executions[task].state, "ack_pending");
+  } finally {
+    await runtime.stop();
+  }
 });
 
 test("sidecar exposes bounded Codex responsibility grouping for every multi-message task batch", async () => {
@@ -1547,9 +1870,11 @@ test("failed media download does not consume the message before retry succeeds",
 test("failed control persistence does not consume the message before retry succeeds", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-control-retry-sidecar-")));
   let failures = 1;
+  const observations = [];
   const controlStore = {
     snapshot: async () => ({ global: { state: "running" }, tasks: {} }),
-    async observeTask() {
+    async observeTask(input) {
+      observations.push(input);
       if (failures > 0) {
         failures -= 1;
         throw new Error("temporary control write failure");
@@ -1583,6 +1908,10 @@ test("failed control persistence does not consume the message before retry succe
     assert.equal(failed.checkLifecycle.status, "failed");
     const retry = await runtime.check({ deferEmit: true });
     const event = retry.find((frame) => frame.record?.id === "dws-1");
+    assert.deepEqual(observations.at(-1).requester, {
+      displayName: "娜娜老师",
+      channel: "dingtalk_direct",
+    });
     assert.ok(event);
     assert.equal(event.record.sendGeneration, 1);
   } finally {

@@ -15,6 +15,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 const digest = /^[a-f0-9]{64}$/u;
 const projectId = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const taskStates = new Set(["active", "paused", "taken_over"]);
+const requesterChannels = new Set(["dingtalk_direct", "dingtalk_group"]);
 const actions = new Set([
   "pause_all", "resume_all", "pause_task", "communication_takeover",
   "task_correction", "task_takeover", "resume_task",
@@ -44,6 +45,19 @@ function safeNote(value) {
   return note;
 }
 
+function normalizeRequester(value) {
+  if (value == null) return null;
+  const displayName = String(value?.displayName ?? "").trim();
+  const channel = String(value?.channel ?? "");
+  if (
+    !displayName || displayName.length > 120 ||
+    /[\u0000-\u001f\u007f]/u.test(displayName) ||
+    /(?:password|secret|token|authorization|private[ _-]?key)\s*[:=]/iu.test(displayName) ||
+    !requesterChannels.has(channel)
+  ) throw new Error("Foursday requester projection is invalid");
+  return { displayName, channel };
+}
+
 function normalizeTask(value, key) {
   if (
     !value || typeof value !== "object" || value.taskId !== key || !digest.test(key) ||
@@ -65,6 +79,7 @@ function normalizeTask(value, key) {
   return {
     taskId: key,
     projectId: value.projectId == null ? null : String(value.projectId),
+    requester: normalizeRequester(value.requester),
     state: value.state,
     ownerRevision: value.ownerRevision,
     sendGeneration: value.sendGeneration,
@@ -148,7 +163,15 @@ export class FoursdayControlStore {
     return readDocument(this.path);
   }
 
-  async observeTask({ taskId, projectId: project, ownerRevision, sendGeneration, lastInboundAt }) {
+  async observeTask({
+    taskId,
+    projectId: project,
+    requester = null,
+    ownerRevision,
+    sendGeneration,
+    lastInboundAt,
+  }) {
+    const normalizedRequester = normalizeRequester(requester);
     if (
       !digest.test(String(taskId ?? "")) ||
       (project != null && !projectId.test(String(project))) ||
@@ -162,6 +185,7 @@ export class FoursdayControlStore {
       const prior = document.tasks[taskId] ?? {
         taskId,
         projectId: project ?? null,
+        requester: null,
         state: "active",
         ownerRevision: 0,
         sendGeneration: 0,
@@ -172,6 +196,7 @@ export class FoursdayControlStore {
       document.tasks[taskId] = {
         ...prior,
         projectId: project ?? prior.projectId,
+        requester: normalizedRequester ?? prior.requester,
         ownerRevision: Math.max(prior.ownerRevision, ownerRevision),
         sendGeneration: Math.max(prior.sendGeneration, sendGeneration),
         lastInboundAt,
@@ -257,6 +282,7 @@ export class FoursdayControlStore {
         document.tasks[taskId] = {
           taskId,
           projectId: projectId.test(String(taskSeed.projectId ?? "")) ? taskSeed.projectId : null,
+          requester: null,
           state: "active",
           ownerRevision: Number.isSafeInteger(taskSeed.ownerRevision) ? taskSeed.ownerRevision : 0,
           sendGeneration: Number.isSafeInteger(taskSeed.sendGeneration) ? taskSeed.sendGeneration : 0,
@@ -331,6 +357,7 @@ export class FoursdayControlStore {
       const task = document.tasks[taskId] ?? {
         taskId,
         projectId: null,
+        requester: null,
         state: "active",
         ownerRevision: 0,
         sendGeneration: 0,

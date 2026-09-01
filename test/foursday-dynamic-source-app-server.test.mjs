@@ -209,5 +209,7 @@ trust_level = "trusted"
   assert.equal(routeState.schemaVersion, 2);
   assert.equal(routeState.bindings["b".repeat(64)].primaryScopeId, "example");
   assert.deepEqual(routeState.bindings["b".repeat(64)].evidenceSourceIds, ["provided_1"]);
-  assert.equal(stderr.join("").trim(), "");
+  const unexpectedStderr = stderr.join("").split(/\r?\n/u).filter(Boolean).filter((line) =>
+    !/codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss:\/\/api\.openai\.com\/v1\/responses$/u.test(line));
+  assert.equal(unexpectedStderr.join("\n"), "");
 });

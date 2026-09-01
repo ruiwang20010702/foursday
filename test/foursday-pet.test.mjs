@@ -52,6 +52,12 @@ test("pet reads only the loopback task projection and reuses Codex pet assets", 
   assert.match(source, /\.onTapGesture \{ model\.petTapped\(\) \}/u);
   assert.match(source, /DragGesture\(minimumDistance: 4/u);
   assert.match(source, /translation\.width < 0 \? \.runningLeft : \.runningRight/u);
+  assert.match(source, /let mouse = NSEvent\.mouseLocation/u);
+  assert.match(source, /dragMouseOrigin = NSPoint/u);
+  assert.match(source, /panelOrigin\.x \+ mouse\.x - mouseOrigin\.x/u);
+  assert.match(source, /panelOrigin\.y \+ mouse\.y - mouseOrigin\.y/u);
+  assert.doesNotMatch(source, /origin\.x \+ translation\.width/u);
+  assert.doesNotMatch(source, /origin\.y - translation\.height/u);
   assert.match(source, /lifecycle == "accepted"/u);
   assert.doesNotMatch(source, /guard status\?\.ready == true/u);
   assert.match(source, /status\.gateway\.mode != "active" \|\| !status\.gateway\.sendEnabled/u);
@@ -73,4 +79,46 @@ test("pet reads only the loopback task projection and reuses Codex pet assets", 
   assert.doesNotMatch(source, /interactionState = isHovering \? \.waving : nil/u);
   assert.doesNotMatch(source, /https:\/\//u);
   assert.doesNotMatch(source, /DWS|token|password|DATABASE_URL/u);
+});
+
+test("pet worksite groups tasks and reuses revision-fenced local controls", async () => {
+  const source = await readFile(new URL("../distribution/pet/macos/FoursdayPet.swift", import.meta.url), "utf8");
+  assert.match(source, /Foursday 工作现场/u);
+  assert.match(source, /case \.working: "AI负责"/u);
+  assert.match(source, /历史任务 ·/u);
+  assert.match(source, /projectGroupName/u);
+  assert.match(source, /未归档记录/u);
+  assert.match(source, /正在识别 ·/u);
+  assert.match(source, /assignmentState == "legacy_unassigned" \{ return "未归档" \}/u);
+  assert.match(source, /WorksiteProjectList/u);
+  assert.match(source, /projectGroups\(\)/u);
+  assert.match(source, /toggleProject\(project\.id\)/u);
+  assert.match(source, /collapsedProjectIds\.contains\(project\.id\)/u);
+  assert.match(source, /"chevron\.right" : "chevron\.down"/u);
+  assert.doesNotMatch(source, /model\.selectedGroup == group/u);
+  assert.match(source, /dateFormat = "M月d日 HH:mm"/u);
+  assert.match(source, /case needsMe = "needs_me"/u);
+  assert.match(source, /case working/u);
+  assert.match(source, /case recent/u);
+  for (const command of ["pause-task", "resume-task", "communication-takeover", "takeover-task"]) {
+    assert.match(source, new RegExp(`"${command}"`, "u"));
+  }
+  assert.match(source, /"--revision", String\(tasksRevision\)/u);
+  assert.match(source, /"--task", task\.taskId/u);
+  assert.match(source, /codex:\/\/threads\//u);
+  assert.match(source, /责任关系/u);
+  assert.match(source, /请求人：历史记录未保留联系人/u);
+  assert.match(source, /执行者：/u);
+  assert.match(source, /任务计划尚未生成，验收证据暂未开始统计/u);
+  assert.match(source, /Codex 会话已经建立，但这条历史任务尚未生成目标、交付物与验收计划/u);
+  assert.match(source, /复制独立会话编号/u);
+  assert.match(source, /不会出现在主 Codex 侧边栏/u);
+  assert.doesNotMatch(source, /历史任务没有可展示的 Codex 活动/u);
+  assert.match(source, /activityTrail/u);
+  assert.match(source, /missingEvidence/u);
+  assert.match(source, /耐久后台任务/u);
+  assert.match(source, /后台排队/u);
+  assert.match(source, /同一 Codex Thread 正在后台继续执行/u);
+  assert.doesNotMatch(source, /URLRequest\([\s\S]*httpMethod\s*=\s*"POST"/u);
+  assert.doesNotMatch(source, /raw reasoning|chain.?of.?thought/iu);
 });

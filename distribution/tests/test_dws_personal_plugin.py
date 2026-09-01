@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,8 @@ class FakeBridge:
         self.group_result = None
         self.response_duties = []
         self.response_duty_result = None
+        self.background = {}
+        self.background_calls = []
         self.startup_releases = 0
         self.reconciles = 0
         self.send_result = {"success": True, "messageId": "sent-1"}
@@ -115,6 +118,32 @@ class FakeBridge:
             "source": "codex",
             "confidence": 0.99,
         }
+
+    async def inspect_background(self, payload):
+        self.background_calls.append(("inspect", dict(payload)))
+        return dict(self.background.get("inspect") or {
+            "success": False, "staleGeneration": True,
+        })
+
+    async def acknowledge_background(self, payload):
+        self.background_calls.append(("acknowledge", dict(payload)))
+        return dict(self.background.get("acknowledge") or {"success": True})
+
+    async def activate_background(self, payload):
+        self.background_calls.append(("activate", dict(payload)))
+        return dict(self.background.get("activate") or {
+            "success": True, "activated": False,
+        })
+
+    async def start_background(self, payload):
+        self.background_calls.append(("start", dict(payload)))
+        return dict(self.background.get("start") or {"success": True})
+
+    async def finish_background(self, payload):
+        self.background_calls.append(("finish", dict(payload)))
+        return dict(self.background.get("finish") or {
+            "success": True, "execution": {"state": payload.get("outcome")},
+        })
 
 
 class GenerationFenceBridge(FakeBridge):
@@ -754,6 +783,89 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
             "DWS_PERSONAL_ALLOWED_USERS": "",
         }):
             self.assertTrue(probe._is_user_authorized(self.events[0].source))
+
+    async def test_interim_background_ack_keeps_responsibility_for_final_delivery(self):
+        await self.bridge.emit({
+            "id": "message-background-ack",
+            "senderUserId": "trusted-user",
+            "senderName": "请求人",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "background-conversation",
+            "content": "请完成一个长任务",
+            "createTime": "2026-09-01T13:00:00+08:00",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+            "ownerRevision": 2,
+            "sendGeneration": 4,
+        })
+        await asyncio.sleep(0.05)
+        event = self.events[-1]
+        payload = self.adapter._execution_payload(event)
+        self.bridge.background["inspect"] = {
+            "success": True,
+            "shouldAcknowledge": True,
+            "acknowledgment": "收到，我先完成分析和验证，整理好结果后再同步。",
+            "executionId": payload["executionId"],
+        }
+        released_before = len(self.bridge.released)
+        token = _TURN_DELIVERY_VERSION.set({
+            "conversationId": "background-conversation",
+            "messageId": "message-background-ack",
+            "ownerRevision": 2,
+            "sendGeneration": 4,
+            "executionId": payload["executionId"],
+            "backgroundExecution": False,
+        })
+        try:
+            self.assertTrue(await self.adapter._ensure_background_ack(event))
+        finally:
+            _TURN_DELIVERY_VERSION.reset(token)
+        self.assertEqual(len(self.bridge.released), released_before)
+        sent = self.bridge.sent[-1]
+        self.assertEqual(sent["metadata"]["foursday_delivery_kind"], "interim_ack")
+        self.assertEqual(sent["metadata"]["foursday_execution_id"], payload["executionId"])
+        self.assertEqual(self.bridge.background_calls[-1][0], "acknowledge")
+
+    async def test_internal_background_event_reuses_the_same_session_without_user_dedupe(self):
+        base = {
+            "id": "message-background-resume",
+            "senderUserId": "trusted-user",
+            "senderName": "请求人",
+            "senderOpenDingTalkId": "open-trusted",
+            "conversationId": "background-resume-conversation",
+            "content": "请完成多步骤分析",
+            "createTime": "2026-09-01T13:10:00+08:00",
+            "chatType": "direct",
+            "mentionedSelf": False,
+            "isSelf": False,
+            "ownerRevision": 3,
+            "sendGeneration": 7,
+        }
+        await self.bridge.emit(base)
+        await asyncio.sleep(0.05)
+        first_count = len(self.events)
+        task_id = hashlib.sha256(
+            b"background-resume-conversation:trusted-user"
+        ).hexdigest()
+        execution_id = hashlib.sha256(
+            f"{task_id}\0{3}\0{7}".encode("utf-8")
+        ).hexdigest()
+        await self.bridge.emit({
+            **base,
+            "content": "Continue the durable Foursday task in this same Codex Thread.",
+            "internalBackground": True,
+            "taskId": task_id,
+            "executionId": execution_id,
+            "wakeSource": "background",
+        })
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.events), first_count + 1)
+        resumed = self.events[-1]
+        self.assertTrue(resumed.metadata["background_execution"])
+        self.assertEqual(resumed.metadata["task_id"], task_id)
+        self.assertEqual(resumed.metadata["execution_id"], execution_id)
+        self.assertIn("Continue the durable Foursday task", resumed.text)
 
     async def test_failed_processing_releases_responsibility_without_sending(self):
         await self.bridge.emit({

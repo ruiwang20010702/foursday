@@ -4,7 +4,9 @@ import { constants } from "node:fs";
 import { access, lstat, open, readFile, realpath } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { activityForCodexNotification } from "./foursday-codex-activity.mjs";
 import { isMainModule } from "./main-module.mjs";
+import { FoursdayTaskLedgerStore } from "./foursday-task-ledger.mjs";
 import { loadFoursdayWorkContext } from "./foursday-work-context.mjs";
 import {
   FoursdayThreadBindingStore,
@@ -403,6 +405,12 @@ export async function runFoursdayCodexProxy({
   const bindingStore = bindingRoot
     ? await new FoursdayThreadBindingStore({ root: bindingRoot }).open()
     : null;
+  const taskLedgerPath = classifierMode
+    ? ""
+    : String(environment.FOURSDAY_TASK_LEDGER_FILE ?? "").trim();
+  const taskLedgerStore = taskLedgerPath
+    ? await new FoursdayTaskLedgerStore({ path: taskLedgerPath }).open({ createParent: true })
+    : null;
   const childArgs = codexProxyChildArgs({ classifierMode });
   const child = spawnProcess(realCodex, childArgs, {
     env: codexProcessEnvironment(environment, realCodex, resolve(realPath), {
@@ -420,6 +428,33 @@ export async function runFoursdayCodexProxy({
   const boundThreadIds = new Set();
   const internalRequests = new Map();
   let internalCounter = 0;
+  let activityWriteQueue = Promise.resolve();
+  const turnStartedAt = new Map();
+  const recordActivity = (message) => {
+    if (!taskLedgerStore) return;
+    const threadId = String(message?.params?.threadId ?? "");
+    const context = threadContexts.get(threadId);
+    const activity = activityForCodexNotification(message);
+    if (!context || !activity) return;
+    const elapsedMs = Math.max(0, Date.now() - (turnStartedAt.get(threadId) ?? Date.now()));
+    activityWriteQueue = activityWriteQueue.catch(() => {}).then(async () => {
+      await taskLedgerStore.appendActivity({
+        taskId: context.sourceSessionHash,
+        ownerRevision: context.ownerRevision,
+        sendGeneration: context.sendGeneration,
+        activity,
+      });
+      await taskLedgerStore.observeExecutionActivity({
+        taskId: context.sourceSessionHash,
+        ownerRevision: context.ownerRevision,
+        sendGeneration: context.sendGeneration,
+        elapsedMs,
+        kind: activity.kind,
+      });
+    }).catch(() => {
+        process.stderr.write("Foursday activity projection failed\n");
+      });
+  };
   const sendInternalRequest = (method, params, timeoutMs = 15_000) => new Promise((accept, reject) => {
     internalCounter += 1;
     const id = `foursday-internal-${process.pid}-${internalCounter}`;
@@ -575,6 +610,14 @@ export async function runFoursdayCodexProxy({
           }
         }
       }
+      const eventThreadId = String(message?.params?.threadId ?? "");
+      if (message.method === "turn/started" && eventThreadId) {
+        turnStartedAt.set(eventThreadId, Date.now());
+      }
+      recordActivity(message);
+      if (message.method === "turn/completed" && eventThreadId) {
+        turnStartedAt.delete(eventThreadId);
+      }
       const blocked = classifyCodexServerRequest(message);
       if (blocked) {
         child.stdin.write(`${JSON.stringify(denial(message.id, blocked, message.method))}\n`);
@@ -586,6 +629,7 @@ export async function runFoursdayCodexProxy({
       }
       process.stdout.write(`${JSON.stringify(message)}\n`);
     }
+    await activityWriteQueue;
   })();
   const exit = new Promise((accept, reject) => {
     child.once("error", reject);

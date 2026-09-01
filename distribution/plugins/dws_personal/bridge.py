@@ -226,6 +226,26 @@ class JsonLineDwsBridge:
         })
         return result if isinstance(result, dict) else {"success": False}
 
+    async def inspect_background(self, payload: dict) -> dict:
+        result = await self._request("inspect-background", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def acknowledge_background(self, payload: dict) -> dict:
+        result = await self._request("acknowledge-background", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def activate_background(self, payload: dict) -> dict:
+        result = await self._request("activate-background", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def start_background(self, payload: dict) -> dict:
+        result = await self._request("start-background", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
+    async def finish_background(self, payload: dict) -> dict:
+        result = await self._request("finish-background", payload)
+        return result if isinstance(result, dict) else {"success": False}
+
     async def claim_responsibility(self, payload: dict) -> dict:
         result = await self._request("claim-responsibility", payload)
         return result if isinstance(result, dict) else {"success": False}

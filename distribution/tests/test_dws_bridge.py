@@ -66,6 +66,17 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await bridge.classify_response_duty({
                 "content": "task", "messageCount": 1,
             }), {"success": True})
+            background = {
+                "taskId": "a" * 64, "executionId": "b" * 64,
+                "ownerRevision": 1, "sendGeneration": 2,
+            }
+            self.assertEqual(await bridge.inspect_background(background), {"success": True})
+            self.assertEqual(await bridge.acknowledge_background(background), {"success": True})
+            self.assertEqual(await bridge.activate_background(background), {"success": True})
+            self.assertEqual(await bridge.start_background(background), {"success": True})
+            self.assertEqual(await bridge.finish_background({
+                **background, "outcome": "completed",
+            }), {"success": True})
             self.assertEqual(await bridge.reconcile(), {"success": True})
             for _ in range(20):
                 if acknowledgements:

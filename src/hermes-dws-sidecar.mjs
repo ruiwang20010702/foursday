@@ -14,6 +14,7 @@ import {
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
 import { isMainModule } from "./main-module.mjs";
 import { FoursdayControlStore } from "./foursday-control-store.mjs";
+import { FoursdayTaskLedgerStore } from "./foursday-task-ledger.mjs";
 import { normalizeDwsCheckLifecycle } from "./dws-checkpoint-health.mjs";
 import {
   ownerInterventionCandidate,
@@ -83,7 +84,22 @@ function taskId(conversationId, participantUserId) {
     .digest("hex");
 }
 
-function stableSendKey(payload) {
+export function stableSendKey(payload) {
+  const deliveryKind = String(payload?.metadata?.foursday_delivery_kind ?? "");
+  const executionId = String(payload?.metadata?.foursday_execution_id ?? "");
+  if (
+    ["interim_ack", "background_final"].includes(deliveryKind) &&
+    /^[a-f0-9]{64}$/u.test(executionId)
+  ) {
+    return createHash("sha256").update(JSON.stringify({
+      conversationId: String(payload?.conversationId ?? ""),
+      replyTo: String(payload?.replyTo ?? ""),
+      ownerRevision: payload?.ownerRevision,
+      sendGeneration: payload?.sendGeneration,
+      executionId,
+      deliveryKind,
+    })).digest("hex");
+  }
   return createHash("sha256").update(JSON.stringify({
     conversationId: String(payload?.conversationId ?? ""),
     content: String(payload?.content ?? ""),
@@ -583,6 +599,10 @@ export function sidecarConfig(environment = process.env) {
   if (controlFile && !isAbsolute(controlFile)) {
     throw new Error("FOURSDAY_CONTROL_FILE must be absolute");
   }
+  const taskLedgerFile = String(environment.FOURSDAY_TASK_LEDGER_FILE ?? "").trim();
+  if (taskLedgerFile && !isAbsolute(taskLedgerFile)) {
+    throw new Error("FOURSDAY_TASK_LEDGER_FILE must be absolute");
+  }
   const responsibilityReactionName = String(
     environment.DWS_PERSONAL_RESPONSIBILITY_REACTION ?? "OK",
   ).trim();
@@ -609,6 +629,7 @@ export function sidecarConfig(environment = process.env) {
     stateFile: stateFile ? resolve(stateFile) : null,
     mediaRoot: mediaRoot ? resolve(mediaRoot) : null,
     controlFile: controlFile ? resolve(controlFile) : null,
+    taskLedgerFile: taskLedgerFile ? resolve(taskLedgerFile) : null,
     initialLookbackMs: boundedInteger(
       environment.DWS_PERSONAL_INITIAL_LOOKBACK_MS,
       120_000,
@@ -687,6 +708,9 @@ export async function createSidecarRuntime({
   wait = sleep,
   controlStore = config.controlFile
     ? new FoursdayControlStore({ path: config.controlFile })
+    : null,
+  taskLedgerStore = config.taskLedgerFile
+    ? new FoursdayTaskLedgerStore({ path: config.taskLedgerFile })
     : null,
   semanticInterventionClassifier = resolveOwnerIntervention,
   responsibilityGroupingResolver = resolveResponsibilityGroups,
@@ -1880,6 +1904,14 @@ export async function createSidecarRuntime({
       });
       if (classification.intent !== "unrelated_owner_message") {
         if (!remember(id)) return;
+        if (["task_correction", "task_takeover"].includes(classification.intent)) {
+          await cancelExecutionGeneration({
+            task: stableTaskId,
+            ownerRevision: priorControl.ownerRevision,
+            sendGeneration: priorControl.sendGeneration,
+            errorCode: classification.intent,
+          });
+        }
         await dispatchIntervention({
           conversationId,
           active: priorActive,
@@ -1901,6 +1933,12 @@ export async function createSidecarRuntime({
       controlStates.set(conversationId, priorControl);
       state.controlStates = Object.fromEntries(controlStates);
     }
+    await cancelExecutionGeneration({
+      task: stableTaskId,
+      ownerRevision: priorControl.ownerRevision,
+      sendGeneration: priorControl.sendGeneration,
+      errorCode: "superseded_by_new_generation",
+    });
     if (taskTakenOver && !globalPaused && !taskPaused) {
       if (!await reopenTakenOverTask()) {
         if (!remember(id)) return;
@@ -1937,9 +1975,17 @@ export async function createSidecarRuntime({
       }
     }
     if (controlStore) {
+      const requesterName = String(message.senderName ?? "").trim();
       await controlStore.observeTask({
         taskId: stableTaskId,
         projectId: null,
+        requester: requesterName && requesterName !== senderUserId &&
+            requesterName !== senderOpenDingTalkId
+          ? {
+              displayName: requesterName,
+              channel: chatType === "group" ? "dingtalk_group" : "dingtalk_direct",
+            }
+          : null,
         ownerRevision: control.ownerRevision,
         sendGeneration: control.sendGeneration,
         lastInboundAt: createTime,
@@ -2354,6 +2400,157 @@ export async function createSidecarRuntime({
     }, 250);
   };
 
+  const cancelExecutionGeneration = async ({ task, ownerRevision, sendGeneration, errorCode }) => {
+    if (!taskLedgerStore) return;
+    const ledger = await taskLedgerStore.snapshot();
+    const execution = ledger.executions?.[task];
+    if (
+      !execution || execution.ownerRevision !== ownerRevision ||
+      execution.sendGeneration !== sendGeneration ||
+      ["completed", "failed", "cancelled"].includes(execution.state)
+    ) return;
+    await taskLedgerStore.finishExecution({
+      taskId: task,
+      executionId: execution.executionId,
+      ownerRevision,
+      sendGeneration,
+      outcome: "cancelled",
+      errorCode,
+    });
+  };
+
+  const executionContext = async (payload) => {
+    if (!taskLedgerStore || !controlStore) return null;
+    const task = String(payload?.taskId ?? "");
+    const executionId = String(payload?.executionId ?? "");
+    const ownerRevision = Number(payload?.ownerRevision);
+    const sendGeneration = Number(payload?.sendGeneration);
+    if (
+      !/^[a-f0-9]{64}$/u.test(task) || !/^[a-f0-9]{64}$/u.test(executionId) ||
+      !Number.isSafeInteger(ownerRevision) || ownerRevision < 0 ||
+      !Number.isSafeInteger(sendGeneration) || sendGeneration < 0
+    ) return null;
+    const [ledger, control] = await Promise.all([
+      taskLedgerStore.snapshot(),
+      controlStore.snapshot(),
+    ]);
+    const execution = ledger.executions?.[task] ?? null;
+    const controlTask = control.tasks?.[task] ?? null;
+    if (
+      !execution || execution.executionId !== executionId ||
+      execution.ownerRevision !== ownerRevision || execution.sendGeneration !== sendGeneration ||
+      control.global?.state === "paused" || controlTask?.state !== "active" ||
+      controlTask.ownerRevision !== ownerRevision || controlTask.sendGeneration !== sendGeneration
+    ) return null;
+    const route = [...activeConversations.entries()].find(([conversationId, active]) =>
+      taskId(conversationId, active.participantUserId) === task &&
+      Number(active.ownerRevision) === ownerRevision &&
+      Number(active.sendGeneration) === sendGeneration
+    ) ?? null;
+    if (!route) return null;
+    return { taskId: task, execution, conversationId: route[0], active: route[1] };
+  };
+
+  const emitBackgroundContinuation = ({ taskId: task, execution, conversationId, active }) => {
+    emit({
+      type: "event",
+      record: {
+        id: active.sourceMessageId,
+        senderUserId: active.participantUserId,
+        senderOpenDingTalkId: active.participantOpenDingTalkId ?? null,
+        senderName: active.participantUserId,
+        conversationId,
+        content: [
+          "Continue the durable Foursday task in this same Codex Thread.",
+          "Re-read the current task contract and execution plan, complete the remaining reversible work, verify evidence, and return the final user-facing result.",
+          "Do not acknowledge again and do not redeclare this execution generation.",
+        ].join(" "),
+        createTime: now().toISOString(),
+        chatType: active.chatType,
+        mentionedSelf: active.chatType === "group",
+        isSelf: false,
+        enterpriseVerified: active.enterpriseVerified === true,
+        attachments: [],
+        ownerRevision: execution.ownerRevision,
+        sendGeneration: execution.sendGeneration,
+        detectedAt: now().toISOString(),
+        detectionLatencyMs: 0,
+        wakeSource: "background",
+        internalBackground: true,
+        taskId: task,
+        executionId: execution.executionId,
+      },
+    });
+  };
+
+  const inspectBackground = async (payload) => {
+    const context = await executionContext(payload);
+    if (!context || context.execution.mode !== "background") {
+      return { success: false, staleGeneration: true };
+    }
+    if (!config.sendEnabled) {
+      return { success: true, shadow: true, shouldAcknowledge: false };
+    }
+    return {
+      success: true,
+      shouldAcknowledge: context.execution.state === "ack_pending",
+      acknowledgment: context.execution.state === "ack_pending"
+        ? context.execution.acknowledgment : null,
+      executionId: context.execution.executionId,
+      taskId: context.taskId,
+    };
+  };
+
+  const acknowledgeBackground = async (payload) => {
+    const context = await executionContext(payload);
+    if (!context) return { success: false, staleGeneration: true };
+    const result = await taskLedgerStore.acknowledgeExecution(payload);
+    return { success: true, execution: result.result.execution };
+  };
+
+  const activateBackground = async (payload) => {
+    const context = await executionContext(payload);
+    if (!context || context.execution.mode !== "background") {
+      return { success: false, staleGeneration: true, activated: false };
+    }
+    if (!config.sendEnabled) return { success: true, shadow: true, activated: false };
+    if (["queued", "running", "completed"].includes(context.execution.state)) {
+      return { success: true, activated: false, idempotent: true };
+    }
+    if (context.execution.state !== "acknowledged") {
+      return { success: true, activated: false, waitingForAcknowledgment: true };
+    }
+    const queued = await taskLedgerStore.queueExecution(payload);
+    emitBackgroundContinuation({ ...context, execution: queued.result.execution });
+    return { success: true, activated: true, executionId: context.execution.executionId };
+  };
+
+  const startBackground = async (payload) => {
+    const context = await executionContext(payload);
+    if (!context) return { success: false, staleGeneration: true };
+    const leased = await taskLedgerStore.leaseExecution(payload);
+    return { success: true, execution: leased.result.execution };
+  };
+
+  const finishBackground = async (payload) => {
+    const context = await executionContext(payload);
+    if (!context) return { success: false, staleGeneration: true };
+    let outcome = payload?.outcome;
+    if (outcome === "completed") {
+      const ledger = await taskLedgerStore.snapshot();
+      if (["escalated", "rework_requested"].includes(ledger.tasks?.[context.taskId]?.lifecycleState)) {
+        outcome = "blocked";
+      }
+    }
+    const finished = outcome === "retry"
+      ? await taskLedgerStore.retryExecution(payload)
+      : await taskLedgerStore.finishExecution({ ...payload, outcome });
+    if (finished.result.execution.state === "queued") {
+      emitBackgroundContinuation({ ...context, execution: finished.result.execution });
+    }
+    return { success: true, execution: finished.result.execution };
+  };
+
   if (config.dingtalkRoot && isAbsolute(config.dingtalkRoot)) {
     for (const directory of await discoverWatchDirectories(config.dingtalkRoot)) {
       const watcher = watch(directory, { persistent: true }, () => trigger("filesystem"));
@@ -2369,6 +2566,22 @@ export async function createSidecarRuntime({
         state.sendBlocked = false;
         state.sendBlockReason = null;
         state.sendBlockedAt = null;
+      }
+      if (taskLedgerStore && config.sendEnabled) {
+        const ledger = await taskLedgerStore.snapshot();
+        for (const [task, execution] of Object.entries(ledger.executions ?? {})) {
+          const leaseExpired = execution.state === "running" && (
+            !execution.leaseExpiresAt || Date.parse(execution.leaseExpiresAt) <= clock()
+          );
+          if (execution.state !== "queued" && !leaseExpired) continue;
+          const context = await executionContext({
+            taskId: task,
+            executionId: execution.executionId,
+            ownerRevision: execution.ownerRevision,
+            sendGeneration: execution.sendGeneration,
+          });
+          if (context) emitBackgroundContinuation(context);
+        }
       }
       if (config.responsibilityReactionsEnabled === true) {
         for (const conversationId of takeoverReported) {
@@ -2830,6 +3043,11 @@ export async function createSidecarRuntime({
       const result = await controlStore.consumeEvent(task, eventId);
       return { success: result.result.consumed === true };
     },
+    inspectBackground,
+    acknowledgeBackground,
+    activateBackground,
+    startBackground,
+    finishBackground,
     claimResponsibility,
     releaseResponsibility,
     settleResponsibility,
@@ -2877,6 +3095,16 @@ async function runProtocol() {
         ? await runtime.send(frame.payload)
         : frame.action === "ack-control"
           ? await runtime.ackControl(frame.payload)
+        : frame.action === "inspect-background"
+          ? await runtime.inspectBackground(frame.payload)
+        : frame.action === "acknowledge-background"
+          ? await runtime.acknowledgeBackground(frame.payload)
+        : frame.action === "activate-background"
+          ? await runtime.activateBackground(frame.payload)
+        : frame.action === "start-background"
+          ? await runtime.startBackground(frame.payload)
+        : frame.action === "finish-background"
+          ? await runtime.finishBackground(frame.payload)
         : frame.action === "claim-responsibility"
           ? await runtime.claimResponsibility(frame.payload)
         : frame.action === "release-responsibility"

@@ -80,7 +80,9 @@ async function threadBindings(root) {
     ) continue;
     output.push({
       taskId: document.scope.sourceSessionHash,
-      projectId: String(document.scope.projectId ?? "").slice(0, 64),
+      projectId: document.scope.projectId == null
+        ? null
+        : String(document.scope.projectId).slice(0, 64),
       codexThreadId: String(document.codexThreadId ?? "").slice(0, 500),
       forkCount: Array.isArray(document.forkThreadIds) ? document.forkThreadIds.length : 0,
       ownerRevision: Number(document.ownerRevision ?? 0),
@@ -89,6 +91,34 @@ async function threadBindings(root) {
     });
   }
   return output;
+}
+
+function bindingOrder(left, right) {
+  return Number(right.sendGeneration ?? 0) - Number(left.sendGeneration ?? 0) ||
+    Number(right.ownerRevision ?? 0) - Number(left.ownerRevision ?? 0) ||
+    String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")) ||
+    String(right.codexThreadId ?? "").localeCompare(String(left.codexThreadId ?? ""));
+}
+
+function bindingForTask(taskId, task, bindings) {
+  const candidates = bindings.filter((item) => item.taskId === taskId);
+  if (candidates.length === 0) return null;
+  const exact = task
+    ? candidates.filter((item) =>
+        item.ownerRevision === Number(task.ownerRevision ?? 0) &&
+        item.sendGeneration === Number(task.sendGeneration ?? 0))
+    : [];
+  return [...(exact.length > 0 ? exact : candidates)].sort(bindingOrder)[0] ?? null;
+}
+
+const routingGraceMs = 10 * 60_000;
+
+function assignmentState({ task, binding, contract, effectiveProjectId, now }) {
+  if (effectiveProjectId || binding || contract) return "routed";
+  const timestamp = Date.parse(task?.lastInboundAt ?? task?.updatedAt ?? "");
+  const age = Number.isFinite(timestamp) ? now - timestamp : Number.POSITIVE_INFINITY;
+  if (task?.state === "active" && age >= -60_000 && age <= routingGraceMs) return "routing";
+  return "legacy_unassigned";
 }
 
 function normalizedSchedule(job, projectByRoot) {
@@ -110,6 +140,43 @@ function normalizedSchedule(job, projectByRoot) {
     monitor: Boolean(job?.monitor_script || job?.monitor_url),
     continuity: Array.isArray(job?.context_from) && job.context_from.includes("self"),
     delivery: delivery.slice(0, 80),
+  };
+}
+
+function worksiteGroup(task, contract, assignment = "routed", execution = null) {
+  const lifecycle = contract?.lifecycleState ?? null;
+  const state = task?.state ?? "active";
+  if (assignment === "legacy_unassigned") return "recent";
+  if (["blocked", "failed"].includes(execution?.state)) return "needs_me";
+  if (execution?.state === "completed" && !contract) return "recent";
+  if (state === "taken_over" || lifecycle === "accepted") return "recent";
+  if (
+    task?.pendingEvent && !task.pendingEvent.consumed ||
+    ["waiting_acceptance", "rework_requested", "escalated", "failed"].includes(lifecycle)
+  ) return "needs_me";
+  if (state === "active") return "working";
+  return "recent";
+}
+
+function taskProgress(task, contract, activityTrail, binding, execution) {
+  const latestActivity = activityTrail.at(-1) ?? null;
+  let stage;
+  if (task?.state === "taken_over") stage = "taken_over";
+  else if (task?.state === "paused") stage = "paused";
+  else if (execution?.mode === "background" && !["completed", "failed", "cancelled"].includes(execution.state)) {
+    stage = `background_${execution.state}`;
+  }
+  else if (latestActivity) stage = latestActivity.kind;
+  else if (contract) stage = contract.lifecycleState;
+  else if (binding?.codexThreadId) stage = "thread_bound";
+  else if (task?.state === "active") stage = "received";
+  else stage = "unknown";
+  return {
+    stage,
+    activityCount: activityTrail.length,
+    hasPlan: Boolean(contract || execution),
+    lastActivityAt: latestActivity?.occurredAt ?? contract?.updatedAt ??
+      task?.updatedAt ?? binding?.updatedAt ?? task?.lastInboundAt ?? null,
   };
 }
 
@@ -147,6 +214,7 @@ export class FoursdayControlService {
     evidencePath,
     productionConfigPath,
     taskLedgerPath,
+    desktopThreadVisible = false,
     gatewayInspector = inspectFoursdayNativeGateway,
     memoryCatalogReader = defaultMemoryCatalogReader,
     memoryCatalogTtlMs = 5 * 60_000,
@@ -159,6 +227,7 @@ export class FoursdayControlService {
     this.evidencePath = evidencePath;
     this.productionConfigPath = productionConfigPath;
     this.taskLedgerPath = taskLedgerPath || join(dirname(controlPath), "task-ledger.json");
+    this.desktopThreadVisible = desktopThreadVisible === true;
     this.gatewayInspector = gatewayInspector;
     this.memoryCatalogReader = memoryCatalogReader;
     this.memoryCatalogTtlMs = memoryCatalogTtlMs;
@@ -278,27 +347,66 @@ export class FoursdayControlService {
   }
 
   async tasks(controlSnapshot = null) {
-    const [control, bindings, taskLedger] = await Promise.all([
+    const [control, bindings, taskLedger, projects] = await Promise.all([
       controlSnapshot ? Promise.resolve(controlSnapshot) : this.store.snapshot(),
       threadBindings(this.threadBindingRoot),
       this.taskLedgerStore.snapshot(),
+      projectRegistry(this.registryPath).catch(() => []),
     ]);
-    const bindingByTask = new Map(bindings.map((item) => [item.taskId, item]));
-    const ids = new Set([...Object.keys(control.tasks), ...bindingByTask.keys()]);
+    const projectNameById = new Map(projects.map((project) => [project.id, project.name]));
+    const ids = new Set([...Object.keys(control.tasks), ...bindings.map((item) => item.taskId)]);
+    const currentTime = this.now();
     const items = [...ids].sort().map((taskId) => {
       const task = control.tasks[taskId];
-      const binding = bindingByTask.get(taskId);
+      const binding = bindingForTask(taskId, task, bindings);
       const contract = taskLedger.tasks[taskId] ?? null;
+      const summary = taskLedger.summaries[taskId] ?? null;
+      const rawExecution = taskLedger.executions[taskId] ?? null;
+      const activityTrail = taskLedger.activities[taskId] ?? [];
       const evidenceCounts = (contract?.evidence ?? []).reduce((counts, item) => {
         counts[item.status] = (counts[item.status] ?? 0) + 1;
         return counts;
       }, {});
+      const effectiveProjectId = task?.projectId ?? binding?.projectId ?? contract?.projectId ?? null;
+      const assignment = assignmentState({
+        task,
+        binding,
+        contract,
+        effectiveProjectId,
+        now: currentTime,
+      });
+      const projectGroupId = assignment === "routing"
+        ? "__routing"
+        : assignment === "legacy_unassigned" ? "__legacy_unassigned" : effectiveProjectId;
+      const projectGroupName = assignment === "routing"
+        ? "正在识别项目"
+        : assignment === "legacy_unassigned"
+          ? "未归档历史"
+          : projectNameById.get(effectiveProjectId) ?? effectiveProjectId ?? "未命名项目";
+      const ownerRevision = Math.max(task?.ownerRevision ?? 0, binding?.ownerRevision ?? 0);
+      const sendGeneration = Math.max(task?.sendGeneration ?? 0, binding?.sendGeneration ?? 0);
+      const summaryTitle = summary && summary.ownerRevision === ownerRevision &&
+        summary.sendGeneration === sendGeneration ? summary.title : null;
+      const execution = rawExecution && rawExecution.ownerRevision === ownerRevision &&
+        rawExecution.sendGeneration === sendGeneration ? rawExecution : null;
       return {
         taskId,
-        projectId: task?.projectId ?? binding?.projectId ?? null,
+        projectId: effectiveProjectId,
+        projectName: effectiveProjectId == null ? null : projectNameById.get(effectiveProjectId) ?? null,
+        requester: task?.requester ?? null,
+        executor: {
+          displayName: "Foursday",
+          runtime: "Codex",
+          threadBound: Boolean(binding?.codexThreadId),
+          threadSpace: this.desktopThreadVisible ? "desktop" : "isolated",
+        },
+        assignmentState: assignment,
+        projectGroupId,
+        projectGroupName,
+        summaryTitle,
         state: task?.state ?? "active",
-        ownerRevision: Math.max(task?.ownerRevision ?? 0, binding?.ownerRevision ?? 0),
-        sendGeneration: Math.max(task?.sendGeneration ?? 0, binding?.sendGeneration ?? 0),
+        ownerRevision,
+        sendGeneration,
         codexThreadId: binding?.codexThreadId ?? null,
         forkCount: binding?.forkCount ?? 0,
         lastInboundAt: task?.lastInboundAt ?? null,
@@ -306,6 +414,31 @@ export class FoursdayControlService {
         pendingIntervention: task?.pendingEvent && !task.pendingEvent.consumed
           ? { type: task.pendingEvent.type, createdAt: task.pendingEvent.createdAt }
           : null,
+        worksiteGroup: worksiteGroup(task, contract, assignment, execution),
+        progress: taskProgress(task, contract, activityTrail, binding, execution),
+        execution: execution ? {
+          executionId: execution.executionId,
+          mode: execution.mode,
+          state: execution.state,
+          decisionSource: execution.decisionSource,
+          planSummary: execution.planSummary,
+          activityCount: execution.activityCount,
+          attemptCount: execution.attemptCount,
+          startedAt: execution.startedAt,
+          updatedAt: execution.updatedAt,
+          lastErrorCode: execution.lastErrorCode || null,
+        } : null,
+        activityTrail,
+        missingEvidence: (contract?.evidence ?? [])
+          .filter((item) => item.status === "missing")
+          .slice(0, 8)
+          .map((item) => item.summary),
+        threadView: {
+          available: this.desktopThreadVisible && Boolean(binding?.codexThreadId),
+          reason: this.desktopThreadVisible
+            ? (binding?.codexThreadId ? "available" : "thread_unavailable")
+            : "isolated_codex_home",
+        },
         taskContract: contract ? {
           title: contract.title,
           goal: contract.goal,
@@ -318,6 +451,13 @@ export class FoursdayControlService {
           businessAccepted: contract.lifecycleState === "accepted",
         } : null,
       };
+    });
+    const priority = new Map([["needs_me", 0], ["working", 1], ["recent", 2]]);
+    items.sort((left, right) => {
+      const group = (priority.get(left.worksiteGroup) ?? 9) - (priority.get(right.worksiteGroup) ?? 9);
+      if (group !== 0) return group;
+      return String(right.taskContract?.updatedAt ?? right.updatedAt ?? "")
+        .localeCompare(String(left.taskContract?.updatedAt ?? left.updatedAt ?? ""));
     });
     return {
       schema: "foursday-control-tasks/v1",
@@ -395,6 +535,7 @@ export function controlServicePaths({ layout, environment = process.env } = {}) 
     evidencePath: environment.FOURSDAY_SHADOW_EVIDENCE_FILE || join(stateRoot, "shadow-evidence.jsonl"),
     productionConfigPath: environment.FOURSDAY_PRODUCTION_CONFIG || join(localRoot, "production.json"),
     taskLedgerPath: environment.FOURSDAY_TASK_LEDGER_FILE || join(stateRoot, "task-ledger.json"),
+    desktopThreadVisible: environment.FOURSDAY_CODEX_DESKTOP_VISIBLE === "true",
     displayName: basename(layout.profileDirectory),
   };
 }

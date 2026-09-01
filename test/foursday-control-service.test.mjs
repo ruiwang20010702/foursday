@@ -7,7 +7,7 @@ import { FoursdayControlService } from "../src/foursday-control-service.mjs";
 
 const taskId = "b".repeat(64);
 
-async function fixture(t) {
+async function fixture(t, { now = Date.parse("2026-09-01T02:45:00.000Z") } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "foursday-control-service-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const profileDirectory = join(root, "profile");
@@ -72,6 +72,15 @@ async function fixture(t) {
         updatedAt: "2026-08-24T10:01:00.000Z",
       },
     },
+    activities: {
+      [taskId]: [{
+        eventId: "d".repeat(64),
+        kind: "test",
+        summary: "正在运行自动测试",
+        detail: "项目回归",
+        occurredAt: "2026-08-24T10:00:30.000Z",
+      }],
+    },
   })}\n`, { mode: 0o600 });
   const layout = { profileDirectory, userHome: root };
   const service = new FoursdayControlService({
@@ -82,6 +91,7 @@ async function fixture(t) {
     evidencePath,
     productionConfigPath,
     taskLedgerPath,
+    desktopThreadVisible: true,
     gatewayInspector: async () => ({
       ready: true, installed: true, mode: "shadow", sendEnabled: false,
       sendBlocked: false,
@@ -112,8 +122,9 @@ async function fixture(t) {
       })),
       truncated: false,
     }),
+    now: () => now,
   });
-  return { service };
+  return { service, bindings };
 }
 
 test("control service projects tasks, schedules, memory and evidence without private bodies", async (t) => {
@@ -153,6 +164,19 @@ test("control service projects tasks, schedules, memory and evidence without pri
   assert.deepEqual(tasks.items[0], {
     taskId,
     projectId: "project",
+    projectName: "Project",
+    requester: null,
+    executor: {
+      displayName: "Foursday",
+      runtime: "Codex",
+      threadBound: true,
+      threadSpace: "desktop",
+    },
+    assignmentState: "routed",
+    projectGroupId: "project",
+    projectGroupName: "Project",
+    summaryTitle: null,
+    execution: null,
     state: "active",
     ownerRevision: 2,
     sendGeneration: 3,
@@ -161,6 +185,22 @@ test("control service projects tasks, schedules, memory and evidence without pri
     lastInboundAt: null,
     updatedAt: "2026-08-24T10:00:00.000Z",
     pendingIntervention: null,
+    worksiteGroup: "needs_me",
+    progress: {
+      stage: "test",
+      activityCount: 1,
+      hasPlan: true,
+      lastActivityAt: "2026-08-24T10:00:30.000Z",
+    },
+    activityTrail: [{
+      eventId: "d".repeat(64),
+      kind: "test",
+      summary: "正在运行自动测试",
+      detail: "项目回归",
+      occurredAt: "2026-08-24T10:00:30.000Z",
+    }],
+    missingEvidence: ["等待业务签收"],
+    threadView: { available: true, reason: "available" },
     taskContract: {
       title: "核对项目交付状态",
       goal: "判断当前项目是否具备验收证据。",
@@ -221,4 +261,84 @@ test("control service seeds a bound task and global pause changes readiness", as
   status = await service.status();
   assert.equal(status.ready, false);
   assert.equal(status.control.state, "paused");
+});
+
+test("taken-over tasks remain recent even when a takeover event is still pending", async (t) => {
+  const { service } = await fixture(t);
+  const takeover = await service.apply({
+    action: "task_takeover",
+    expectedRevision: 0,
+    taskId,
+  });
+  assert.equal(takeover.result.state, "taken_over");
+  const tasks = await service.tasks();
+  assert.equal(tasks.items[0].pendingIntervention.type, "task_takeover");
+  assert.equal(tasks.items[0].worksiteGroup, "recent");
+});
+
+test("current task generation selects its exact Thread binding instead of file order", async (t) => {
+  const { service, bindings } = await fixture(t);
+  await writeFile(join(bindings, `${"f".repeat(64)}.json`), `${JSON.stringify({
+    schema: "foursday-thread-binding/v1",
+    scope: { sourceSessionHash: taskId, projectId: "stale_project" },
+    codexThreadId: "thread-stale",
+    forkThreadIds: [],
+    ownerRevision: 1,
+    sendGeneration: 2,
+    updatedAt: "2026-09-01T02:44:00.000Z",
+  })}\n`, { mode: 0o600 });
+  await service.store.observeTask({
+    taskId,
+    projectId: null,
+    requester: { displayName: "娜娜老师", channel: "dingtalk_direct" },
+    ownerRevision: 2,
+    sendGeneration: 3,
+    lastInboundAt: "2026-09-01T02:44:30.000Z",
+  });
+
+  const item = (await service.tasks()).items.find((task) => task.taskId === taskId);
+  assert.equal(item.projectId, "project");
+  assert.equal(item.codexThreadId, "thread-1");
+  assert.equal(item.assignmentState, "routed");
+  assert.deepEqual(item.requester, {
+    displayName: "娜娜老师",
+    channel: "dingtalk_direct",
+  });
+  assert.deepEqual(item.progress, {
+    stage: "test",
+    activityCount: 1,
+    hasPlan: true,
+    lastActivityAt: "2026-08-24T10:00:30.000Z",
+  });
+});
+
+test("fresh unbound work routes briefly while stale orphan records move to recent history", async (t) => {
+  const now = Date.parse("2026-09-01T02:45:00.000Z");
+  const { service } = await fixture(t, { now });
+  const freshId = "1".repeat(64);
+  const legacyId = "2".repeat(64);
+  await service.store.observeTask({
+    taskId: freshId,
+    projectId: null,
+    ownerRevision: 1,
+    sendGeneration: 1,
+    lastInboundAt: "2026-09-01T02:40:00.000Z",
+  });
+  await service.store.observeTask({
+    taskId: legacyId,
+    projectId: null,
+    ownerRevision: 1,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-28T09:20:51.000Z",
+  });
+
+  const items = (await service.tasks()).items;
+  const fresh = items.find((task) => task.taskId === freshId);
+  assert.equal(fresh.assignmentState, "routing");
+  assert.equal(fresh.projectGroupName, "正在识别项目");
+  assert.equal(fresh.worksiteGroup, "working");
+  const legacy = items.find((task) => task.taskId === legacyId);
+  assert.equal(legacy.assignmentState, "legacy_unassigned");
+  assert.equal(legacy.projectGroupName, "未归档历史");
+  assert.equal(legacy.worksiteGroup, "recent");
 });

@@ -268,7 +268,14 @@ test("profile staging packages plugins, profile and skills without Python caches
     "foursday-codex-proxy.mjs",
     "foursday-owner-intervention.mjs",
     "personal-gbrain-promoter.mjs",
-  ]) await writeFile(join(root, "src", name), "// host\n");
+  ]) await writeFile(
+    join(root, "src", name),
+    name === "foursday-codex-proxy.mjs"
+      ? 'import { activity } from "./foursday-codex-activity.mjs";\nimport { ledger } from "./foursday-task-ledger.mjs";\n'
+      : "// host\n",
+  );
+  await writeFile(join(root, "src", "foursday-codex-activity.mjs"), "// activity\n");
+  await writeFile(join(root, "src", "foursday-task-ledger.mjs"), "// ledger\n");
   await writeFile(join(root, "scripts", "运行个人gbrain记忆晋升.mjs"), "// promoter\n");
   await mkdir(join(root, "distribution", "host"));
   await writeFile(join(root, "distribution", "host", "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }));
@@ -315,6 +322,8 @@ test("profile staging packages plugins, profile and skills without Python caches
   assert.match(profileConfiguration, /curator:\n  enabled: false/u);
   await access(join(result.stage, "skills", "project-work", "SKILL.md"));
   await access(join(result.stage, "host", "src", "hermes-dws-sidecar.mjs"));
+  await access(join(result.stage, "host", "src", "foursday-codex-activity.mjs"));
+  await access(join(result.stage, "host", "src", "foursday-task-ledger.mjs"));
   assert.match(
     await readFile(join(result.stage, "host", "bin", "codex"), "utf8"),
     /foursday-codex-proxy\.mjs/u,

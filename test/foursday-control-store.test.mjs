@@ -16,12 +16,13 @@ async function fixture(t) {
   return { root, path, store };
 }
 
-test("control store is private, revision fenced and carries no task body or identity", async (t) => {
+test("control store keeps only a bounded requester label and no task body or stable identity", async (t) => {
   const value = await fixture(t);
   assert.equal((await value.store.snapshot()).revision, 0);
   const observed = await value.store.observeTask({
     taskId,
     projectId: "project",
+    requester: { displayName: "娜娜老师", channel: "dingtalk_direct" },
     ownerRevision: 0,
     sendGeneration: 1,
     lastInboundAt: "2026-08-24T10:00:00.000Z",
@@ -43,9 +44,45 @@ test("control store is private, revision fenced and carries no task body or iden
   assert.equal(snapshot.tasks[taskId].ownerRevision, 1);
   assert.equal(snapshot.tasks[taskId].sendGeneration, 2);
   assert.equal(snapshot.tasks[taskId].pendingEvent.type, "task_takeover");
+  assert.deepEqual(snapshot.tasks[taskId].requester, {
+    displayName: "娜娜老师",
+    channel: "dingtalk_direct",
+  });
   assert.equal((await lstat(value.path)).mode & 0o077, 0);
   const serialized = await readFile(value.path, "utf8");
   assert.doesNotMatch(serialized, /conversation|trusted-user|message body/u);
+  assert.match(serialized, /娜娜老师/u);
+});
+
+test("requester projection rejects unsafe labels and survives later identity-free observations", async (t) => {
+  const value = await fixture(t);
+  await assert.rejects(value.store.observeTask({
+    taskId,
+    projectId: "project",
+    requester: { displayName: "token=must-not-store", channel: "dingtalk_direct" },
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-24T10:00:00.000Z",
+  }), /requester projection is invalid/u);
+  await value.store.observeTask({
+    taskId,
+    projectId: "project",
+    requester: { displayName: "项目同事", channel: "dingtalk_group" },
+    ownerRevision: 0,
+    sendGeneration: 1,
+    lastInboundAt: "2026-08-24T10:00:00.000Z",
+  });
+  await value.store.observeTask({
+    taskId,
+    projectId: "project",
+    ownerRevision: 0,
+    sendGeneration: 2,
+    lastInboundAt: "2026-08-24T10:01:00.000Z",
+  });
+  assert.deepEqual((await value.store.snapshot()).tasks[taskId].requester, {
+    displayName: "项目同事",
+    channel: "dingtalk_group",
+  });
 });
 
 test("acknowledging a correction scrubs its transient note", async (t) => {

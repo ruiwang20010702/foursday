@@ -459,6 +459,7 @@ test("proxy resumes the bound Codex thread after a fresh Hermes app-server proce
   const projectSkill = join(root, "project-work.md");
   const contextPath = join(root, "contexts.json");
   const bindingRoot = join(root, "bindings");
+  const taskLedgerPath = join(root, "task-ledger.json");
   const fakeLog = join(root, "fake-codex.jsonl");
   const fakeCodex = join(root, "fake-codex.mjs");
   await Promise.all([
@@ -490,6 +491,7 @@ test("proxy resumes the bound Codex thread after a fresh Hermes app-server proce
     '  if (message.method === "thread/fork") result = { thread: { id: `fork-${process.pid}` } };',
     '  if (message.method === "turn/start") result = { threadId, turn: { id: `turn-${process.pid}` } };',
     '  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");',
+    '  if (message.method === "turn/start") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "item/started", params: { threadId, item: { id: `activity-${process.pid}`, type: "commandExecution", command: "npm test" } } }) + "\\n");',
     '}',
     '',
   ].join("\n"), { mode: 0o700 });
@@ -537,6 +539,7 @@ test("proxy resumes the bound Codex thread after a fresh Hermes app-server proce
         FOURSDAY_PROJECT_SKILL_FILE: projectSkill,
         FOURSDAY_WORK_CONTEXT_FILE: contextPath,
         FOURSDAY_THREAD_BINDINGS_ROOT: bindingRoot,
+        FOURSDAY_TASK_LEDGER_FILE: taskLedgerPath,
         FOURSDAY_REQUIRE_WORK_CONTEXT: "true",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -600,4 +603,8 @@ test("proxy resumes the bound Codex thread after a fresh Hermes app-server proce
   const binding = JSON.parse(await readFile(join(bindingRoot, bindingFile), "utf8"));
   assert.equal(binding.forkThreadIds.length, 1);
   assert.match(binding.forkThreadIds[0], /^fork-/u);
+  const taskLedger = JSON.parse(await readFile(taskLedgerPath, "utf8"));
+  assert.equal(taskLedger.activities["e".repeat(64)].length, 2);
+  assert.equal(taskLedger.activities["e".repeat(64)][0].kind, "test");
+  assert.doesNotMatch(JSON.stringify(taskLedger), /npm test/u);
 });
