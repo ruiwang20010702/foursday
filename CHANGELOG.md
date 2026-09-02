@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0-rc.1 - 2026-09-02
+
 - Fixed macOS worksite startup to invoke the real CLI with an explicit supported Node and a bounded environment; public local installation now packs and copies a tarball instead of leaving a global symlink into a TCC-protected checkout.
 - Added a resumable `foursday setup` trial-onboarding flow that detects the local toolchain, current DingTalk profile and Codex saved projects, asks at most for account and allowed roots, invalidates stale resume state when selections change, and always stops before real sending.
 - Added one Control-level user-experience contract for on-duty state, responsibility, progress and a single recommended action; the macOS worksite consumes the same translated state while keeping execution fields folded under technical details.

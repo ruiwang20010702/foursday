@@ -11,7 +11,7 @@
       "name": "foursday",
       "source": "./distribution/claude-plugins/foursday",
       "description": "Operate the local Foursday work twin through the shared Control MCP.",
-      "version": "0.8.0-rc.1",
+      "version": "0.9.0-rc.1",
       "author": {
         "name": "Foursday"
       },

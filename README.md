@@ -219,7 +219,7 @@ Foursday does not create a second knowledge repository or copy personal pages in
 
 ## Status
 
-The current public preview is `v0.8.0-rc.1`. It adds the shared Control MCP, Codex/Claude plugins, owner intervention fencing, Thread continuity and the unified macOS worksite with a read-only browser fallback to the one-Codex-loop architecture. It is a release candidate, not evidence that a production instance has been activated.
+The current source candidate is `v0.9.0-rc.1`; the latest GitHub Release remains `v0.8.0-rc.1`. The candidate adds guided setup, measurable trial evidence, staged detection latency and a lower-overhead unified macOS worksite to the shared Control MCP and one-Codex-loop architecture. A source candidate, GitHub Release, technical deployment and production activation are separate states.
 
 Installing this repository does not inherit any existing instance's authority, credentials, allowlist, send permission, or production state.
 
