@@ -53,6 +53,8 @@ test("pet reads only the loopback task projection and reuses Codex pet assets", 
   }
   assert.match(source, /\.onHover \{ model\.setHovering\(\$0\) \}/u);
   assert.match(source, /\.onTapGesture \{ model\.petTapped\(\) \}/u);
+  assert.match(source, /func petTapped\(\) \{\s*expanded\.toggle\(\)\s*\}/u);
+  assert.doesNotMatch(source, /func petTapped\(\) \{[\s\S]{0,120}trigger\(\.jumping/u);
   assert.match(source, /DragGesture\(minimumDistance: 4/u);
   assert.match(source, /translation\.width < 0 \? \.runningLeft : \.runningRight/u);
   assert.match(source, /let mouse = NSEvent\.mouseLocation/u);
@@ -71,6 +73,11 @@ test("pet reads only the loopback task projection and reuses Codex pet assets", 
   assert.match(source, /case \.jumping: 5/u);
   assert.match(source, /case \.waiting, \.working, \.review: 6/u);
   assert.match(source, /reduceMotion \|\| state == \.idle/u);
+  assert.match(source, /display: false, animate: false/u);
+  assert.doesNotMatch(source, /transition\(\.move\(edge:/u);
+  assert.doesNotMatch(source, /\.animation\([^\n]*value: model\.expanded/u);
+  assert.doesNotMatch(source, /\.regularMaterial/u);
+  assert.match(source, /Color\(nsColor: \.windowBackgroundColor\)\.opacity\(0\.98\)/u);
   assert.match(source, /scanPopulatedColumns\(in: cgImage, rows: rows\)/u);
   assert.match(source, /CGImageAlphaInfo\.premultipliedLast/u);
   assert.match(source, /stride\(from: 3, to: rgba\.count, by: 4\)/u);

@@ -559,7 +559,6 @@ private final class PetModel {
     }
 
     func petTapped() {
-        trigger(.jumping, for: .milliseconds(850))
         expanded.toggle()
     }
 
@@ -1575,8 +1574,10 @@ private struct WorksiteView: View {
         }
         .padding(20)
         .frame(width: 620, height: 580)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(0.45)))
+        .background(
+            Color(nsColor: .windowBackgroundColor).opacity(0.98),
+            in: RoundedRectangle(cornerRadius: 24)
+        )
     }
 
     private var statusLine: String {
@@ -1591,7 +1592,6 @@ private struct PetRootView: View {
         HStack(alignment: .bottom, spacing: 14) {
             if model.expanded {
                 WorksiteView(model: model)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
             PetSprite(atlas: model.atlas, state: model.animationState)
@@ -1618,7 +1618,6 @@ private struct PetRootView: View {
             .contextMenu { Button("退出 Foursday 桌宠") { NSApplication.shared.terminate(nil) } }
         }
         .padding(10)
-        .animation(.snappy(duration: 0.24), value: model.expanded)
     }
 
 }
@@ -1679,7 +1678,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             y: min(max(visible.minY, anchorMinY), visible.maxY - size.height),
             width: size.width,
             height: size.height
-        ), display: true, animate: true)
+        ), display: false, animate: false)
     }
 
     private func movePanel(by translation: CGSize) {

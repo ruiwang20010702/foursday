@@ -14,7 +14,7 @@ test("experience report computes targets but refuses to call a small sample suff
   const taskHash = "a".repeat(16);
   const report = analyzeFoursdayExperience([
     { type: "setup_completed", success: true, durationMs: 540_000, inputCount: 2, taskHash },
-    { type: "message_detected", durationMs: 8_000, taskHash },
+    { type: "message_detected", durationMs: 8_000, wakeSource: "dws_event", taskHash },
     { type: "ack_sent", durationMs: 12_000, taskHash },
     { type: "first_effective_reply", taskClass: "instant", durationMs: 25_000, taskHash },
     { type: "responsibility_check", correct: true, taskHash },
@@ -24,7 +24,9 @@ test("experience report computes targets but refuses to call a small sample suff
   ]);
   assert.equal(report.sample.taskCount, 1);
   assert.equal(report.sample.sufficient, false);
-  for (const value of Object.values(report.metrics)) assert.equal(value.passed, true);
+  assert.equal(report.metrics.detectionP95Ms.passed, true);
+  assert.equal(report.metrics.realtimeDetectionP95Ms.passed, true);
+  assert.equal(report.metrics.fallbackDetectionP95Ms.passed, null);
 });
 
 test("experience report represents missing evidence as unknown instead of passed", () => {
@@ -41,13 +43,43 @@ test("experience report consumes existing reply evidence without private content
   const report = analyzeFoursdayExperience([{
     type: "reply_attempt",
     detectionLatencyMs: 7_500,
+    wakeSource: "dws_event",
     agentDurationMs: 11_000,
     deliveryKind: "interim_ack",
+    conversationHash: "c".repeat(16),
     contentHash: "b".repeat(64),
   }]);
+  assert.equal(report.sample.taskCount, 1);
+  assert.equal(report.sample.taskIdentity, "conversation_hash");
   assert.equal(report.metrics.detectionP95Ms.value, 7_500);
+  assert.equal(report.metrics.realtimeDetectionP95Ms.value, 7_500);
+  assert.equal(report.metrics.fallbackDetectionP95Ms.value, null);
   assert.equal(report.metrics.acknowledgmentP95Ms.value, 11_000);
   assert.doesNotMatch(JSON.stringify(report), /contentHash/u);
+});
+
+test("experience report keeps fallback latency visible without calling it realtime", () => {
+  const report = analyzeFoursdayExperience([
+    {
+      type: "inbound", conversationHash: "d".repeat(16),
+      detectionLatencyMs: 61_000, wakeSource: "fallback",
+    },
+    {
+      type: "reply_attempt", conversationHash: "d".repeat(16),
+      detectionLatencyMs: 61_000, wakeSource: "fallback",
+    },
+    {
+      type: "reply_attempt", conversationHash: "e".repeat(16),
+      detectionLatencyMs: 1_200, wakeSource: "filesystem",
+    },
+  ]);
+  assert.equal(report.sample.taskCount, 2);
+  assert.equal(report.metrics.detectionP95Ms.value, 61_000);
+  assert.equal(report.metrics.detectionP95Ms.passed, false);
+  assert.equal(report.metrics.realtimeDetectionP95Ms.value, 1_200);
+  assert.equal(report.metrics.realtimeDetectionP95Ms.passed, true);
+  assert.equal(report.metrics.fallbackDetectionP95Ms.value, 61_000);
+  assert.equal(report.metrics.fallbackDetectionP95Ms.passed, null);
 });
 
 test("experience CLI reads and writes only private files", async (t) => {

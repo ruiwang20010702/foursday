@@ -9,6 +9,7 @@ const targets = Object.freeze({
   takeoverReplyRate: 0,
   taskCompletionRate: 0.9,
 });
+const realtimeWakeSources = new Set(["dws_event", "filesystem"]);
 
 function finite(values) {
   return values.map(Number).filter((value) => Number.isFinite(value) && value >= 0);
@@ -30,17 +31,41 @@ function metric(value, sampleSize, target, pass) {
   return { value, sampleSize, target, passed: sampleSize > 0 ? pass : null };
 }
 
+function observedMetric(value, sampleSize) {
+  return { value, sampleSize, target: null, passed: null };
+}
+
+function detectionObservation(event) {
+  let values = [];
+  if (event.type === "message_detected") values = finite([event.durationMs ?? event.latencyMs]);
+  else if (event.type === "reply_attempt") values = finite([event.detectionLatencyMs]);
+  return values.map((latencyMs) => ({
+    latencyMs,
+    wakeSource: String(event.wakeSource ?? "unknown").slice(0, 40),
+  }));
+}
+
+function experienceTaskIdentity(event) {
+  for (const value of [event.taskHash, event.conversationHash]) {
+    if (/^[a-f0-9]{16,64}$/u.test(String(value ?? ""))) return String(value);
+  }
+  return null;
+}
+
 export function analyzeFoursdayExperience(events = []) {
   if (!Array.isArray(events) || events.length > 100_000) {
     throw new Error("Foursday experience evidence is invalid");
   }
   const rows = events.filter((event) => event && typeof event === "object" && !Array.isArray(event));
   const setup = rows.filter((event) => event.type === "setup_completed" && event.success === true);
-  const detections = rows.flatMap((event) => {
-    if (event.type === "message_detected") return finite([event.durationMs ?? event.latencyMs]);
-    if (event.type === "reply_attempt") return finite([event.detectionLatencyMs]);
-    return [];
-  });
+  const detectionObservations = rows.flatMap(detectionObservation);
+  const detections = detectionObservations.map((item) => item.latencyMs);
+  const realtimeDetections = detectionObservations
+    .filter((item) => realtimeWakeSources.has(item.wakeSource))
+    .map((item) => item.latencyMs);
+  const fallbackDetections = detectionObservations
+    .filter((item) => !realtimeWakeSources.has(item.wakeSource))
+    .map((item) => item.latencyMs);
   const acknowledgments = rows.flatMap((event) => {
     if (event.type === "ack_sent") return finite([event.durationMs]);
     if (event.type === "reply_attempt" && event.deliveryKind === "interim_ack") {
@@ -62,24 +87,35 @@ export function analyzeFoursdayExperience(events = []) {
   const setupDuration = percentile(setup.map((event) => event.durationMs), 0.5);
   const setupInputs = percentile(setup.map((event) => event.inputCount), 0.5);
   const detectionP95 = percentile(detections, 0.95);
+  const realtimeDetectionP95 = percentile(realtimeDetections, 0.95);
+  const fallbackDetectionP95 = percentile(fallbackDetections, 0.95);
   const acknowledgmentP95 = percentile(acknowledgments, 0.95);
   const instantP50 = percentile(instantReplies, 0.5);
   const responsibilityRate = rate(responsibility, (event) => event.correct);
   const duplicateRate = rate(duplicates, (event) => event.duplicated);
   const takeoverRate = rate(takeovers, (event) => event.repliedAfterTakeover);
   const completionRate = rate(completions, (event) => event.completed);
-  const uniqueTasks = new Set(rows.map((event) => event.taskHash).filter((value) => /^[a-f0-9]{16,64}$/u.test(String(value))));
+  const explicitTaskRows = rows.filter((event) => /^[a-f0-9]{16,64}$/u.test(String(event.taskHash ?? "")));
+  const uniqueTasks = new Set(rows.map(experienceTaskIdentity).filter(Boolean));
   return {
     schema: "foursday-experience-report/v1",
     sample: {
       eventCount: rows.length,
       taskCount: uniqueTasks.size,
+      taskIdentity: explicitTaskRows.length > 0 ? "task_or_conversation_hash" : "conversation_hash",
       sufficient: uniqueTasks.size >= 30,
     },
     metrics: {
       setupDurationP50Ms: metric(setupDuration, setup.length, targets.setupDurationMs, setupDuration <= targets.setupDurationMs),
       setupInputP50: metric(setupInputs, setup.length, targets.setupInputCount, setupInputs <= targets.setupInputCount),
       detectionP95Ms: metric(detectionP95, detections.length, targets.detectionP95Ms, detectionP95 <= targets.detectionP95Ms),
+      realtimeDetectionP95Ms: metric(
+        realtimeDetectionP95,
+        realtimeDetections.length,
+        targets.detectionP95Ms,
+        realtimeDetectionP95 <= targets.detectionP95Ms,
+      ),
+      fallbackDetectionP95Ms: observedMetric(fallbackDetectionP95, fallbackDetections.length),
       acknowledgmentP95Ms: metric(acknowledgmentP95, acknowledgments.length, targets.acknowledgmentP95Ms, acknowledgmentP95 <= targets.acknowledgmentP95Ms),
       instantReplyP50Ms: metric(instantP50, instantReplies.length, targets.instantReplyP50Ms, instantP50 <= targets.instantReplyP50Ms),
       responsibilityAccuracy: metric(responsibilityRate, responsibility.length, targets.responsibilityAccuracy, responsibilityRate >= targets.responsibilityAccuracy),
