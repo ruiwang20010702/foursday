@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.0-rc.3 - 2026-09-02
+
+- Replaced SwiftUI-owned desktop-pet window dragging with AppKit mouse event tracking, immediate release settling and stale-event rejection so the pet returns to idle promptly and supports consecutive drags without a cooldown.
+
 ## 0.9.0-rc.2 - 2026-09-02
 
 - Added privacy-safe real-task observation recording with deterministic task hashes, duplicate rejection, transport work-item anchors, and a 30-task threshold that counts only terminally reviewed business tasks rather than conversations or raw inbound bundles.

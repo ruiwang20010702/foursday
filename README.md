@@ -219,7 +219,7 @@ Foursday does not create a second knowledge repository or copy personal pages in
 
 ## Status
 
-The current source candidate is `v0.9.0-rc.2`; the latest GitHub Release remains `v0.8.0-rc.1`. The candidate adds guided setup, privacy-safe reviewed-task evidence, staged detection latency and a lower-overhead unified macOS worksite to the shared Control MCP and one-Codex-loop architecture. A source candidate, GitHub Release, technical deployment and production activation are separate states.
+The current source candidate is `v0.9.0-rc.3`; the latest GitHub Release remains `v0.8.0-rc.1`. The candidate adds guided setup, privacy-safe reviewed-task evidence, staged detection latency and a lower-overhead unified macOS worksite with responsive native dragging to the shared Control MCP and one-Codex-loop architecture. A source candidate, GitHub Release, technical deployment and production activation are separate states.
 
 Installing this repository does not inherit any existing instance's authority, credentials, allowlist, send permission, or production state.
 

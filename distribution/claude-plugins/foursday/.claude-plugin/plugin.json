@@ -1,6 +1,6 @@
 {
   "name": "foursday",
-  "version": "0.9.0-rc.2",
+  "version": "0.9.0-rc.3",
   "description": "Operate the local Foursday work twin from Claude Code through the shared Control MCP.",
   "author": { "name": "Foursday" },
   "repository": "https://github.com/ruiwang20010702/foursday",

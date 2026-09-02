@@ -398,8 +398,13 @@ private final class PetModel {
     private var dashboardProcess: Process?
     private var refreshTask: Task<Void, Never>?
     private var motionResetTask: Task<Void, Never>?
+    private var dragReleaseTask: Task<Void, Never>?
+    private var dragSettleTask: Task<Void, Never>?
     private var interactionState: PetAnimationState?
     private var isHovering = false
+    private var isDragging = false
+    private var isSettlingAfterDrag = false
+    private var hoverEffectsResumeAt = Date.distantPast
     private var hasLoadedTasks = false
 
     var workState: PetAnimationState {
@@ -423,7 +428,8 @@ private final class PetModel {
     }
 
     var animationState: PetAnimationState {
-        interactionState ?? workState
+        if isSettlingAfterDrag { return .idle }
+        return interactionState ?? workState
     }
 
     var attentionCount: Int {
@@ -543,6 +549,10 @@ private final class PetModel {
         refreshTask = nil
         motionResetTask?.cancel()
         motionResetTask = nil
+        dragReleaseTask?.cancel()
+        dragReleaseTask = nil
+        dragSettleTask?.cancel()
+        dragSettleTask = nil
         if dashboardProcess?.isRunning == true { dashboardProcess?.terminate() }
         dashboardProcess = nil
     }
@@ -550,7 +560,7 @@ private final class PetModel {
     func setHovering(_ hovering: Bool) {
         let entered = hovering && !isHovering
         isHovering = hovering
-        if entered {
+        if entered && !isDragging && Date() >= hoverEffectsResumeAt {
             trigger(.waving, for: .milliseconds(840))
         } else if !hovering && interactionState == .waving {
             motionResetTask?.cancel()
@@ -563,14 +573,59 @@ private final class PetModel {
     }
 
     func dragChanged(_ translation: CGSize) {
+        guard NSEvent.pressedMouseButtons & 1 != 0 else {
+            finishDrag()
+            return
+        }
         motionResetTask?.cancel()
+        dragSettleTask?.cancel()
+        dragSettleTask = nil
+        isSettlingAfterDrag = false
+        if !isDragging {
+            isDragging = true
+            watchForDragRelease()
+        }
         interactionState = translation.width < 0 ? .runningLeft : .runningRight
         onDragChanged?(translation)
     }
 
     func dragEnded() {
-        interactionState = nil
+        finishDrag()
+    }
+
+    private func watchForDragRelease() {
+        dragReleaseTask?.cancel()
+        dragReleaseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled, let self, isDragging else { return }
+                if NSEvent.pressedMouseButtons & 1 == 0 {
+                    finishDrag()
+                    return
+                }
+            }
+        }
+    }
+
+    private func finishDrag() {
+        guard isDragging else { return }
+        isDragging = false
+        isSettlingAfterDrag = true
+        hoverEffectsResumeAt = Date().addingTimeInterval(0.8)
+        dragReleaseTask?.cancel()
+        dragReleaseTask = nil
+        if interactionState == .runningLeft || interactionState == .runningRight {
+            interactionState = nil
+        }
         onDragEnded?()
+        dragSettleTask?.cancel()
+        dragSettleTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled, let self, !isDragging else { return }
+            interactionState = nil
+            isSettlingAfterDrag = false
+            dragSettleTask = nil
+        }
     }
 
     func select(_ item: TaskItem) {
@@ -1609,11 +1664,6 @@ private struct PetRootView: View {
             .contentShape(Rectangle())
             .onHover { model.setHovering($0) }
             .onTapGesture { model.petTapped() }
-            .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                    .onChanged { model.dragChanged($0.translation) }
-                    .onEnded { _ in model.dragEnded() }
-            )
             .help("查看 Foursday 任务")
             .contextMenu { Button("退出 Foursday 桌宠") { NSApplication.shared.terminate(nil) } }
         }
@@ -1638,6 +1688,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: NSPanel?
     private var dragPanelOrigin: NSPoint?
     private var dragMouseOrigin: NSPoint?
+    private var petMouseDownLocation: NSPoint?
+    private var petDragActive = false
+    private var mouseEventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let panel = NSPanel(
@@ -1657,12 +1710,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onExpansionChanged = { [weak self] expanded in self?.resize(expanded: expanded) }
         model.onDragChanged = { [weak self] translation in self?.movePanel(by: translation) }
         model.onDragEnded = { [weak self] in self?.endDrag() }
+        mouseEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            self?.handleMouseEvent(event)
+            return event
+        }
         resize(expanded: false)
         panel.orderFrontRegardless()
         model.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let mouseEventMonitor { NSEvent.removeMonitor(mouseEventMonitor) }
+        mouseEventMonitor = nil
         model.stop()
     }
 
@@ -1701,6 +1762,40 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             y: min(max(visible.minY, panelOrigin.y + mouse.y - mouseOrigin.y), visible.maxY - panel.frame.height)
         )
         panel.setFrameOrigin(next)
+    }
+
+    private func handleMouseEvent(_ event: NSEvent) {
+        guard let panel else { return }
+        switch event.type {
+        case .leftMouseDown:
+            let point = event.locationInWindow
+            let petHitRect = NSRect(
+                x: max(0, panel.frame.width - 132),
+                y: 0,
+                width: 132,
+                height: 148
+            )
+            petMouseDownLocation = event.window === panel && petHitRect.contains(point)
+                ? NSEvent.mouseLocation
+                : nil
+            petDragActive = false
+        case .leftMouseDragged:
+            guard let origin = petMouseDownLocation else { return }
+            let mouse = NSEvent.mouseLocation
+            let translation = CGSize(
+                width: mouse.x - origin.x,
+                height: origin.y - mouse.y
+            )
+            if !petDragActive && hypot(translation.width, translation.height) < 4 { return }
+            petDragActive = true
+            model.dragChanged(translation)
+        case .leftMouseUp:
+            if petDragActive { model.dragEnded() }
+            petMouseDownLocation = nil
+            petDragActive = false
+        default:
+            break
+        }
     }
 
     private func endDrag() {

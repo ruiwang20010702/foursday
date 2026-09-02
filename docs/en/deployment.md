@@ -1,6 +1,6 @@
 # Install and run
 
-> Current source candidate: `v0.9.0-rc.2`; latest GitHub Release: `v0.8.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
+> Current source candidate: `v0.9.0-rc.3`; latest GitHub Release: `v0.8.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
 
 ## 1. Run the ten-minute trial setup
 
