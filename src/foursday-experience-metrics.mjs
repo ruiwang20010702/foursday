@@ -46,11 +46,8 @@ function detectionObservation(event) {
   }));
 }
 
-function experienceTaskIdentity(event) {
-  for (const value of [event.taskHash, event.conversationHash]) {
-    if (/^[a-f0-9]{16,64}$/u.test(String(value ?? ""))) return String(value);
-  }
-  return null;
+function evidenceHash(value) {
+  return /^[a-f0-9]{16,64}$/u.test(String(value ?? "")) ? String(value) : null;
 }
 
 export function analyzeFoursdayExperience(events = []) {
@@ -106,15 +103,30 @@ export function analyzeFoursdayExperience(events = []) {
   const duplicateRate = rate(duplicates, (event) => event.duplicated);
   const takeoverRate = rate(takeovers, (event) => event.repliedAfterTakeover);
   const completionRate = rate(completions, (event) => event.completed);
-  const explicitTaskRows = rows.filter((event) => /^[a-f0-9]{16,64}$/u.test(String(event.taskHash ?? "")));
-  const uniqueTasks = new Set(rows.map(experienceTaskIdentity).filter(Boolean));
+  // A transport bundle or conversation is not automatically a reviewed business
+  // task. Only an explicit terminal review can make the 30-task sample sufficient.
+  const reviewedTasks = new Set(rows.flatMap((event) =>
+    event.type === "task_result" && typeof event.completed === "boolean"
+      ? [evidenceHash(event.taskHash)].filter(Boolean)
+      : []
+  ));
+  const observedWorkItems = new Set(rows.flatMap((event) =>
+    ["inbound", "background_inbound"].includes(event.type)
+      ? [evidenceHash(event.workItemHash)].filter(Boolean)
+      : []
+  ));
+  const legacyConversations = new Set(rows.map((event) =>
+    evidenceHash(event.conversationHash)
+  ).filter(Boolean));
   return {
     schema: "foursday-experience-report/v1",
     sample: {
       eventCount: rows.length,
-      taskCount: uniqueTasks.size,
-      taskIdentity: explicitTaskRows.length > 0 ? "task_or_conversation_hash" : "conversation_hash",
-      sufficient: uniqueTasks.size >= 30,
+      taskCount: reviewedTasks.size,
+      taskIdentity: reviewedTasks.size > 0 ? "reviewed_task_hash" : "none",
+      observedWorkItemCount: observedWorkItems.size,
+      legacyConversationCount: legacyConversations.size,
+      sufficient: reviewedTasks.size >= 30,
     },
     metrics: {
       setupDurationP50Ms: metric(setupDuration, setup.length, targets.setupDurationMs, setupDuration <= targets.setupDurationMs),

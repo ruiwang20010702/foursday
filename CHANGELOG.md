@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.0-rc.2 - 2026-09-02
+
+- Added privacy-safe real-task observation recording with deterministic task hashes, duplicate rejection, transport work-item anchors, and a 30-task threshold that counts only terminally reviewed business tasks rather than conversations or raw inbound bundles.
+
 ## 0.9.0-rc.1 - 2026-09-02
 
 - Fixed macOS worksite startup to invoke the real CLI with an explicit supported Node and a bounded environment; public local installation now packs and copies a tarball instead of leaving a global symlink into a TCC-protected checkout.

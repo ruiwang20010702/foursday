@@ -1688,6 +1688,8 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["detectionLatencyMs"], 1200)
         self.assertEqual(rows[0]["checkToDetectionMs"], 400)
         self.assertEqual(rows[0]["wakeSource"], "dws_event")
+        self.assertRegex(rows[0]["workItemHash"], r"^[a-f0-9]{64}$")
+        self.assertEqual(rows[0]["workItemHash"], rows[-1]["workItemHash"])
         self.assertGreaterEqual(rows[0]["bundleWaitMs"], 0)
         self.assertIn("detectionLatencyMs", rows[-1])
         self.assertIn("checkToDetectionMs", rows[-1])

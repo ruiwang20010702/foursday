@@ -1311,6 +1311,16 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 key=lambda item: item[1][0],
                 reverse=True,
             )[:1_000])
+        task_id = str(latest.get("taskId") or "").strip() or hashlib.sha256(
+            f"{conversation_id}:{user_id}".encode("utf-8")
+        ).hexdigest()
+        execution_key = (
+            f"{task_id}\0{int(latest.get('ownerRevision') or 0)}"
+            f"\0{int(latest.get('sendGeneration') or 0)}"
+        )
+        execution_id = str(latest.get("executionId") or "").strip() or hashlib.sha256(
+            execution_key.encode("utf-8")
+        ).hexdigest()
         latest_delivery_version = {
             "conversationId": conversation_id,
             "messageId": message_ids[-1],
@@ -1321,8 +1331,8 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "checkToDetectionMs": check_to_detection_ms,
             "bundleWaitMs": bundle_wait_ms,
             "wakeSource": wake_source,
-            "taskId": str(latest.get("taskId") or "") or None,
-            "executionId": str(latest.get("executionId") or "") or None,
+            "taskId": task_id,
+            "executionId": execution_id,
             "backgroundExecution": internal_background,
         }
         self._latest_delivery_versions.pop(conversation_id, None)
@@ -1433,6 +1443,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
             "type": "background_inbound" if internal_background else "inbound",
+            "workItemHash": execution_id,
             "conversationHash": _digest(conversation_id),
             "participantHash": _digest(user_id),
             "messageHashes": [_digest(value) for value in message_ids],
@@ -1554,6 +1565,16 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 }
         anchor_rebound = False
         latest_version = self._latest_delivery_versions.get(str(chat_id))
+        if (
+            version is not None
+            and latest_version is not None
+            and version.get("conversationId") == latest_version.get("conversationId")
+            and int(version.get("ownerRevision") or 0)
+            == int(latest_version.get("ownerRevision") or 0)
+            and int(version.get("sendGeneration") or 0)
+            == int(latest_version.get("sendGeneration") or 0)
+        ):
+            version = {**latest_version, **version}
         consumed_version = _TURN_CONSUMED_DELIVERY_VERSION.get()
         latest_reply_anchor = bool(
             reply_to
@@ -1630,6 +1651,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         _shadow_evidence({
             "schema": "foursday-shadow-event/v1",
             "type": "reply_attempt",
+            "workItemHash": str(version.get("executionId") or "") or None,
             "conversationHash": _digest(chat_id),
             "replyToHash": _digest(reply_to) if reply_to else None,
             "deliveryContextHash": hashlib.sha256(

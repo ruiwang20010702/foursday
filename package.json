@@ -1,6 +1,6 @@
 {
   "name": "foursday",
-  "version": "0.9.0-rc.1",
+  "version": "0.9.0-rc.2",
   "description": "A personal-memory-driven open-source work twin for real projects.",
   "bin": {
     "foursday": "scripts/新环境向导.mjs"
@@ -48,6 +48,7 @@
     "runtime:verify-mcp": "node scripts/验证RuntimeMCP可靠性.mjs",
     "pet:build": "node scripts/构建Foursday桌宠.mjs",
     "memory:promote": "node scripts/运行个人gbrain记忆晋升.mjs --once",
+    "experience:record": "node scripts/记录Foursday真实任务体验.mjs",
     "experience:verify": "node scripts/验证Foursday真实任务体验.mjs",
     "reuse:verify": "node --test test/foursday-cli.test.mjs test/hermes-package.test.mjs test/foursday-hermes-native-install.test.mjs",
     "check": "node scripts/运行代码检查.mjs",

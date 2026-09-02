@@ -24,6 +24,7 @@ test("package maintenance scripts use the Foursday runtime namespace", async () 
     "check:golden",
     "check:python",
     "check:security",
+    "experience:record",
     "experience:verify",
     "memory:promote",
     "pet:build",
