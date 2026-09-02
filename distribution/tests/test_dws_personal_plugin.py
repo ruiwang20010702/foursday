@@ -293,6 +293,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "isSelf": False,
                 "detectedAt": "2026-08-18T14:00:01.200+08:00",
                 "detectionLatencyMs": 1200,
+                "checkToDetectionMs": 400,
                 "wakeSource": "dws_event",
                 "taskBoundary": {
                     "intent": "new_task",
@@ -1640,6 +1641,7 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
                 "isSelf": False,
                 "detectedAt": "2026-08-18T14:00:01.200+08:00",
                 "detectionLatencyMs": 1200,
+                "checkToDetectionMs": 400,
                 "wakeSource": "dws_event",
                 "ownerRevision": 0,
                 "sendGeneration": 1,
@@ -1684,9 +1686,11 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(rows[-1]["recordedAt"], r"^\d{4}-")
         self.assertFalse(rows[-1]["bridgeSuccess"])
         self.assertEqual(rows[0]["detectionLatencyMs"], 1200)
+        self.assertEqual(rows[0]["checkToDetectionMs"], 400)
         self.assertEqual(rows[0]["wakeSource"], "dws_event")
         self.assertGreaterEqual(rows[0]["bundleWaitMs"], 0)
         self.assertIn("detectionLatencyMs", rows[-1])
+        self.assertIn("checkToDetectionMs", rows[-1])
         self.assertIn("bundleWaitMs", rows[-1])
         self.assertIn("agentDurationMs", rows[-1])
         self.assertIn("wakeSource", rows[-1])

@@ -61,7 +61,7 @@ test("experience report consumes existing reply evidence without private content
 test("experience report keeps fallback latency visible without calling it realtime", () => {
   const report = analyzeFoursdayExperience([
     {
-      type: "inbound", conversationHash: "d".repeat(16),
+      type: "inbound", conversationHash: "d".repeat(16), checkToDetectionMs: 8_000,
       detectionLatencyMs: 61_000, wakeSource: "fallback",
     },
     {
@@ -69,7 +69,7 @@ test("experience report keeps fallback latency visible without calling it realti
       detectionLatencyMs: 61_000, wakeSource: "fallback",
     },
     {
-      type: "reply_attempt", conversationHash: "e".repeat(16),
+      type: "inbound", conversationHash: "e".repeat(16), checkToDetectionMs: 900,
       detectionLatencyMs: 1_200, wakeSource: "filesystem",
     },
   ]);
@@ -80,6 +80,8 @@ test("experience report keeps fallback latency visible without calling it realti
   assert.equal(report.metrics.realtimeDetectionP95Ms.passed, true);
   assert.equal(report.metrics.fallbackDetectionP95Ms.value, 61_000);
   assert.equal(report.metrics.fallbackDetectionP95Ms.passed, null);
+  assert.equal(report.metrics.internalDetectionP95Ms.value, 8_000);
+  assert.equal(report.metrics.internalDetectionP95Ms.passed, true);
 });
 
 test("experience CLI reads and writes only private files", async (t) => {

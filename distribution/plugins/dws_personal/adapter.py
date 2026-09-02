@@ -666,6 +666,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "sendGeneration": send_generation,
                 "turnStartedMonotonic": time.monotonic(),
                 "detectionLatencyMs": metadata.get("detection_latency_ms"),
+                "checkToDetectionMs": metadata.get("check_to_detection_ms"),
                 "bundleWaitMs": metadata.get("bundle_wait_ms"),
                 "wakeSource": metadata.get("wake_source"),
                 "taskId": execution_payload.get("taskId") if execution_payload else None,
@@ -843,6 +844,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "send_generation",
             "detected_at",
             "detection_latency_ms",
+            "check_to_detection_ms",
             "bundle_wait_ms",
             "wake_source",
         ):
@@ -1181,6 +1183,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         detection_latency_ms = latest.get("detectionLatencyMs")
         if not isinstance(detection_latency_ms, (int, float)) or detection_latency_ms < 0:
             detection_latency_ms = None
+        check_to_detection_ms = latest.get("checkToDetectionMs")
+        if not isinstance(check_to_detection_ms, (int, float)) or check_to_detection_ms < 0:
+            check_to_detection_ms = None
         wake_source = str(latest.get("wakeSource") or "unknown")[:40]
         message_ids = [str(item["id"]) for item in records]
         content = "\n".join(str(item["content"]).strip() for item in records).strip()
@@ -1313,6 +1318,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "sendGeneration": int(latest.get("sendGeneration") or 0),
             "turnStartedMonotonic": time.monotonic(),
             "detectionLatencyMs": detection_latency_ms,
+            "checkToDetectionMs": check_to_detection_ms,
             "bundleWaitMs": bundle_wait_ms,
             "wakeSource": wake_source,
             "taskId": str(latest.get("taskId") or "") or None,
@@ -1412,6 +1418,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "owner_intervention": latest.get("ownerIntervention"),
                 "detected_at": str(latest.get("detectedAt") or "") or None,
                 "detection_latency_ms": detection_latency_ms,
+                "check_to_detection_ms": check_to_detection_ms,
                 "bundle_wait_ms": bundle_wait_ms,
                 "wake_source": wake_source,
                 "task_boundary": latest.get("taskBoundary"),
@@ -1436,6 +1443,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "occurredAt": timestamp.isoformat(),
             "detectedAt": str(latest.get("detectedAt") or "") or None,
             "detectionLatencyMs": detection_latency_ms,
+            "checkToDetectionMs": check_to_detection_ms,
             "bundleWaitMs": bundle_wait_ms,
             "wakeSource": wake_source,
             "taskBoundaryIntent": (
@@ -1642,6 +1650,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 payload.get("metadata", {}).get("foursday_delivery_kind") or "final"
             )[:40],
             "detectionLatencyMs": version.get("detectionLatencyMs"),
+            "checkToDetectionMs": version.get("checkToDetectionMs"),
             "bundleWaitMs": version.get("bundleWaitMs"),
             "agentDurationMs": agent_duration_ms,
             "wakeSource": version.get("wakeSource"),

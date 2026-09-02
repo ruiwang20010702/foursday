@@ -296,6 +296,9 @@ export function createTaskCoordinator({
       detectionLatencyMs: Number.isFinite(Number(message.detectionLatencyMs))
         ? Math.max(0, Number(message.detectionLatencyMs))
         : null,
+      checkToDetectionMs: Number.isFinite(Number(message.checkToDetectionMs))
+        ? Math.max(0, Number(message.checkToDetectionMs))
+        : null,
       wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
       enterpriseVerified: message.enterpriseVerified === true,
     });
@@ -335,6 +338,9 @@ export function createTaskCoordinator({
         detectedAt: String(message.detectedAt ?? "") || null,
         detectionLatencyMs: Number.isFinite(Number(message.detectionLatencyMs))
           ? Math.max(0, Number(message.detectionLatencyMs))
+          : null,
+        checkToDetectionMs: Number.isFinite(Number(message.checkToDetectionMs))
+          ? Math.max(0, Number(message.checkToDetectionMs))
           : null,
         wakeSource: String(message.wakeSource ?? "unknown").slice(0, 40),
         taskBoundary: taskBoundaryDecision ? {

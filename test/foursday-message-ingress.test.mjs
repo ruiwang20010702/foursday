@@ -15,7 +15,7 @@ function runtimeState() {
   };
 }
 
-function create({ fetchBySender } = {}) {
+function create({ fetchBySender, now } = {}) {
   const state = runtimeState();
   const emitted = [];
   const taskMessages = [];
@@ -33,7 +33,7 @@ function create({ fetchBySender } = {}) {
     state,
     persist: async () => {},
     persistCheckHealth: async () => {},
-    now: () => new Date("2026-09-01T00:02:00.000Z"),
+    now: now ?? (() => new Date("2026-09-01T00:02:00.000Z")),
     emit: (value) => emitted.push(value),
     diagnose: () => {},
     diagnosticHash: String,
@@ -64,9 +64,28 @@ test("message ingress owns target read, ordering and checkpoint advancement", as
   assert.deepEqual(frames, []);
   assert.equal(runtime.taskMessages.length, 1);
   assert.equal(runtime.taskMessages[0][0].detectionLatencyMs, 120_000);
+  assert.equal(runtime.taskMessages[0][0].checkToDetectionMs, 0);
   assert.equal(runtime.state.lastUsers.requester, "2026-09-01T00:00:00.000Z");
   assert.equal(runtime.state.checkLifecycle.status, "completed");
   assert.equal(runtime.state.checkLifecycle.generation, 1);
+});
+
+test("message ingress measures detection when the DWS read actually completes", async () => {
+  let current = Date.parse("2026-09-01T00:02:00.000Z");
+  const runtime = create({
+    fetchBySender: async () => {
+      current += 800;
+      return [{
+        id: "message-1", conversationId: "conversation", senderUserId: "requester",
+        content: "处理任务", createTime: "2026-09-01T00:00:00.000Z",
+      }];
+    },
+    now: () => new Date(current),
+  });
+  await runtime.ingress.performCheck({ wakeSource: "dws_event" });
+  assert.equal(runtime.taskMessages[0][0].detectionLatencyMs, 120_800);
+  assert.equal(runtime.taskMessages[0][0].checkToDetectionMs, 800);
+  assert.equal(runtime.taskMessages[0][0].detectedAt, "2026-09-01T00:02:00.800Z");
 });
 
 test("message ingress keeps a failed target behind its checkpoint", async () => {

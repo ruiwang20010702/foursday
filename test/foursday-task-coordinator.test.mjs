@@ -74,11 +74,16 @@ test("task coordinator owns one inbound task generation", async () => {
     createTime: "2026-09-01T00:00:00.000Z",
     enterpriseVerified: true,
     detectedAt: "2026-09-01T00:00:00.000Z",
+    detectionLatencyMs: 1_200,
+    checkToDetectionMs: 400,
+    wakeSource: "dws_event",
   }, "direct", false);
   assert.equal(runtime.events.length, 1);
   assert.equal(runtime.events[0].record.sendGeneration, 1);
   assert.equal(runtime.recipients.get("conversation").recipientKind, "open_dingtalk_id");
   assert.equal(runtime.activeConversations.get("conversation").sourceMessageId, "message-1");
+  assert.equal(runtime.activeConversations.get("conversation").checkToDetectionMs, 400);
+  assert.equal(runtime.events[0].record.checkToDetectionMs, 400);
   assert.equal(runtime.controlStates.get("conversation").sendGeneration, 1);
   assert.equal(runtime.observed.length, 1);
   assert.deepEqual(runtime.state.recentMessageIds, ["message-1"]);

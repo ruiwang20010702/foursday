@@ -186,15 +186,21 @@ export function createMessageIngress({
         for (const message of orderedMessages) {
           try {
             const createdAt = epoch(message.createTime);
+            const detectedAt = now();
             const detectionLatencyMs = createdAt == null
-              ? null : Math.max(0, end.getTime() - createdAt);
+              ? null : Math.max(0, detectedAt.getTime() - createdAt);
+            const checkToDetectionMs = Math.max(
+              0,
+              detectedAt.getTime() - startedAt.getTime(),
+            );
             state.lastDetection = {
-              detectedAt: end.toISOString(), latencyMs: detectionLatencyMs, wakeSource,
+              detectedAt: detectedAt.toISOString(), latencyMs: detectionLatencyMs, wakeSource,
             };
             await taskControl.emitMessage({
               ...message,
-              detectedAt: end.toISOString(),
+              detectedAt: detectedAt.toISOString(),
               detectionLatencyMs,
+              checkToDetectionMs,
               wakeSource,
             }, target.kind === "group" ? "group" : "direct", target.kind === "group", dispatch);
             if (message.enterpriseIdentityRetryKey) {

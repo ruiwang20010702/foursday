@@ -38,6 +38,7 @@ function observedMetric(value, sampleSize) {
 function detectionObservation(event) {
   let values = [];
   if (event.type === "message_detected") values = finite([event.durationMs ?? event.latencyMs]);
+  else if (event.type === "inbound") values = finite([event.detectionLatencyMs]);
   else if (event.type === "reply_attempt") values = finite([event.detectionLatencyMs]);
   return values.map((latencyMs) => ({
     latencyMs,
@@ -58,7 +59,13 @@ export function analyzeFoursdayExperience(events = []) {
   }
   const rows = events.filter((event) => event && typeof event === "object" && !Array.isArray(event));
   const setup = rows.filter((event) => event.type === "setup_completed" && event.success === true);
-  const detectionObservations = rows.flatMap(detectionObservation);
+  const discoveryRows = rows.filter((event) =>
+    ["message_detected", "inbound"].includes(event.type)
+  );
+  const detectionRows = discoveryRows.length > 0
+    ? discoveryRows
+    : rows.filter((event) => event.type === "reply_attempt");
+  const detectionObservations = detectionRows.flatMap(detectionObservation);
   const detections = detectionObservations.map((item) => item.latencyMs);
   const realtimeDetections = detectionObservations
     .filter((item) => realtimeWakeSources.has(item.wakeSource))
@@ -66,6 +73,9 @@ export function analyzeFoursdayExperience(events = []) {
   const fallbackDetections = detectionObservations
     .filter((item) => !realtimeWakeSources.has(item.wakeSource))
     .map((item) => item.latencyMs);
+  const internalDetections = discoveryRows.flatMap((event) =>
+    finite([event.checkToDetectionMs])
+  );
   const acknowledgments = rows.flatMap((event) => {
     if (event.type === "ack_sent") return finite([event.durationMs]);
     if (event.type === "reply_attempt" && event.deliveryKind === "interim_ack") {
@@ -89,6 +99,7 @@ export function analyzeFoursdayExperience(events = []) {
   const detectionP95 = percentile(detections, 0.95);
   const realtimeDetectionP95 = percentile(realtimeDetections, 0.95);
   const fallbackDetectionP95 = percentile(fallbackDetections, 0.95);
+  const internalDetectionP95 = percentile(internalDetections, 0.95);
   const acknowledgmentP95 = percentile(acknowledgments, 0.95);
   const instantP50 = percentile(instantReplies, 0.5);
   const responsibilityRate = rate(responsibility, (event) => event.correct);
@@ -116,6 +127,12 @@ export function analyzeFoursdayExperience(events = []) {
         realtimeDetectionP95 <= targets.detectionP95Ms,
       ),
       fallbackDetectionP95Ms: observedMetric(fallbackDetectionP95, fallbackDetections.length),
+      internalDetectionP95Ms: metric(
+        internalDetectionP95,
+        internalDetections.length,
+        targets.detectionP95Ms,
+        internalDetectionP95 <= targets.detectionP95Ms,
+      ),
       acknowledgmentP95Ms: metric(acknowledgmentP95, acknowledgments.length, targets.acknowledgmentP95Ms, acknowledgmentP95 <= targets.acknowledgmentP95Ms),
       instantReplyP50Ms: metric(instantP50, instantReplies.length, targets.instantReplyP50Ms, instantP50 <= targets.instantReplyP50Ms),
       responsibilityAccuracy: metric(responsibilityRate, responsibility.length, targets.responsibilityAccuracy, responsibilityRate >= targets.responsibilityAccuracy),
