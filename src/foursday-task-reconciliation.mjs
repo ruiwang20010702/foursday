@@ -7,6 +7,7 @@ const digest = /^[a-f0-9]{64}$/u;
 const sourceId = /^provided_[1-4]$/u;
 const nodeId = /^[A-Za-z0-9]{20,80}$/u;
 const retryDelays = [15, 30, 60, 180].map((minutes) => minutes * 60_000);
+const reconcilableStates = new Set(["escalated", "waiting_acceptance"]);
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -123,7 +124,7 @@ export function createTaskReconciliationCoordinator({
       state.taskReconciliations = state.taskReconciliations ?? {};
       let queued = 0;
       for (const [taskId, contract] of Object.entries(ledger.tasks ?? {})) {
-        if (queued >= 8 || contract.lifecycleState !== "escalated") continue;
+        if (queued >= 8 || !reconcilableStates.has(contract.lifecycleState)) continue;
         const controlTask = control.tasks?.[taskId];
         if (!controlTask || controlTask.state !== "active") continue;
         const live = [...activeConversations.entries()].find(([conversationId, active]) =>
@@ -179,8 +180,10 @@ export function createTaskReconciliationCoordinator({
             conversationId,
             content: [
               "Silently reconcile the existing Foursday task using the current project registry and current source access.",
+              "The task boundary is the original external request that created this task, not the linked project's entire roadmap. Never expand a document-access or source-reading request into implementing or accepting the whole project.",
               "Resume the same Codex Thread, re-read the exact provided source with accessRequired matching the original requested operation, use gbrain and the project graph to select the best primary and related work scopes, and verify the present evidence.",
               "Do not modify project files or external systems in this maintenance turn. Set the task contract to completed only when current evidence itself proves the original requested outcome already exists; otherwise keep the precise blocker and only correct the task scope.",
+              "Do not use waiting_acceptance as a maintenance fallback: use completed when the original outcome is proven, or escalated when a real human action is still required.",
               "This is not a new user request. Do not ask the owner to perform routing or status cleanup, and do not send an acknowledgement or duplicate reply.",
             ].join(" "),
             createTime: currentTime.toISOString(),
@@ -202,7 +205,7 @@ export function createTaskReconciliationCoordinator({
         queued += 1;
       }
       for (const taskId of Object.keys(state.taskReconciliations)) {
-        if (!ledger.tasks?.[taskId] || ledger.tasks[taskId].lifecycleState !== "escalated") {
+        if (!ledger.tasks?.[taskId] || !reconcilableStates.has(ledger.tasks[taskId].lifecycleState)) {
           delete state.taskReconciliations[taskId];
         }
       }

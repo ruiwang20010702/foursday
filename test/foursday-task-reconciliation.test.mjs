@@ -82,6 +82,8 @@ test("stale linked tasks enter one silent Codex reconciliation and retry only on
   await writeFile(registryPath, '{"schemaVersion":2,"workspaces":[{"id":"new"}],"scopes":[]}\n', { mode: 0o600 });
   clock = new Date("2026-09-03T04:01:00.000Z");
   assert.deepEqual(await coordinator.run(), { queued: 1, skipped: false });
+  contract.lifecycleState = "waiting_acceptance";
+  assert.deepEqual(await coordinator.run(), { queued: 1, skipped: false });
   contract.lifecycleState = "completed";
   assert.deepEqual(await coordinator.run(), { queued: 0, skipped: false });
   assert.equal(state.taskReconciliations[taskId], undefined);
