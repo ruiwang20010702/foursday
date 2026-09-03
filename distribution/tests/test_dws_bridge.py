@@ -169,6 +169,8 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "FOURSDAY_PYTHON_PATH": "/absolute/python",
                     "FOURSDAY_DWS_HOME": root,
                     "FOURSDAY_CONTROL_FILE": str(Path(root, "control.json")),
+                    "FOURSDAY_WORK_CONTEXT_FILE": str(Path(root, "work-contexts.json")),
+                    "FOURSDAY_TASK_LEDGER_FILE": str(Path(root, "task-ledger.json")),
                     "DATABASE_URL": "must-not-cross",
                     "AI_EMPLOYEE_DATA_KEY": "must-not-cross",
                 })
@@ -179,6 +181,14 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["DWS_PATH"], "/absolute/dws")
             self.assertEqual(bridge.environment["HOME"], root)
             self.assertEqual(bridge.environment["FOURSDAY_CONTROL_FILE"], str(Path(root, "control.json")))
+            self.assertEqual(
+                bridge.environment["FOURSDAY_WORK_CONTEXT_FILE"],
+                str(Path(root, "work-contexts.json")),
+            )
+            self.assertEqual(
+                bridge.environment["FOURSDAY_TASK_LEDGER_FILE"],
+                str(Path(root, "task-ledger.json")),
+            )
             self.assertEqual(bridge.environment["DWS_PERSONAL_EVENT_WAKE_ENABLED"], "true")
             self.assertEqual(bridge.environment["DWS_PERSONAL_ENTERPRISE_USERS_ENABLED"], "true")
             self.assertEqual(bridge.environment["DWS_PERSONAL_COMMAND_LOCK"], str(Path(root, "dws-command.lock")))
