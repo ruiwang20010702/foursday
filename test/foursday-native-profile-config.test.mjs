@@ -95,6 +95,8 @@ test("native profile config contains paths and allowlists but no resolved secret
   assert.match(plan.envContent, /FOURSDAY_PYTHON_PATH=.*python-runtime/u);
   assert.match(plan.envContent, /FOURSDAY_CONTROL_FILE=.*control\.json/u);
   assert.match(plan.envContent, /FOURSDAY_TASK_LEDGER_FILE=.*task-ledger\.json/u);
+  assert.match(plan.envContent, /FOURSDAY_CODEX_PROJECT_STATE_FILE=.*\.codex-global-state\.json/u);
+  assert.match(plan.envContent, /DWS_PERSONAL_PROJECT_SYNC_ENABLED="true"/u);
   assert.match(plan.envContent, /FOURSDAY_PROFILE_RELEASE_FILE=.*foursday-release\.json/u);
   assert.match(plan.envContent, /FOURSDAY_RELEASE_SHA="a{40}"/u);
   assert.match(plan.codexConfigContent, /default_permissions = "foursday-workspace"/u);

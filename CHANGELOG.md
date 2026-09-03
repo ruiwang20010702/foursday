@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.0-rc.4 - 2026-09-03
+
+- Added startup and debounced live synchronization for local projects explicitly saved in Codex, with safe-root filtering, additive locked registry updates, private rollback/readback, optional bounded gbrain page matching, and non-blocking degradation.
+- Made `shared_link` a visible transient scope: Control joins the current route selection immediately while preserving the next-turn workspace boundary.
+- Extended the existing DingTalk source reader with privacy-preserving requester ACL verification for read, download, edit and manage questions; granted access must not escalate, while partial or unmatched ACL evidence remains unverified.
+
 ## 0.9.0-rc.3 - 2026-09-02
 
 - Replaced SwiftUI-owned desktop-pet window dragging with AppKit mouse event tracking, immediate release settling and stale-event rejection so the pet returns to idle promptly and supports consecutive drags without a cooldown.

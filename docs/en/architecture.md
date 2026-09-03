@@ -2,7 +2,7 @@
 
 Foursday is a work-twin product with one Codex Agent Loop. A pinned, minimally installed Hermes runtime supplies the internal Gateway, session lifecycle, scheduling, and future channel adapters; it does not plan work or write the final reply.
 
-The current source candidate is `v0.9.0-rc.3`; the latest GitHub Release remains `v0.8.0-rc.1`. Source validation, a GitHub release, technical deployment and production activation are separate states. The detailed product contract lives in the [PRD](../产品需求文档.md).
+The current source candidate is `v0.9.0-rc.4`; the latest GitHub Release remains `v0.8.0-rc.1`. Source validation, a GitHub release, technical deployment and production activation are separate states. The detailed product contract lives in the [PRD](../产品需求文档.md).
 
 ```mermaid
 flowchart LR

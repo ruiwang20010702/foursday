@@ -44,6 +44,7 @@ async function fixture(t, {
         projectContext: "Project: Example",
         memoryContext: "Personal gbrain fact",
         sourcePrincipalHandle: "d".repeat(64),
+        sourcePrincipalHash: "e".repeat(64),
         sourceSessionHash: "b".repeat(64),
         sourceScope,
         requesterRole,
@@ -470,6 +471,33 @@ test("verified enterprise requester links are readable without per-document regi
   assert.deepEqual(inspected, [providedNode]);
   assert.equal(result.access, "enterprise_exact_link");
   assert.equal(result.projectScopeId, null);
+
+  let accessInput;
+  const accessResult = await readFoursdayProjectSource({
+    contextToken: value.token,
+    sourceId: "provided_1",
+    accessRequired: "download",
+  }, {
+    environment: value.environment,
+    cwd: value.root,
+    inspectNode: async ({ nodeId }) => ({
+      nodeId, nodeType: "file", title: "Scoped", workspaceId: "EXAMPLEWORKSPACE01",
+      folderId: "ENTERPRISEDOCUMENTFOLDER1234567890", updatedAt: null, createdAt: null,
+    }),
+    fetchDocument: async () => ({ title: "Scoped", markdown: "Project evidence" }),
+    inspectAccess: async (input) => {
+      accessInput = input;
+      return {
+        state: "granted", principalMatched: true, roles: ["DOWNLOADER"],
+        requiredAccess: "download", hasRequiredAccess: true, complete: true,
+      };
+    },
+  });
+  assert.equal(accessInput.principalHash, "e".repeat(64));
+  assert.equal(accessInput.nodeId, providedNode);
+  assert.equal(accessResult.requesterAccess.state, "granted");
+  assert.equal(accessResult.requesterAccess.hasRequiredAccess, true);
+  assert.doesNotMatch(JSON.stringify(accessResult.requesterAccess), /node|name|user|corp/iu);
 });
 
 test("a link-only enterprise message can read its exact source from the fallback workspace", async (t) => {

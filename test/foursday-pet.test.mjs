@@ -155,6 +155,8 @@ test("pet worksite groups tasks and reuses revision-fenced local controls", asyn
   assert.match(source, /当前会话内处理/u);
   assert.match(source, /item\.userState\?\.title/u);
   assert.match(source, /status\.experience/u);
+  assert.match(source, /routeSelection\?\.pendingWorkspaceSwitch/u);
+  assert.match(source, /已关联到\\\(projectName\)，下一轮进入该项目/u);
   assert.match(source, /后台排队/u);
   assert.match(source, /同一 Codex Thread 正在后台继续执行/u);
   assert.match(source, /设置与系统诊断/u);

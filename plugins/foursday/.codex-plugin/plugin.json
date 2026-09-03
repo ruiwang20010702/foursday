@@ -1,6 +1,6 @@
 {
   "name": "foursday",
-  "version": "0.9.0-rc.3",
+  "version": "0.9.0-rc.4",
   "description": "Operate the local Foursday work twin from Codex without a second dashboard state machine.",
   "author": {
     "name": "Foursday"

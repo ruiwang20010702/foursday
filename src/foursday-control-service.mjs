@@ -57,6 +57,28 @@ async function projectRegistry(path) {
   return (await projectRegistrySnapshot(path)).projects;
 }
 
+async function routeSelections(path, validProjectIds) {
+  const document = await privateJson(path, { optional: true });
+  if (!document) return new Map();
+  if (
+    ![1, 2].includes(document.schemaVersion) || !document.bindings ||
+    typeof document.bindings !== "object" || Array.isArray(document.bindings) ||
+    Object.keys(document.bindings).length > 1_000
+  ) throw new Error("Foursday route state is invalid");
+  const selections = new Map();
+  for (const [taskId, raw] of Object.entries(document.bindings)) {
+    if (!digest.test(taskId)) continue;
+    const primaryScopeId = document.schemaVersion === 1 ? raw : raw?.primaryScopeId;
+    if (!validProjectIds.has(primaryScopeId)) continue;
+    selections.set(taskId, {
+      primaryScopeId,
+      updatedAt: document.schemaVersion === 2 && typeof raw?.updatedAt === "string"
+        ? raw.updatedAt.slice(0, 64) : null,
+    });
+  }
+  return selections;
+}
+
 async function defaultMemoryCatalogReader({ configPath }) {
   const client = await createHermesPersonalMemoryClient({ configPath });
   return client.listProjects({ maximum: 1_000 });
@@ -224,6 +246,7 @@ export class FoursdayControlService {
     evidencePath,
     productionConfigPath,
     taskLedgerPath,
+    routeStatePath,
     desktopThreadVisible = false,
     gatewayInspector = inspectFoursdayNativeGateway,
     memoryCatalogReader = defaultMemoryCatalogReader,
@@ -237,6 +260,7 @@ export class FoursdayControlService {
     this.evidencePath = evidencePath;
     this.productionConfigPath = productionConfigPath;
     this.taskLedgerPath = taskLedgerPath || join(dirname(controlPath), "task-ledger.json");
+    this.routeStatePath = routeStatePath || join(dirname(controlPath), "routes.json");
     this.desktopThreadVisible = desktopThreadVisible === true;
     this.gatewayInspector = gatewayInspector;
     this.memoryCatalogReader = memoryCatalogReader;
@@ -375,6 +399,10 @@ export class FoursdayControlService {
       projectRegistry(this.registryPath).catch(() => []),
     ]);
     const projectNameById = new Map(projects.map((project) => [project.id, project.name]));
+    const routes = await routeSelections(
+      this.routeStatePath,
+      new Set(projects.map((project) => project.id)),
+    ).catch(() => new Map());
     const ids = new Set([...Object.keys(control.tasks), ...bindings.map((item) => item.taskId)]);
     const currentTime = this.now();
     const items = [...ids].sort().map((taskId) => {
@@ -389,21 +417,26 @@ export class FoursdayControlService {
         return counts;
       }, {});
       const effectiveProjectId = task?.projectId ?? binding?.projectId ?? contract?.projectId ?? null;
-      const assignment = assignmentState({
+      const routeSelection = routes.get(taskId) ?? null;
+      const displayProjectId = routeSelection?.primaryScopeId ?? effectiveProjectId;
+      const baseAssignment = effectiveProjectId === "shared_link"
+        ? "routing" : assignmentState({
         task,
         binding,
         contract,
         effectiveProjectId,
         now: currentTime,
       });
+      const assignment = routeSelection && routeSelection.primaryScopeId !== effectiveProjectId
+        ? "route_selected" : baseAssignment;
       const projectGroupId = assignment === "routing"
         ? "__routing"
-        : assignment === "legacy_unassigned" ? "__legacy_unassigned" : effectiveProjectId;
+        : assignment === "legacy_unassigned" ? "__legacy_unassigned" : displayProjectId;
       const projectGroupName = assignment === "routing"
         ? "正在识别项目"
         : assignment === "legacy_unassigned"
           ? "未归档历史"
-          : projectNameById.get(effectiveProjectId) ?? effectiveProjectId ?? "未命名项目";
+          : projectNameById.get(displayProjectId) ?? displayProjectId ?? "未命名项目";
       const ownerRevision = Math.max(task?.ownerRevision ?? 0, binding?.ownerRevision ?? 0);
       const sendGeneration = Math.max(task?.sendGeneration ?? 0, binding?.sendGeneration ?? 0);
       const summaryTitle = summary && summary.ownerRevision === ownerRevision &&
@@ -414,6 +447,12 @@ export class FoursdayControlService {
         taskId,
         projectId: effectiveProjectId,
         projectName: effectiveProjectId == null ? null : projectNameById.get(effectiveProjectId) ?? null,
+        routeSelection: routeSelection ? {
+          primaryProjectId: routeSelection.primaryScopeId,
+          primaryProjectName: projectNameById.get(routeSelection.primaryScopeId) ?? routeSelection.primaryScopeId,
+          pendingWorkspaceSwitch: routeSelection.primaryScopeId !== effectiveProjectId,
+          updatedAt: routeSelection.updatedAt,
+        } : null,
         requester: task?.requester ?? null,
         executor: {
           displayName: "Foursday",
@@ -557,6 +596,7 @@ export function controlServicePaths({ layout, environment = process.env } = {}) 
     evidencePath: environment.FOURSDAY_SHADOW_EVIDENCE_FILE || join(stateRoot, "shadow-evidence.jsonl"),
     productionConfigPath: environment.FOURSDAY_PRODUCTION_CONFIG || join(localRoot, "production.json"),
     taskLedgerPath: environment.FOURSDAY_TASK_LEDGER_FILE || join(stateRoot, "task-ledger.json"),
+    routeStatePath: environment.FOURSDAY_ROUTE_STATE_FILE || join(stateRoot, "routes.json"),
     desktopThreadVisible: environment.FOURSDAY_CODEX_DESKTOP_VISIBLE === "true",
     displayName: basename(layout.profileDirectory),
   };

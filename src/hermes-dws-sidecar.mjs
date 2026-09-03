@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import { access, chmod, mkdir } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { DwsAdapter } from "./dws.mjs";
 import { discoverWatchDirectories } from "./dingtalk-watch-directories.mjs";
@@ -25,6 +25,8 @@ import { createOwnerInterventionCoordinator } from "./foursday-owner-interventio
 import { createDeliveryCoordinator } from "./foursday-delivery-coordinator.mjs";
 import { createTaskCoordinator } from "./foursday-task-coordinator.mjs";
 import { createMessageIngress } from "./foursday-message-ingress.mjs";
+import { syncFoursdayCodexProjects } from "./foursday-codex-project-sync.mjs";
+import { createHermesPersonalMemoryClient } from "./hermes-personal-memory-context.mjs";
 export { stableSendKey } from "./foursday-delivery-coordinator.mjs";
 import {
   diagnosticCode,
@@ -83,6 +85,21 @@ function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
 
+async function boundedPromise(promise, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("bounded_operation_timeout")), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function sidecarConfig(environment = process.env) {
   const dwsPath = String(environment.DWS_PATH ?? "").trim();
   if (!isAbsolute(dwsPath)) throw new Error("DWS_PATH must be absolute");
@@ -101,6 +118,20 @@ export function sidecarConfig(environment = process.env) {
   const taskLedgerFile = String(environment.FOURSDAY_TASK_LEDGER_FILE ?? "").trim();
   if (taskLedgerFile && !isAbsolute(taskLedgerFile)) {
     throw new Error("FOURSDAY_TASK_LEDGER_FILE must be absolute");
+  }
+  const projectRegistryFile = String(environment.FOURSDAY_PROJECT_REGISTRY ?? "").trim();
+  const productionConfigFile = String(environment.FOURSDAY_PRODUCTION_CONFIG ?? "").trim();
+  const codexProjectStateFile = String(environment.FOURSDAY_CODEX_PROJECT_STATE_FILE ?? "").trim();
+  const projectSyncEnabled = String(
+    environment.DWS_PERSONAL_PROJECT_SYNC_ENABLED ?? (
+      projectRegistryFile && codexProjectStateFile ? "true" : "false"
+    ),
+  ).toLowerCase() === "true";
+  if (projectSyncEnabled && (
+    !isAbsolute(projectRegistryFile) || !isAbsolute(codexProjectStateFile)
+  )) throw new Error("Foursday project sync paths must be absolute");
+  if (productionConfigFile && !isAbsolute(productionConfigFile)) {
+    throw new Error("Foursday production config path must be absolute");
   }
   const responsibilityReactionName = String(
     environment.DWS_PERSONAL_RESPONSIBILITY_REACTION ?? "OK",
@@ -129,6 +160,11 @@ export function sidecarConfig(environment = process.env) {
     mediaRoot: mediaRoot ? resolve(mediaRoot) : null,
     controlFile: controlFile ? resolve(controlFile) : null,
     taskLedgerFile: taskLedgerFile ? resolve(taskLedgerFile) : null,
+    projectRegistryFile: projectRegistryFile ? resolve(projectRegistryFile) : null,
+    codexProjectStateFile: codexProjectStateFile ? resolve(codexProjectStateFile) : null,
+    projectSyncEnabled,
+    projectUserHome: String(environment.HOME ?? "").trim(),
+    productionConfigFile: productionConfigFile ? resolve(productionConfigFile) : null,
     initialLookbackMs: boundedInteger(
       environment.DWS_PERSONAL_INITIAL_LOOKBACK_MS,
       120_000,
@@ -216,9 +252,16 @@ export async function createSidecarRuntime({
   responseDutyResolver = resolveResponseDuty,
   taskBoundaryResolver = resolveTakenOverTaskBoundary,
   classifierEnvironment = process.env,
+  projectRegistrySynchronizer = syncFoursdayCodexProjects,
+  memoryClientFactory = createHermesPersonalMemoryClient,
+  projectWatchFactory = watch,
+  projectSyncDebounceMs = 1_000,
 } = {}) {
   if (config.outboundQuietMs > config.outboundMaxQuietMs) {
     throw new Error("DWS outbound quiet window exceeds its maximum");
+  }
+  if (!Number.isSafeInteger(projectSyncDebounceMs) || projectSyncDebounceMs < 1 || projectSyncDebounceMs > 60_000) {
+    throw new Error("Foursday project sync debounce is invalid");
   }
   await access(config.dwsPath);
   if (config.mediaRoot) {
@@ -280,6 +323,10 @@ export async function createSidecarRuntime({
   const { cancelExecutionGeneration } = durableExecution;
   const watchers = [];
   let eventWakeController = null;
+  let projectSyncTimer = null;
+  let projectSyncStopped = false;
+  let projectStateWatcherStarted = false;
+  let projectSyncQueue = Promise.resolve();
   let responsibilityControl;
   const ownerIntervention = createOwnerInterventionCoordinator({
     semanticEnabled: config.semanticInterventionEnabled === true,
@@ -466,8 +513,76 @@ export async function createSidecarRuntime({
   }
   checkpoint.startFallback();
 
+  const synchronizeProjects = async () => {
+    let gbrainProjects = [];
+    if (config.productionConfigFile) {
+      try {
+        const client = await memoryClientFactory({ configPath: config.productionConfigFile });
+        const catalog = await boundedPromise(
+          client.listProjects({ maximum: 1_000 }),
+          5_000,
+        );
+        if (catalog?.sourceId === "default" && Array.isArray(catalog.projects)) {
+          gbrainProjects = catalog.projects.slice(0, 1_000);
+        }
+      } catch {}
+    }
+    try {
+      const synchronized = await projectRegistrySynchronizer({
+        registryPath: config.projectRegistryFile,
+        codexStatePath: config.codexProjectStateFile,
+        userHome: config.projectUserHome,
+        gbrainProjects,
+        apply: true,
+      });
+      if (synchronized.changed) diagnose(
+        `foursday_project_registry_synced:${synchronized.addedProjectCount}`,
+      );
+    } catch {
+      diagnose("foursday_project_registry_sync_failed:project_registry_sync_unavailable");
+    }
+  };
+
+  const queueProjectSync = () => {
+    if (projectSyncStopped) return;
+    if (projectSyncTimer) clearTimeout(projectSyncTimer);
+    projectSyncTimer = setTimeout(() => {
+      projectSyncTimer = null;
+      projectSyncQueue = projectSyncQueue.then(synchronizeProjects, synchronizeProjects);
+    }, projectSyncDebounceMs);
+    projectSyncTimer.unref?.();
+  };
+
+  const startProjectWatcher = () => {
+    if (
+      projectStateWatcherStarted || config.projectSyncEnabled !== true ||
+      !config.codexProjectStateFile
+    ) return;
+    projectStateWatcherStarted = true;
+    try {
+      const target = basename(config.codexProjectStateFile);
+      const watcher = projectWatchFactory(
+        dirname(config.codexProjectStateFile),
+        { persistent: true },
+        (_event, filename) => {
+          if (filename == null || String(filename) === target) queueProjectSync();
+        },
+      );
+      watcher.on?.("error", () => {
+        diagnose("foursday_project_registry_watch_failed:project_registry_sync_unavailable");
+      });
+      watchers.push(watcher);
+    } catch {
+      diagnose("foursday_project_registry_watch_failed:project_registry_sync_unavailable");
+    }
+  };
+
   return {
     async start({ deferStartupReconcile = false } = {}) {
+      if (config.projectSyncEnabled === true) {
+        await synchronizeProjects();
+        startProjectWatcher();
+      }
       await deliveryControl.start();
       await durableExecution.recover();
       await responsibilityControl.start({
@@ -564,8 +679,12 @@ export async function createSidecarRuntime({
       return { success: true };
     },
     async stop() {
+      projectSyncStopped = true;
+      if (projectSyncTimer) clearTimeout(projectSyncTimer);
+      projectSyncTimer = null;
       checkpoint.stop();
       for (const watcher of watchers) watcher.close();
+      await projectSyncQueue.catch(() => {});
       if (eventWakeController) await eventWakeController.stop();
       await responsibilityControl.stop();
       await persistState();

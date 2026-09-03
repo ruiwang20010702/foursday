@@ -131,3 +131,37 @@ test("project discovery CLI is preview-first and writes only a separate private 
     /cannot overwrite the active registry/u,
   );
 });
+
+test("project discovery conservatively joins a unique one-character gbrain name variant", async (t) => {
+  const paths = await fixture(t);
+  const result = await discoverFoursdayProjectRegistry({
+    catalog: {
+      schemaVersion: 2,
+      projects: [{
+        projectId: "training", projectKind: "local", label: "招陪考2.2",
+        path: paths.dsh, hostId: "local", hostDisplayName: null, isGitRepository: false,
+      }],
+    },
+    gbrainProjects: [{ slug: "projects/coach-training-2-2", title: "51Talk AI 招培考 2.2 正课训练 Demo" }],
+    userHome: paths.root,
+  });
+  const scope = result.registry.scopes[0];
+  assert.deepEqual(scope.gbrainSlugs, ["projects/coach-training-2-2"]);
+  assert.equal(scope.aliases.includes("51Talk AI 招培考 2.2 正课训练 Demo"), false);
+
+  const ambiguous = await discoverFoursdayProjectRegistry({
+    catalog: {
+      schemaVersion: 2,
+      projects: [{
+        projectId: "training", projectKind: "local", label: "招陪考2.2",
+        path: paths.dsh, hostId: "local", hostDisplayName: null, isGitRepository: false,
+      }],
+    },
+    gbrainProjects: [
+      { slug: "projects/a", title: "招培考 2.2" },
+      { slug: "projects/b", title: "招陪考 2.2" },
+    ],
+    userHome: paths.root,
+  });
+  assert.deepEqual(ambiguous.registry.scopes[0].gbrainSlugs, ["projects/b"]);
+});

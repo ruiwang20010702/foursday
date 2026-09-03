@@ -205,6 +205,10 @@ The companion is a transparent, draggable, always-on-top work surface. It reuses
 
 Project folders are expanded by default and collapse locally when their header is clicked; this never changes task ownership or Codex execution. New tasks use the semantic title written by Codex. A local, preview-first backfill can derive a bounded title for legacy tasks from the exact isolated Codex Thread; it stores only the title and generation, never the source conversation, and skips ambiguous or sensitive history.
 
+Projects explicitly saved in the Codex sidebar are incrementally admitted at Gateway startup and after debounced project-state changes, so adding a project does not require a restart. Foursday preserves existing registry authority, rejects broad or unsafe roots, never removes a project automatically, and can use a unique personal-gbrain title match to associate the right page without exposing that title as a project alias. A message-only `shared_link` is a temporary read scope, not a project: before selection the worksite says it is identifying the project; after selection it groups the task under that project immediately while clearly stating that the workspace switch applies on the next turn.
+
+Document-access requests are fact-checked before escalation. The existing `foursday_read_project_source` tool can verify whether the current requester already has read, download, edit or manage access without exposing the ACL, member names or IDs to Codex. Granted access completes the permission question; incomplete or unmatched evidence is reported as unverified, never as proof that access is missing. Foursday still has no permission-write tool, so an actual grant or role change remains an owner-gated action.
+
 ## Memory ownership
 
 | Store | Responsibility |
@@ -219,7 +223,7 @@ Foursday does not create a second knowledge repository or copy personal pages in
 
 ## Status
 
-The current source candidate is `v0.9.0-rc.3`; the latest GitHub Release remains `v0.8.0-rc.1`. The candidate adds guided setup, privacy-safe reviewed-task evidence, staged detection latency and a lower-overhead unified macOS worksite with responsive native dragging to the shared Control MCP and one-Codex-loop architecture. A source candidate, GitHub Release, technical deployment and production activation are separate states.
+The current source candidate is `v0.9.0-rc.4`; the latest GitHub Release remains `v0.8.0-rc.1`. The candidate adds live Codex-project synchronization, transient shared-link routing, privacy-safe requester ACL verification, guided setup, reviewed-task evidence and the unified macOS worksite. A source candidate, GitHub Release, technical deployment and production activation are separate states.
 
 Installing this repository does not inherit any existing instance's authority, credentials, allowlist, send permission, or production state.
 

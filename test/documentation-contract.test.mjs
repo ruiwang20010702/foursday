@@ -111,6 +111,17 @@ test("profile and product docs share the responsibility-reaction contract", asyn
   assert.match(design, /operatorOpenDingTalkId/u);
 });
 
+test("profile and product docs require ACL facts before permission escalation", async () => {
+  const profile = await text("distribution/profile/SOUL.md");
+  const product = await text("docs/产品需求文档.md");
+  for (const document of [profile, product]) {
+    assert.match(document, /accessRequired/u);
+    assert.match(document, /unverified/u);
+  }
+  assert.match(profile, /complete the task and do not escalate/u);
+  assert.match(product, /已满足时自然回复已具备权限/u);
+});
+
 test("public examples use the minimal FOURSDAY configuration contract", async () => {
   const example = JSON.parse(await text("deploy/foursday.example.json"));
   assert.ok(Object.keys(example).every((key) => key.startsWith("FOURSDAY_")));

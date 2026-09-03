@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   fetchDwsProjectDocument,
+  inspectDwsProjectAccess,
   inspectDwsProjectNode,
 } from "../src/dws-project-source.mjs";
 
@@ -136,4 +137,94 @@ test("DWS host failures and document failures remain distinct", async (t) => {
     environment: { FOURSDAY_DWS_HOME: value.root },
     run: async () => { throw new Error("private document error"); },
   }), (error) => error.message === "project_source_read_failed");
+});
+
+test("DWS access inspection returns only the matched requester role and fails closed on partial ACLs", async (t) => {
+  const value = await fixture(t);
+  const requesterId = "requester-user-id";
+  const principalHash = (await import("node:crypto")).createHash("sha256")
+    .update(requesterId).digest("hex");
+  let observed;
+  const granted = await inspectDwsProjectAccess({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    principalHash,
+    requiredAccess: "download",
+    environment: { FOURSDAY_DWS_HOME: value.root },
+    run: async (command, args) => {
+      observed = { command, args };
+      return { stdout: JSON.stringify({
+        complete: true,
+        status: "success",
+        ok: true,
+        data: { permissions: {
+          success: true,
+          hasMore: false,
+          truncated: false,
+          totalCount: 3,
+          permissions: [
+            { id: "owner-id", role: "OWNER", name: "private owner" },
+            { id: requesterId, role: "DOWNLOADER", name: "private requester" },
+            { id: "other-id", role: "READER", name: "private other" },
+          ],
+        } },
+      }) };
+    },
+  });
+  assert.deepEqual(observed.args, [
+    "doc", "+inspect", "--node", value.nodeId, "--include-permissions",
+    "--format", "json", "--timeout", "8",
+  ]);
+  assert.deepEqual(granted, {
+    state: "granted",
+    principalMatched: true,
+    roles: ["DOWNLOADER"],
+    requiredAccess: "download",
+    hasRequiredAccess: true,
+    complete: true,
+  });
+  assert.doesNotMatch(JSON.stringify(granted), /private|requester-user-id|owner-id/u);
+
+  const unverified = await inspectDwsProjectAccess({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    principalHash: "f".repeat(64),
+    requiredAccess: "download",
+    environment: { FOURSDAY_DWS_HOME: value.root },
+    run: async () => ({ stdout: JSON.stringify({
+      complete: true, status: "success", ok: true,
+      data: { permissions: { success: true, hasMore: false, truncated: false, totalCount: 0, permissions: [] } },
+    }) }),
+  });
+  assert.equal(unverified.state, "unverified");
+  assert.equal(unverified.hasRequiredAccess, null);
+
+  const insufficient = await inspectDwsProjectAccess({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    principalHash,
+    requiredAccess: "download",
+    environment: { FOURSDAY_DWS_HOME: value.root },
+    run: async () => ({ stdout: JSON.stringify({
+      complete: true, status: "success", ok: true,
+      data: { permissions: {
+        success: true, hasMore: false, truncated: false, totalCount: 1,
+        permissions: [{ id: requesterId, role: "READER" }],
+      } },
+    }) }),
+  });
+  assert.equal(insufficient.state, "insufficient");
+  assert.equal(insufficient.hasRequiredAccess, false);
+
+  await assert.rejects(inspectDwsProjectAccess({
+    dwsPath: value.dwsPath,
+    nodeId: value.nodeId,
+    principalHash,
+    requiredAccess: "download",
+    environment: { FOURSDAY_DWS_HOME: value.root },
+    run: async () => ({ stdout: JSON.stringify({
+      complete: false, status: "success", ok: true,
+      data: { permissions: { success: true, hasMore: true, truncated: true, totalCount: 1, permissions: [] } },
+    }) }),
+  }), /project_source_access_unverifiable/u);
 });

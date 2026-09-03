@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  readCodexProjectCatalog,
   resolveFoursdaySetupSelections,
   runFoursdaySetup,
 } from "../src/foursday-setup.mjs";
@@ -53,6 +54,23 @@ test("setup preview composes one trial flow without writing", async (t) => {
   await assert.rejects(readFile(join(value.setupRoot, "setup-state.json")), /ENOENT/u);
   assert.doesNotMatch(JSON.stringify(result), /private-profile|production\.json|Projects/u);
   assert.doesNotMatch(JSON.stringify(result.steps), /runtime|profile|shadow|verification|gbrainState/iu);
+});
+
+test("Codex-owned project state may be world-readable but never writable by others", async (t) => {
+  const value = await fixture(t);
+  const codexRoot = join(value.root, ".codex");
+  await mkdir(codexRoot, { mode: 0o700 });
+  const statePath = join(codexRoot, ".codex-global-state.json");
+  await writeFile(statePath, `${JSON.stringify({
+    "local-projects": { project: { id: "project", name: "Foursday", rootPaths: [value.project] } },
+  })}\n`, { mode: 0o644 });
+  const catalog = await readCodexProjectCatalog({ userHome: value.root, statePath });
+  assert.equal(catalog.projects.length, 1);
+  await chmod(statePath, 0o666);
+  await assert.rejects(
+    readCodexProjectCatalog({ userHome: value.root, statePath }),
+    /codex_project_catalog_unavailable/u,
+  );
 });
 
 test("setup apply runs the resumable trial pipeline and never activates sending", async (t) => {

@@ -27,6 +27,7 @@ async function fixture(t, { now = Date.parse("2026-09-01T02:45:00.000Z") } = {})
   const evidencePath = join(state, "shadow-evidence.jsonl");
   const controlPath = join(state, "control.json");
   const taskLedgerPath = join(state, "task-ledger.json");
+  const routeStatePath = join(state, "routes.json");
   await writeFile(registryPath, `${JSON.stringify({
     schemaVersion: 1,
     projects: [{ id: "project", name: "Project", aliases: [], root, gbrainSlugs: ["projects/example"] }],
@@ -86,6 +87,7 @@ async function fixture(t, { now = Date.parse("2026-09-01T02:45:00.000Z") } = {})
       }],
     },
   })}\n`, { mode: 0o600 });
+  await writeFile(routeStatePath, `${JSON.stringify({ schemaVersion: 2, bindings: {} })}\n`, { mode: 0o600 });
   const layout = { profileDirectory, userHome: root };
   const service = new FoursdayControlService({
     layout,
@@ -95,6 +97,7 @@ async function fixture(t, { now = Date.parse("2026-09-01T02:45:00.000Z") } = {})
     evidencePath,
     productionConfigPath,
     taskLedgerPath,
+    routeStatePath,
     desktopThreadVisible: true,
     gatewayInspector: async () => ({
       ready: true, installed: true, mode: "shadow", sendEnabled: false,
@@ -173,6 +176,7 @@ test("control service projects tasks, schedules, memory and evidence without pri
     taskId,
     projectId: "project",
     projectName: "Project",
+    routeSelection: null,
     requester: null,
     executor: {
       displayName: "Foursday",
@@ -356,4 +360,57 @@ test("fresh unbound work routes briefly while stale orphan records move to recen
   assert.equal(legacy.assignmentState, "legacy_unassigned");
   assert.equal(legacy.projectGroupName, "未归档历史");
   assert.equal(legacy.worksiteGroup, "recent");
+});
+
+test("a shared-link task is immediately grouped under its selected registered project", async (t) => {
+  const { service } = await fixture(t);
+  const sharedTask = "7".repeat(64);
+  await service.store.observeTask({
+    taskId: sharedTask,
+    projectId: "shared_link",
+    ownerRevision: 1,
+    sendGeneration: 2,
+    lastInboundAt: "2026-09-01T02:44:30.000Z",
+  });
+  await writeFile(service.routeStatePath, `${JSON.stringify({
+    schemaVersion: 2,
+    bindings: {
+      [sharedTask]: {
+        primaryScopeId: "project",
+        relatedScopeIds: [],
+        relatedGbrainSlugs: [],
+        evidenceSourceIds: ["provided_1"],
+        rationale: "Selected from the current document.",
+        updatedAt: "2026-09-01T02:44:40.000Z",
+      },
+    },
+  })}\n`, { mode: 0o600 });
+  const item = (await service.tasks()).items.find((task) => task.taskId === sharedTask);
+  assert.equal(item.projectId, "shared_link");
+  assert.equal(item.assignmentState, "route_selected");
+  assert.equal(item.projectGroupId, "project");
+  assert.equal(item.projectGroupName, "Project");
+  assert.deepEqual(item.routeSelection, {
+    primaryProjectId: "project",
+    primaryProjectName: "Project",
+    pendingWorkspaceSwitch: true,
+    updatedAt: "2026-09-01T02:44:40.000Z",
+  });
+});
+
+test("an unresolved shared-link fallback is shown as project discovery, never as a project", async (t) => {
+  const { service } = await fixture(t);
+  const sharedTask = "8".repeat(64);
+  await service.store.observeTask({
+    taskId: sharedTask,
+    projectId: "shared_link",
+    ownerRevision: 1,
+    sendGeneration: 1,
+    lastInboundAt: "2026-09-01T02:44:30.000Z",
+  });
+  const item = (await service.tasks()).items.find((task) => task.taskId === sharedTask);
+  assert.equal(item.assignmentState, "routing");
+  assert.equal(item.projectGroupId, "__routing");
+  assert.equal(item.projectGroupName, "正在识别项目");
+  assert.equal(JSON.stringify(item).includes('"projectGroupName":"shared_link"'), false);
 });

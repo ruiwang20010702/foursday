@@ -26,6 +26,39 @@ function normalizedMatch(value) {
     .replaceAll(/[^\p{L}\p{N}]+/gu, "");
 }
 
+function numericTokens(value) {
+  return String(value ?? "").match(/\d+(?:\.\d+)?/gu) ?? [];
+}
+
+function oneEditApart(left, right) {
+  if (left === right) return true;
+  if (Math.abs(left.length - right.length) > 1) return false;
+  if (left.length === right.length) {
+    let differences = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index] && ++differences > 1) return false;
+    }
+    return differences === 1;
+  }
+  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left];
+  let skipped = false;
+  for (let shortIndex = 0, longIndex = 0; longIndex < longer.length; longIndex += 1) {
+    if (shorter[shortIndex] === longer[longIndex]) shortIndex += 1;
+    else if (skipped) return false;
+    else skipped = true;
+  }
+  return true;
+}
+
+function containsWithinOneEdit(needle, haystack) {
+  if (oneEditApart(needle, haystack)) return true;
+  if (haystack.length <= needle.length) return false;
+  for (let index = 0; index <= haystack.length - needle.length; index += 1) {
+    if (oneEditApart(needle, haystack.slice(index, index + needle.length))) return true;
+  }
+  return false;
+}
+
 function stableSuffix(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 10);
 }
@@ -145,16 +178,34 @@ async function canonicalCatalogProjects(document, { userHome }) {
   return { included, excluded };
 }
 
-function memorySlugsFor(project, gbrainProjects) {
+function memoryMatchFor(project, gbrainProjects) {
   const names = new Set([
     normalizedMatch(project.name),
     normalizedMatch(project.root.split(sep).at(-1)),
   ].filter(Boolean));
-  const matches = gbrainProjects.filter((page) => {
+  const exact = gbrainProjects.filter((page) => {
     const slugName = String(page.slug ?? "").split("/").at(-1);
     return [page.title, slugName].some((value) => names.has(normalizedMatch(value)));
-  }).map((page) => page.slug);
-  return matches.length === 1 ? matches : [];
+  });
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  const labelNumbers = numericTokens(project.name);
+  const fuzzy = gbrainProjects.filter((page) => {
+    const candidates = [page.title, String(page.slug ?? "").split("/").at(-1)]
+      .map(normalizedMatch).filter((value) => value.length >= 4);
+    return [...names].some((name) => {
+      if (name.length < 4) return false;
+      return candidates.some((candidate) => {
+        const candidateNumbers = numericTokens(page.title ?? candidate);
+        if (
+          labelNumbers.length > 0 &&
+          !labelNumbers.every((number) => candidateNumbers.includes(number))
+        ) return false;
+        return containsWithinOneEdit(name, candidate);
+      });
+    });
+  });
+  return fuzzy.length === 1 ? fuzzy[0] : null;
 }
 
 function nearestParent(project, projects) {
@@ -233,7 +284,8 @@ export async function discoverFoursdayProjectRegistry({
   const scopes = discovered.map((project) => {
     const parent = nearestParent(project, discovered);
     const preserved = project.preservedScope;
-    const exactSlugs = memorySlugsFor(project, gbrainProjects);
+    const memoryMatch = memoryMatchFor(project, gbrainProjects);
+    const exactSlugs = memoryMatch ? [memoryMatch.slug] : [];
     return {
       id: project.scopeId,
       name: preserved?.name ?? project.name,
@@ -284,3 +336,10 @@ export async function discoverFoursdayProjectRegistry({
     },
   };
 }
+
+export const foursdayProjectDiscoveryInternals = Object.freeze({
+  normalizedMatch,
+  oneEditApart,
+  containsWithinOneEdit,
+  numericTokens,
+});

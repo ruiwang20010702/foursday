@@ -17,6 +17,9 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { discoverFoursdayProjectRegistry } from "./foursday-project-discovery.mjs";
+import { readCodexProjectCatalog } from "./foursday-codex-project-catalog.mjs";
+
+export { readCodexProjectCatalog } from "./foursday-codex-project-catalog.mjs";
 
 const execFileAsync = promisify(execFile);
 const setupSteps = Object.freeze([
@@ -37,7 +40,10 @@ function userError(code, message, action) {
   return error;
 }
 
-async function privateJson(path, { optional = false, maximum = 8 * 1024 * 1024 } = {}) {
+async function privateJson(path, {
+  optional = false,
+  maximum = 8 * 1024 * 1024,
+} = {}) {
   if (!path || !isAbsolute(path)) throw userError("unsafe_input", "配置路径无效", "在 Codex 中重新选择文件");
   const handle = await open(resolve(path), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error) => {
     if (optional && error.code === "ENOENT") return null;
@@ -186,31 +192,6 @@ export async function resolveFoursdaySetupSelections(detected, {
       .map((index) => detected.codexCatalog.projects[index].path);
   }
   return { account: selectedAccount, roots: selectedRoots, questionsAsked };
-}
-
-export async function readCodexProjectCatalog({ userHome = homedir() } = {}) {
-  const statePath = join(userHome, ".codex", ".codex-global-state.json");
-  const document = await privateJson(statePath);
-  const values = document?.["local-projects"];
-  const projects = [];
-  if (values && typeof values === "object" && !Array.isArray(values)) {
-    for (const [fallbackId, project] of Object.entries(values).slice(0, 1_000)) {
-      const roots = Array.isArray(project?.rootPaths) ? project.rootPaths : [];
-      for (const [index, path] of roots.slice(0, 20).entries()) {
-        if (typeof path !== "string" || !isAbsolute(path)) continue;
-        projects.push({
-          projectId: String(project?.id ?? `${fallbackId}-${index}`).slice(0, 200),
-          projectKind: "local",
-          label: String(project?.name ?? basename(path)).slice(0, 200),
-          path,
-          hostId: "local",
-          hostDisplayName: null,
-          isGitRepository: await lstat(join(path, ".git")).then((item) => item.isDirectory()).catch(() => false),
-        });
-      }
-    }
-  }
-  return { schemaVersion: 2, projects };
 }
 
 function selectedProjects(catalog, roots) {

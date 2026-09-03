@@ -160,6 +160,9 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
                     "FOURSDAY_CODEX_PATH": "/absolute/codex",
                     "CODEX_HOME": str(Path(root, "codex-home")),
                     "FOURSDAY_PROJECT_REGISTRY": str(Path(root, "projects.json")),
+                    "FOURSDAY_CODEX_PROJECT_STATE_FILE": str(Path(root, "codex-state.json")),
+                    "DWS_PERSONAL_PROJECT_SYNC_ENABLED": "true",
+                    "FOURSDAY_PRODUCTION_CONFIG": str(Path(root, "production.json")),
                     "FOURSDAY_FALLBACK_WORKSPACE": str(Path(root, "fallback")),
                     "FOURSDAY_PROFILE_INSTRUCTIONS_FILE": str(Path(root, "SOUL.md")),
                     "FOURSDAY_PROJECT_SKILL_FILE": str(Path(root, "SKILL.md")),
@@ -189,6 +192,9 @@ class DwsBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.environment["FOURSDAY_NODE_PATH"], sys.executable)
             self.assertEqual(bridge.environment["FOURSDAY_CODEX_PATH"], "/absolute/codex")
             self.assertEqual(bridge.environment["CODEX_HOME"], str(Path(root, "codex-home")))
+            self.assertEqual(bridge.environment["FOURSDAY_CODEX_PROJECT_STATE_FILE"], str(Path(root, "codex-state.json")))
+            self.assertEqual(bridge.environment["DWS_PERSONAL_PROJECT_SYNC_ENABLED"], "true")
+            self.assertEqual(bridge.environment["FOURSDAY_PRODUCTION_CONFIG"], str(Path(root, "production.json")))
             self.assertNotIn("FOURSDAY_DWS_HOME", bridge.environment)
             self.assertNotIn("DATABASE_URL", bridge.environment)
             self.assertNotIn("AI_EMPLOYEE_DATA_KEY", bridge.environment)

@@ -41,6 +41,14 @@ optional_env:
     description: "Absolute private checkpoint file for dedupe and session recovery"
     prompt: "DWS checkpoint file"
     password: false
+  - name: DWS_PERSONAL_PROJECT_SYNC_ENABLED
+    description: "Incrementally admit local projects explicitly saved in Codex"
+    prompt: "Sync saved Codex projects"
+    password: false
+  - name: FOURSDAY_CODEX_PROJECT_STATE_FILE
+    description: "Absolute private Codex project-state file"
+    prompt: "Codex project state"
+    password: false
   - name: DWS_PERSONAL_COMMAND_LOCK
     description: "Absolute private cross-process DWS command lock directory"
     prompt: "DWS command lock"

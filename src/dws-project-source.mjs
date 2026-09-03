@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
@@ -8,6 +9,14 @@ import { withDwsCommandLock } from "./dws-command-lock.mjs";
 const execFileAsync = promisify(execFile);
 const dingtalkNodeId = /^[A-Za-z0-9]{20,80}$/u;
 const dingtalkWorkspaceId = /^[A-Za-z0-9]{8,80}$/u;
+const sha256 = /^[a-f0-9]{64}$/u;
+const accessRoles = new Set(["READER", "EDITOR", "DOWNLOADER", "MANAGER", "OWNER"]);
+const sufficientRoles = Object.freeze({
+  read: new Set(["READER", "EDITOR", "DOWNLOADER", "MANAGER", "OWNER"]),
+  download: new Set(["DOWNLOADER", "MANAGER", "OWNER"]),
+  edit: new Set(["EDITOR", "MANAGER", "OWNER"]),
+  manage: new Set(["MANAGER", "OWNER"]),
+});
 
 function dwsEnvironment(dwsPath, environment) {
   const home = String(environment.FOURSDAY_DWS_HOME ?? "").trim();
@@ -130,6 +139,65 @@ export async function inspectDwsProjectNode({
     createdAt: Number.isSafeInteger(createTime) && createTime > 0
       ? new Date(createTime).toISOString()
       : null,
+  };
+}
+
+export async function inspectDwsProjectAccess({
+  dwsPath,
+  nodeId,
+  principalHash,
+  requiredAccess,
+  environment = process.env,
+  run = execFileAsync,
+  timeoutMs = 8_000,
+  maxBuffer = 2 * 1024 * 1024,
+} = {}) {
+  if (
+    !dingtalkNodeId.test(String(nodeId ?? "")) ||
+    !sha256.test(String(principalHash ?? "")) ||
+    !Object.hasOwn(sufficientRoles, requiredAccess)
+  ) throw new Error("project_source_access_unverifiable");
+  const { payload } = await runDwsJson({
+    dwsPath,
+    args: [
+      "doc", "+inspect", "--node", nodeId, "--include-permissions",
+      "--format", "json", "--timeout", "8",
+    ],
+    environment,
+    run,
+    timeoutMs,
+    maxBuffer,
+  });
+  const permissions = payload?.data?.permissions;
+  const rows = permissions?.permissions;
+  if (
+    payload?.complete !== true || payload?.status !== "success" || payload?.ok !== true ||
+    permissions?.success !== true || permissions?.hasMore !== false ||
+    permissions?.truncated !== false || !Array.isArray(rows) || rows.length > 1_000 ||
+    !Number.isSafeInteger(permissions?.totalCount) || permissions.totalCount !== rows.length
+  ) throw new Error("project_source_access_unverifiable");
+  for (const item of rows) {
+    if (
+      !item || typeof item !== "object" || Array.isArray(item) ||
+      typeof item.id !== "string" || item.id.length < 1 || item.id.length > 500 ||
+      !accessRoles.has(String(item.role ?? "").toUpperCase())
+    ) throw new Error("project_source_access_unverifiable");
+  }
+  const matches = rows.filter((item) =>
+    createHash("sha256").update(item.id).digest("hex") === principalHash
+  );
+  const roles = [...new Set(matches.map((item) => String(item.role).toUpperCase()))].sort();
+  return {
+    state: matches.length > 0
+      ? roles.some((role) => sufficientRoles[requiredAccess].has(role)) ? "granted" : "insufficient"
+      : "unverified",
+    principalMatched: matches.length > 0,
+    roles,
+    requiredAccess,
+    hasRequiredAccess: matches.length > 0
+      ? roles.some((role) => sufficientRoles[requiredAccess].has(role))
+      : null,
+    complete: true,
   };
 }
 

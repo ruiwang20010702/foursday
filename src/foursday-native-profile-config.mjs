@@ -322,6 +322,8 @@ export async function buildFoursdayNativeProfileConfiguration({
     FOURSDAY_MEMORY_CANDIDATE_SIDECAR: join(hostRoot, "hermes-memory-candidate-sidecar.mjs"),
     FOURSDAY_PRODUCTION_CONFIG: targetConfig,
     FOURSDAY_PROJECT_REGISTRY: targetRegistry,
+    FOURSDAY_CODEX_PROJECT_STATE_FILE: join(layout.userHome, ".codex", ".codex-global-state.json"),
+    DWS_PERSONAL_PROJECT_SYNC_ENABLED: "true",
     FOURSDAY_FALLBACK_WORKSPACE: join(localRoot, "fallback"),
     FOURSDAY_ROUTE_STATE_FILE: join(stateRoot, "routes.json"),
     FOURSDAY_SHADOW_EVIDENCE_FILE: join(stateRoot, "shadow-evidence.jsonl"),

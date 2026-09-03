@@ -110,6 +110,12 @@ private struct EvidenceEnvelope: Decodable {
 }
 
 private struct TaskItem: Decodable, Identifiable {
+    struct RouteSelection: Decodable {
+        let primaryProjectId: String
+        let primaryProjectName: String
+        let pendingWorkspaceSwitch: Bool
+        let updatedAt: String?
+    }
     struct UserState: Decodable {
         let state: String
         let title: String
@@ -168,6 +174,7 @@ private struct TaskItem: Decodable, Identifiable {
     let taskId: String
     let projectId: String?
     let projectName: String?
+    let routeSelection: RouteSelection?
     let requester: Requester?
     let executor: Executor?
     let progress: Progress?
@@ -1139,6 +1146,12 @@ private struct WorksiteDetail: View {
                         Label(userState.detail, systemImage: userState.owner == "you" ? "person.crop.circle.badge.exclamationmark" : "sparkles")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(userState.owner == "you" ? .orange : Color(hex: 0x1f765d))
+                    }
+                    if item.routeSelection?.pendingWorkspaceSwitch == true,
+                       let projectName = item.routeSelection?.primaryProjectName {
+                        Label("已关联到\(projectName)，下一轮进入该项目", systemImage: "arrow.triangle.branch")
+                            .font(.caption)
+                            .foregroundStyle(Color(hex: 0x1f765d))
                     }
                 }
 

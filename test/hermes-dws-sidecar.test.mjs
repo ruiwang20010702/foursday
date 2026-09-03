@@ -23,13 +23,103 @@ async function waitFor(predicate, { timeoutMs = 2_000, intervalMs = 20 } = {}) {
 }
 
 test("responsibility reaction configuration is bounded and disabled by default", () => {
-  const defaults = sidecarConfig({ DWS_PATH: process.execPath });
+  const defaults = sidecarConfig({
+    DWS_PATH: process.execPath,
+    FOURSDAY_PROJECT_REGISTRY: "/private/projects.json",
+    FOURSDAY_CODEX_PROJECT_STATE_FILE: "/private/codex-state.json",
+  });
   assert.equal(defaults.responsibilityReactionsEnabled, false);
   assert.equal(defaults.responsibilityReactionName, "OK");
   assert.throws(() => sidecarConfig({
     DWS_PATH: process.execPath,
     DWS_PERSONAL_RESPONSIBILITY_REACTION: "bad\nreaction",
   }), /reaction name is invalid/u);
+});
+
+test("sidecar startup syncs saved Codex projects before message intake and degrades safely", async () => {
+  const calls = [];
+  let projectWatchCallback;
+  let projectWatchClosed = false;
+  const baseConfig = {
+    dwsPath: process.execPath,
+    dingtalkRoot: "",
+    userIds: [],
+    groupIds: [],
+    enterpriseUsersEnabled: false,
+    selfUserId: null,
+    stateFile: null,
+    mediaRoot: null,
+    controlFile: null,
+    taskLedgerFile: null,
+    initialLookbackMs: 120_000,
+    fallbackMs: 300_000,
+    historySettleMs: 120_000,
+    outboundQuietMs: 0,
+    outboundMaxQuietMs: 0,
+    semanticInterventionTimeoutMs: 30_000,
+    responsibilityReactionsEnabled: false,
+    responsibilityReactionName: "OK",
+    eventWakeEnabled: false,
+    sendEnabled: false,
+    projectSyncEnabled: true,
+    projectRegistryFile: "/private/projects.json",
+    codexProjectStateFile: "/private/codex-state.json",
+    projectUserHome: "/private/home",
+    productionConfigFile: "/private/production.json",
+  };
+  const runtime = await createSidecarRuntime({
+    config: baseConfig,
+    dws: new FakeDws(),
+    projectRegistrySynchronizer: async (input) => {
+      calls.push(input);
+      return { changed: true, addedProjectCount: 2 };
+    },
+    memoryClientFactory: async () => ({
+      listProjects: async () => ({
+        sourceId: "default",
+        projects: [{ slug: "projects/example", title: "Example" }],
+      }),
+    }),
+    projectWatchFactory: (path, options, callback) => {
+      assert.equal(path, "/private");
+      assert.equal(options.persistent, true);
+      projectWatchCallback = callback;
+      return {
+        on: () => {},
+        close: () => { projectWatchClosed = true; },
+      };
+    },
+    projectSyncDebounceMs: 1,
+    emit: () => {},
+    diagnose: (value) => calls.push(value),
+  });
+  await runtime.start({ deferStartupReconcile: true });
+  assert.equal(calls[0].apply, true);
+  assert.equal(calls[0].registryPath, "/private/projects.json");
+  assert.equal(calls[0].gbrainProjects.length, 1);
+  assert.equal(calls[1], "foursday_project_registry_synced:2");
+  projectWatchCallback("rename", "codex-state.json");
+  assert.equal(await waitFor(() => calls.length === 4), true);
+  assert.equal(calls[2].apply, true);
+  assert.equal(calls[3], "foursday_project_registry_synced:2");
+  await runtime.stop();
+  assert.equal(projectWatchClosed, true);
+
+  const diagnostics = [];
+  const degraded = await createSidecarRuntime({
+    config: baseConfig,
+    dws: new FakeDws(),
+    projectRegistrySynchronizer: async () => { throw new Error("private detail"); },
+    memoryClientFactory: async () => { throw new Error("private memory detail"); },
+    projectWatchFactory: () => ({ on: () => {}, close: () => {} }),
+    diagnose: (value) => diagnostics.push(value),
+    emit: () => {},
+  });
+  await degraded.start({ deferStartupReconcile: true });
+  await degraded.stop();
+  assert.deepEqual(diagnostics, [
+    "foursday_project_registry_sync_failed:project_registry_sync_unavailable",
+  ]);
 });
 
 test("durable delivery idempotency ignores regenerated wording but separates ack and final", () => {
