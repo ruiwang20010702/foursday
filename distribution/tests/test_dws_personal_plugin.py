@@ -17,6 +17,7 @@ from gateway.platforms.base import ProcessingOutcome
 from dws_personal import register
 from dws_personal.adapter import (
     DwsPersonalAdapter,
+    _TURN_INTERNAL_RECONCILIATION,
     _TURN_CONSUMED_DELIVERY_VERSION,
     _TURN_DELIVERY_VERSION,
     _provided_dingtalk_sources,
@@ -327,6 +328,10 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.metadata["response_duty"]["source"], "codex")
         self.assertEqual(contexts[token_match.group(0)]["providedDingtalkSources"], [])
         self.assertRegex(contexts[token_match.group(0)]["sourcePrincipalHandle"], r"^[a-f0-9]{64}$")
+        self.assertEqual(
+            contexts[token_match.group(0)]["sourcePrincipalHash"],
+            hashlib.sha256(b"trusted-user").hexdigest(),
+        )
         self.assertNotIn("trusted-user", json.dumps(contexts))
         self.assertEqual(Path(context_path).stat().st_mode & 0o077, 0)
         self.assertEqual(self.router.calls[0]["session_key"], "direct-1:trusted-user")
@@ -867,6 +872,55 @@ class DwsPersonalPluginTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed.metadata["task_id"], task_id)
         self.assertEqual(resumed.metadata["execution_id"], execution_id)
         self.assertIn("Continue the durable Foursday task", resumed.text)
+
+    async def test_internal_reconciliation_rebuilds_private_source_context_and_never_sends(self):
+        context_path = str((Path(self.temp.name) / "state-reconcile" / "work-contexts.json").resolve())
+        source = {
+            "sourceId": "provided_1",
+            "kind": "doc",
+            "nodeId": "EXACTDINGTALKDOCUMENTNODE12345678",
+            "messageHash": "b" * 64,
+            "requesterRole": "trusted",
+        }
+        with patch.dict(os.environ, {"FOURSDAY_WORK_CONTEXT_FILE": context_path}):
+            await self.bridge.emit({
+                "id": "message-reconcile",
+                "senderUserId": "trusted-user",
+                "senderName": "项目同事",
+                "senderOpenDingTalkId": "open-trusted",
+                "conversationId": "reconcile-conversation",
+                "content": "Silently reconcile the existing Foursday task.",
+                "createTime": "2026-09-03T12:00:00+08:00",
+                "chatType": "direct",
+                "mentionedSelf": False,
+                "isSelf": False,
+                "ownerRevision": 2,
+                "sendGeneration": 4,
+                "internalReconciliation": True,
+                "providedDingtalkSources": [source],
+                "taskId": "a" * 64,
+                "wakeSource": "reconciliation",
+            })
+        await asyncio.sleep(0)
+        event = self.events[-1]
+        self.assertTrue(event.metadata["internal_reconciliation"])
+        token = re.search(r"fctx_[a-f0-9]{64}", event.channel_prompt).group(0)
+        context = json.loads(Path(context_path).read_text(encoding="utf-8"))["contexts"][token]
+        self.assertEqual(context["providedDingtalkSources"], [source])
+        self.assertTrue(context["maintenanceMode"])
+        self.assertEqual(
+            context["sourcePrincipalHash"],
+            hashlib.sha256(b"trusted-user").hexdigest(),
+        )
+        before = len(self.bridge.sent)
+        marker = _TURN_INTERNAL_RECONCILIATION.set(True)
+        try:
+            receipt = await self.adapter.send("reconcile-conversation", "内部复核结果")
+        finally:
+            _TURN_INTERNAL_RECONCILIATION.reset(marker)
+        self.assertTrue(receipt.success)
+        self.assertTrue(receipt.message_id.startswith("suppressed-reconcile-"))
+        self.assertEqual(len(self.bridge.sent), before)
 
     async def test_failed_processing_releases_responsibility_without_sending(self):
         await self.bridge.emit({

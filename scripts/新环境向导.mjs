@@ -39,7 +39,7 @@ export const foursdayHelp = Object.freeze({
     "foursday status",
     "foursday control <status|tasks|schedules|memory|evidence|ACTION> [options]",
     "foursday control-mcp",
-    "foursday dashboard [--port PORT]",
+    "foursday dashboard [--port PORT] [--replace]",
   ],
   architecture: "Foursday Gateway + Codex work loop + personal memory",
   defaultSafety: "install and configure preview changes; Gateway starts send-disabled; activation requires exact shadow evidence",
@@ -285,14 +285,16 @@ export async function runFoursdayCli(args = process.argv.slice(2), {
     return null;
   }
   if (command === "dashboard") {
-    if (rest.length > 2 || (rest.length > 0 && rest[0] !== "--port")) {
-      throw new Error("Usage: foursday dashboard [--port PORT]");
+    const replace = rest.includes("--replace");
+    const filtered = rest.filter((value) => value !== "--replace");
+    if (filtered.length > 2 || (filtered.length > 0 && filtered[0] !== "--port")) {
+      throw new Error("Usage: foursday dashboard [--port PORT] [--replace]");
     }
-    const port = rest.length === 2 ? Number(rest[1]) : 9466;
+    const port = filtered.length === 2 ? Number(filtered[1]) : 9466;
     if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
       throw new Error("Dashboard port is invalid");
     }
-    return controlSite({ projectRoot: packageRoot, port });
+    return controlSite({ projectRoot: packageRoot, port, replace });
   }
   if (command === "gateway") {
     return runBundledScript("./管理FoursdayGateway.mjs", rest, {

@@ -575,6 +575,24 @@ test("a link-only enterprise message can read its exact source from the fallback
 
 test("Codex freely discovers and binds one primary scope with related gbrain projects", async (t) => {
   const value = await fixture(t);
+  const controlPath = join(value.root, "control.json");
+  value.environment.FOURSDAY_CONTROL_FILE = controlPath;
+  await writeFile(controlPath, `${JSON.stringify({
+    schema: "foursday-control/v1",
+    revision: 1,
+    global: { state: "running", updatedAt: null },
+    tasks: { ["b".repeat(64)]: {
+      taskId: "b".repeat(64),
+      projectId: "shared_link",
+      requester: null,
+      state: "active",
+      ownerRevision: 2,
+      sendGeneration: 3,
+      lastInboundAt: "2026-09-03T03:00:00.000Z",
+      updatedAt: "2026-09-03T03:00:00.000Z",
+      pendingEvent: null,
+    } },
+  })}\n`, { mode: 0o600 });
   const discovered = await discoverFoursdayWorkScopes({
     contextToken: value.token,
     query: "单词2.2内容生产和质检进度",
@@ -617,11 +635,26 @@ test("Codex freely discovers and binds one primary scope with related gbrain pro
   }, { environment: value.environment, cwd: value.root, now: 1_787_712_001_000 });
   assert.equal(selected.accepted, true);
   assert.equal(selected.appliesOn, "next_turn");
+  assert.equal(selected.taskProjectionUpdated, true);
+  const control = JSON.parse(await readFile(controlPath, "utf8"));
+  assert.equal(control.tasks["b".repeat(64)].projectId, "example");
   const routeState = JSON.parse(await readFile(value.environment.FOURSDAY_ROUTE_STATE_FILE, "utf8"));
   assert.deepEqual(routeState.bindings["b".repeat(64)].relatedScopeIds, ["other"]);
   assert.deepEqual(routeState.bindings["b".repeat(64)].relatedGbrainSlugs, [
     "projects/51t-word-2-2-content-production",
   ]);
+  const completed = await updateFoursdayTaskContract({
+    contextToken: value.token,
+    title: "核验共享项目资料",
+    goal: "确认项目归属和当前资料状态。",
+    deliverables: ["核验结论"],
+    acceptanceCriteria: ["证据可回读"],
+    lifecycleState: "completed",
+    confidence: 0.96,
+    evidence: [{ kind: "source", status: "verified", summary: "资料与项目归属已核验" }],
+  }, { environment: value.environment, cwd: value.root });
+  assert.equal(completed.lifecycleState, "completed");
+  assert.equal(completed.projectId, "example");
   await assert.rejects(selectFoursdayWorkScope({
     contextToken: value.token,
     primaryScopeId: "example",

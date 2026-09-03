@@ -130,7 +130,7 @@ export function foursdayCodexConfig({
     `args = [${JSON.stringify(mcp)}]`,
     "startup_timeout_sec = 5",
     "tool_timeout_sec = 30",
-    'env_vars = ["FOURSDAY_PRODUCTION_CONFIG", "FOURSDAY_PROJECT_REGISTRY", "FOURSDAY_ROUTE_STATE_FILE", "FOURSDAY_WORK_CONTEXT_FILE", "FOURSDAY_TASK_LEDGER_FILE", "FOURSDAY_PROFILE_RELEASE_FILE", "FOURSDAY_RELEASE_SHA", "FOURSDAY_MODE", "DWS_PERSONAL_SEND_ENABLED", "DWS_PERSONAL_STATE_FILE", "DWS_PERSONAL_FALLBACK_MS", "DWS_PERSONAL_COMMAND_LOCK", "DWS_PERSONAL_ENTERPRISE_USERS_ENABLED"]',
+    'env_vars = ["FOURSDAY_PRODUCTION_CONFIG", "FOURSDAY_PROJECT_REGISTRY", "FOURSDAY_ROUTE_STATE_FILE", "FOURSDAY_WORK_CONTEXT_FILE", "FOURSDAY_TASK_LEDGER_FILE", "FOURSDAY_CONTROL_FILE", "FOURSDAY_PROFILE_RELEASE_FILE", "FOURSDAY_RELEASE_SHA", "FOURSDAY_MODE", "DWS_PERSONAL_SEND_ENABLED", "DWS_PERSONAL_STATE_FILE", "DWS_PERSONAL_FALLBACK_MS", "DWS_PERSONAL_COMMAND_LOCK", "DWS_PERSONAL_ENTERPRISE_USERS_ENABLED"]',
     "required = true",
     'enabled_tools = ["foursday_remember_project_fact", "foursday_list_attachments", "foursday_stage_attachment", "foursday_read_project_memory", "foursday_runtime_status", "foursday_list_project_sources", "foursday_read_project_source", "foursday_list_projects", "foursday_select_project", "foursday_discover_work_scopes", "foursday_select_work_scope", "foursday_update_task_contract"]',
     'default_tools_approval_mode = "auto"',

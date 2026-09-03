@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.0-rc.5 - 2026-09-03
+
+- Added version-aware companion-to-Control-service handshaking so a new desktop companion safely replaces only an exact stale Foursday listener instead of reusing old in-memory code.
+- Added silent Codex task reconciliation for unresolved exact-link tasks after project-registry or access changes, immediate project projection updates, and a verified `completed` lifecycle distinct from requester business acceptance.
+- Bound live DingTalk source access checks to the connector-derived requester hash so permission changes can be reverified without storing or exposing stable identities.
+
 ## 0.9.0-rc.4 - 2026-09-03
 
 - Added startup and debounced live synchronization for local projects explicitly saved in Codex, with safe-root filtering, additive locked registry updates, private rollback/readback, optional bounded gbrain page matching, and non-blocking degradation.

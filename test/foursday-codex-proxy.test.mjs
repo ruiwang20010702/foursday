@@ -143,6 +143,9 @@ test("proxy identifies high-risk commands even through absolute paths or shell w
     "find . -name '*.tmp' -delete",
   ]) assert.equal(classifyCodexServerRequest(request(command)), "high_risk_command");
   assert.equal(classifyCodexServerRequest(request("npm test")), null);
+  assert.equal(classifyCodexServerRequest(request("npm test"), {
+    maintenanceMode: true,
+  }), "maintenance_command");
   assert.equal(classifyCodexServerRequest({
     method: "item/permissions/requestApproval",
   }), "permission_escalation");

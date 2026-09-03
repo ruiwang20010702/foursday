@@ -29,7 +29,9 @@ test("pet build refuses arbitrary output paths", async () => {
 
 test("pet reads only the loopback task projection and reuses Codex pet assets", async () => {
   const source = await readFile(new URL("../distribution/pet/macos/FoursdayPet.swift", import.meta.url), "utf8");
-  assert.match(source, /127\.0\.0\.1:9466\/api\/status/u);
+  assert.match(source, /127\.0\.0\.1:9466\/api\/meta/u);
+  assert.match(source, /foursday-control-site-meta\/v1/u);
+  assert.match(source, /FoursdayRuntimeVersion/u);
   for (const endpoint of ["status", "tasks", "schedules", "memory", "evidence"]) {
     assert.match(source, new RegExp(`read\\("${endpoint}"\\)`, "u"));
   }
@@ -164,7 +166,7 @@ test("pet worksite groups tasks and reuses revision-fenced local controls", asyn
   assert.match(source, /SystemDiagnosticsView/u);
   assert.match(source, /process\.environment = foursdayProcessEnvironment\(\)/u);
   assert.match(source, /process\.executableURL = node/u);
-  assert.match(source, /process\.arguments = \[executable\.path, "dashboard", "--port", "9466"\]/u);
+  assert.match(source, /process\.arguments = \[executable\.path, "dashboard", "--port", "9466", "--replace"\]/u);
   assert.match(source, /process\.arguments = \[executable\.path\] \+ arguments/u);
   assert.match(source, /private func locateNode\(\)/u);
   assert.match(source, /resolvingSymlinksInPath\(\)/u);

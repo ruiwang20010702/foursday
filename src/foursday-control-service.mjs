@@ -174,7 +174,7 @@ function worksiteGroup(task, contract, assignment = "routed", execution = null) 
   if (assignment === "legacy_unassigned") return "recent";
   if (["blocked", "failed"].includes(execution?.state)) return "needs_me";
   if (execution?.state === "completed" && !contract) return "recent";
-  if (state === "taken_over" || lifecycle === "accepted") return "recent";
+  if (state === "taken_over" || ["completed", "accepted"].includes(lifecycle)) return "recent";
   if (
     task?.pendingEvent && !task.pendingEvent.consumed ||
     ["waiting_acceptance", "rework_requested", "escalated", "failed"].includes(lifecycle)

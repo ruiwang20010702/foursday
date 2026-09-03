@@ -204,6 +204,9 @@ _TURN_DELIVERY_VERSION: contextvars.ContextVar[Optional[dict[str, Any]]] = conte
 _TURN_CONSUMED_DELIVERY_VERSION: contextvars.ContextVar[
     Optional[dict[str, Any]]
 ] = contextvars.ContextVar("foursday_dws_consumed_delivery_version", default=None)
+_TURN_INTERNAL_RECONCILIATION: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "foursday_dws_internal_reconciliation", default=False
+)
 
 
 def _work_context_token(
@@ -211,6 +214,7 @@ def _work_context_token(
     project: Any,
     workspace: Optional[str] = None,
     session_key: str,
+    source_principal_hash: str,
     project_context: str,
     memory_context: str,
     attachments: Optional[list[dict[str, Any]]] = None,
@@ -223,6 +227,7 @@ def _work_context_token(
     related_projects: Optional[list[Any]] = None,
     related_gbrain_slugs: Optional[list[str]] = None,
     response_duty: Optional[dict[str, Any]] = None,
+    maintenance_mode: bool = False,
 ) -> str:
     if owner_intervention not in {None, "task_correction", "resume_requested"}:
         raise RuntimeError("Foursday owner intervention is invalid")
@@ -235,6 +240,8 @@ def _work_context_token(
         raise RuntimeError("Foursday source scope is invalid")
     if requester_role not in {"owner", "trusted"}:
         raise RuntimeError("Foursday requester role is invalid")
+    if not re.fullmatch(r"[a-f0-9]{64}", source_principal_hash):
+        raise RuntimeError("Foursday requester identity hash is invalid")
     duty = dict(response_duty or {
         "decision": "action_required",
         "source": "availability_fallback",
@@ -360,6 +367,7 @@ def _work_context_token(
             "projectContext": str(project_context or "")[:8_000],
             "memoryContext": str(memory_context or "")[:16_000],
             "sourcePrincipalHandle": secrets.token_hex(32),
+            "sourcePrincipalHash": source_principal_hash,
             "sourceSessionHash": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
             "ownerRevision": int(owner_revision),
             "sendGeneration": int(send_generation),
@@ -371,6 +379,7 @@ def _work_context_token(
                 "source": str(duty["source"]),
                 "confidence": float(duty["confidence"]),
             },
+            "maintenanceMode": maintenance_mode is True,
             "providedDingtalkSources": safe_sources,
             "attachments": safe_attachments,
             "expiresAt": now + 15 * 60,
@@ -1196,7 +1205,8 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         }
         classify_response_duty = getattr(self._bridge, "classify_response_duty", None)
         internal_background = latest.get("internalBackground") is True
-        if callable(classify_response_duty) and content and not internal_background:
+        internal_reconciliation = latest.get("internalReconciliation") is True
+        if callable(classify_response_duty) and content and not internal_background and not internal_reconciliation:
             try:
                 result = await classify_response_duty({
                     "content": content[:8_000],
@@ -1237,15 +1247,20 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             if chat_type == "direct" and self_user_id and user_id == self_user_id
             else "trusted"
         )
-        provided_sources = (
-            _provided_dingtalk_sources(
-                content,
-                message_ids=message_ids,
-                requester_role=requester_role,
+        if internal_reconciliation:
+            provided_sources = [dict(source) for source in list(
+                latest.get("providedDingtalkSources") or []
+            )[:4]]
+        else:
+            provided_sources = (
+                _provided_dingtalk_sources(
+                    content,
+                    message_ids=message_ids,
+                    requester_role=requester_role,
+                )
+                if chat_type == "direct"
+                else []
             )
-            if chat_type == "direct"
-            else []
-        )
         timestamp = datetime.fromisoformat(
             str(latest.get("createTime") or "").replace("Z", "+00:00")
         )
@@ -1343,6 +1358,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             project=getattr(route, "project", None),
             workspace=getattr(route, "workspace_path", None),
             session_key=session_key,
+            source_principal_hash=hashlib.sha256(user_id.encode("utf-8")).hexdigest(),
             project_context=route.context,
             memory_context=memory_context,
             attachments=attachments,
@@ -1359,6 +1375,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             related_projects=list(getattr(route, "related_projects", ()) or ()),
             related_gbrain_slugs=list(getattr(route, "related_gbrain_slugs", ()) or ()),
             response_duty=response_duty,
+            maintenance_mode=internal_reconciliation,
         )
         tool_context = (
             "Foursday work context token: " + context_token +
@@ -1436,6 +1453,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 "enterprise_verified": latest.get("enterpriseVerified") is True,
                 "resource_enrichment_unavailable": resource_enrichment_unavailable,
                 "background_execution": internal_background,
+                "internal_reconciliation": internal_reconciliation,
                 "task_id": str(latest.get("taskId") or "") or None,
                 "execution_id": str(latest.get("executionId") or "") or None,
             },
@@ -1469,10 +1487,12 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         from project_router.runtime_context import routed_project_scope
 
         delivery_version = _TURN_DELIVERY_VERSION.set(dict(latest_delivery_version))
+        reconciliation_version = _TURN_INTERNAL_RECONCILIATION.set(internal_reconciliation)
         try:
             with routed_project_scope(route, principal_id=user_id):
                 await self.handle_message(event)
         finally:
+            _TURN_INTERNAL_RECONCILIATION.reset(reconciliation_version)
             _TURN_DELIVERY_VERSION.reset(delivery_version)
 
     async def _on_record(self, record: Dict[str, Any]) -> None:
@@ -1491,6 +1511,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         attachments = list(record.get("attachments") or [])
         chat_type = str(record.get("chatType") or "").strip()
         internal_background = record.get("internalBackground") is True
+        internal_reconciliation = record.get("internalReconciliation") is True
         if (
             not message_id
             or not conversation_id
@@ -1501,7 +1522,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
                 user_id,
                 enterprise_verified=record.get("enterpriseVerified") is True,
             )
-            or (not internal_background and not self._remember(message_id))
+            or (not internal_background and not internal_reconciliation and not self._remember(message_id))
         ):
             return
         if chat_type == "group":
@@ -1523,7 +1544,7 @@ class DwsPersonalAdapter(BasePlatformAdapter):
             "attachments": attachments,
             "chatType": chat_type,
         }
-        if internal_background:
+        if internal_background or internal_reconciliation:
             await self._deliver_records([normalized], partition=False)
         else:
             await self._queue_record(normalized)
@@ -1535,6 +1556,9 @@ class DwsPersonalAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        if _TURN_INTERNAL_RECONCILIATION.get():
+            message_id = hashlib.sha256(str(content).encode("utf-8")).hexdigest()[:24]
+            return SendResult(success=True, message_id=f"suppressed-reconcile-{message_id}")
         if _INTERNAL_GATEWAY_NOTICE.search(str(content).strip()):
             message_id = hashlib.sha256(str(content).encode("utf-8")).hexdigest()[:24]
             return SendResult(

@@ -109,6 +109,11 @@ private struct EvidenceEnvelope: Decodable {
     let lastEventAt: String?
 }
 
+private struct DashboardMeta: Decodable {
+    let schema: String
+    let runtimeVersion: String
+}
+
 private struct TaskItem: Decodable, Identifiable {
     struct RouteSelection: Decodable {
         let primaryProjectId: String
@@ -693,7 +698,7 @@ private final class PetModel {
         }
         let process = Process()
         process.executableURL = node
-        process.arguments = [executable.path, "dashboard", "--port", "9466"]
+        process.arguments = [executable.path, "dashboard", "--port", "9466", "--replace"]
         process.environment = foursdayProcessEnvironment()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -737,10 +742,16 @@ private final class PetModel {
     }
 
     private func dashboardAvailable() async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:9466/api/status") else { return false }
+        guard let url = URL(string: "http://127.0.0.1:9466/api/meta") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
-        return (try? await URLSession.shared.data(for: request).1 as? HTTPURLResponse)?.statusCode == 200
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let meta = try? JSONDecoder().decode(DashboardMeta.self, from: data),
+              meta.schema == "foursday-control-site-meta/v1",
+              let expected = Bundle.main.object(forInfoDictionaryKey: "FoursdayRuntimeVersion") as? String
+        else { return false }
+        return !expected.isEmpty && meta.runtimeVersion == expected
     }
 
     private func refresh() async {
@@ -974,6 +985,7 @@ private extension TaskItem {
         case "rework_requested": "返工"
         case "escalated": "需协助"
         case "failed": "失败"
+        case "completed": "已完成"
         case "accepted": "已验收"
         case "paused": "暂停"
         case "taken_over": "已接管"

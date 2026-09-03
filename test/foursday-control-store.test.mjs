@@ -85,6 +85,38 @@ test("requester projection rejects unsafe labels and survives later identity-fre
   });
 });
 
+test("Codex scope selection immediately reassigns only the exact task generation", async (t) => {
+  const value = await fixture(t);
+  await value.store.observeTask({
+    taskId,
+    projectId: "shared_link",
+    ownerRevision: 2,
+    sendGeneration: 4,
+    lastInboundAt: "2026-09-03T03:00:00.000Z",
+  });
+  const reassigned = await value.store.reassignTaskProject({
+    taskId,
+    projectId: "assessment_2_2",
+    ownerRevision: 2,
+    sendGeneration: 4,
+  });
+  assert.equal(reassigned.result.reassigned, true);
+  assert.equal(reassigned.result.task.projectId, "assessment_2_2");
+  const repeated = await value.store.reassignTaskProject({
+    taskId,
+    projectId: "assessment_2_2",
+    ownerRevision: 2,
+    sendGeneration: 4,
+  });
+  assert.equal(repeated.result.reassigned, false);
+  await assert.rejects(value.store.reassignTaskProject({
+    taskId,
+    projectId: "wrong_generation",
+    ownerRevision: 1,
+    sendGeneration: 4,
+  }), /revision_conflict/u);
+});
+
 test("acknowledging a correction scrubs its transient note", async (t) => {
   const value = await fixture(t);
   await value.store.observeTask({

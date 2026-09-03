@@ -1,9 +1,16 @@
-import { createServer } from "node:http";
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { FoursdayControlService, controlServicePaths } from "./foursday-control-service.mjs";
 import { foursdayNativeHermesLayout } from "./foursday-hermes-native-install.mjs";
 import { isMainModule } from "./main-module.mjs";
+
+const run = promisify(execFile);
+const runtimeVersionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/u;
 
 const html = String.raw`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -12,7 +19,7 @@ const html = String.raw`<!doctype html>
 </style></head><body><main class="wrap"><header><div><h1>只读应急状态</h1><p>仅在桌宠不可用或非macOS环境下使用。此页读取与桌宠相同的Control服务，不维护第二套状态，也不提供控制写入口。</p></div><button class="refresh" id="refresh">刷新状态</button></header><section class="metrics"><div class="metric"><div class="eyebrow">运行状态</div><div id="ready" class="pill">读取中</div></div><div class="metric"><div class="eyebrow">当前任务</div><div id="tasksCount" class="value">—</div></div><div class="metric"><div class="eyebrow">需要关注</div><div id="attentionCount" class="value">—</div></div><div class="metric"><div class="eyebrow">控制版本</div><div id="revision" class="value">—</div></div></section><section class="content"><div><div class="section-head"><h2>任务流</h2><span id="taskHint" class="count">读取中</span></div><div id="tasks" class="task-list"></div></div><aside class="aside"><div class="aside-block"><h2>DWS 检查点</h2><strong id="checkpoint">读取中</strong><div class="muted">消息入口、历史恢复与发送边界使用同一检查点。</div></div><div class="aside-block"><h2>证据</h2><strong id="evidence">—</strong><div class="muted">任务结论仍需真实文件、工具、测试或投递回读。</div></div><div class="aside-block"><h2>个人记忆</h2><div id="memory" class="muted">—</div></div><div class="aside-block"><h2>主动工作</h2><div id="schedules" class="muted">—</div></div></aside></section></main><button id="pet" class="pet" type="button" aria-label="打开Foursday任务" aria-expanded="false" data-state="idle" hidden><span class="pet-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span id="petBadge" class="pet-badge" hidden>0</span></button><div id="scrim" class="scrim" hidden></div><aside id="drawer" class="drawer" aria-hidden="true" aria-labelledby="drawerTitle" hidden><div class="drawer-head"><div><div class="eyebrow">Foursday</div><h2 id="drawerTitle">现在由我负责</h2></div><button id="close" class="close" type="button" aria-label="关闭任务抽屉">×</button></div><div id="drawerList" class="drawer-list"></div></aside><script nonce="NONCE">
 const byId=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const lifecycleLabels={intake:'接单中',planning:'规划中',working:'执行中',verifying:'验证中',waiting_acceptance:'等待验收',rework_requested:'返工中',escalated:'需要协助',failed:'失败',accepted:'已验收'};
+const lifecycleLabels={intake:'接单中',planning:'规划中',working:'执行中',verifying:'验证中',waiting_acceptance:'等待验收',rework_requested:'返工中',escalated:'需要协助',failed:'失败',completed:'已完成',accepted:'已验收'};
 const controlLabels={active:'运行中',paused:'已暂停',taken_over:'已接管'};
 const needsAttention=task=>task.state!=='taken_over'&&(Boolean(task.pendingIntervention)||['waiting_acceptance','escalated','rework_requested','failed'].includes(task.taskContract?.lifecycleState));
 const gatewayFault=status=>status.gateway.sendBlocked===true||status.gateway.modeConsistent===false||['failed','error','blocked','unknown_send'].includes(status.gateway.checkpointState);
@@ -41,12 +48,24 @@ function headers(nonce, type) {
   };
 }
 
-export function createFoursdayControlSite({ service, host = "127.0.0.1", port = 9466 } = {}) {
+export function createFoursdayControlSite({
+  service,
+  host = "127.0.0.1",
+  port = 9466,
+  runtimeVersion = "0.0.0-development",
+} = {}) {
   if (host !== "127.0.0.1" || !Number.isSafeInteger(port) || port < 0 || port > 65535) {
     throw new Error("Foursday status site must use a loopback host and valid port");
   }
+  if (!runtimeVersionPattern.test(runtimeVersion)) {
+    throw new Error("Foursday status site runtime version is invalid");
+  }
   const nonce = randomBytes(18).toString("base64url");
   const routes = new Map([
+    ["/api/meta", async () => ({
+      schema: "foursday-control-site-meta/v1",
+      runtimeVersion,
+    })],
     ["/api/status", () => service.status()],
     ["/api/tasks", () => service.tasks()],
     ["/api/schedules", () => service.schedules()],
@@ -88,7 +107,13 @@ export function createFoursdayControlSite({ service, host = "127.0.0.1", port = 
         server.listen(port, host, accept);
       });
       const address = server.address();
-      return { host, port: address.port, url: `http://${host}:${address.port}/`, readOnly: true };
+      return {
+        host,
+        port: address.port,
+        url: `http://${host}:${address.port}/`,
+        readOnly: true,
+        runtimeVersion,
+      };
     },
     async stop() {
       if (!server.listening) return;
@@ -97,14 +122,68 @@ export function createFoursdayControlSite({ service, host = "127.0.0.1", port = 
   };
 }
 
+export async function replaceFoursdayControlSite({
+  port,
+  platform = process.platform,
+  runCommand = run,
+  signal = (pid) => process.kill(pid, "SIGTERM"),
+  wait = (milliseconds) => new Promise((accept) => setTimeout(accept, milliseconds)),
+} = {}) {
+  if (platform !== "darwin" || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Foursday dashboard replacement is unavailable");
+  }
+  let stdout;
+  try {
+    ({ stdout } = await runCommand("/usr/sbin/lsof", [
+      "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-a", "-u", String(process.getuid()),
+      "-Fp", "-Fc",
+    ], { timeout: 3_000, maxBuffer: 64 * 1024 }));
+  } catch (error) {
+    if (error?.code === 1) return { replaced: false, reason: "not_running" };
+    throw error;
+  }
+  const pids = [...new Set(String(stdout).split("\n")
+    .filter((line) => /^p[0-9]+$/u.test(line))
+    .map((line) => Number(line.slice(1))))];
+  if (pids.length === 0) return { replaced: false, reason: "not_running" };
+  if (pids.length !== 1 || pids[0] === process.pid) {
+    throw new Error("Foursday dashboard listener identity is ambiguous");
+  }
+  const pid = pids[0];
+  const { stdout: commandOutput } = await runCommand("/bin/ps", [
+    "-p", String(pid), "-o", "command=",
+  ], { timeout: 3_000, maxBuffer: 64 * 1024 });
+  const command = String(commandOutput).trim();
+  if (
+    !/(?:^|\/)node(?:@[0-9]+)?(?:\/bin)?\/node\b|(?:^|\/)node\b/u.test(command) ||
+    !/\/foursday\/scripts\/新环境向导\.mjs\s+dashboard(?:\s|$)/u.test(command) ||
+    !new RegExp(`(?:^|\\s)--port\\s+${port}(?:\\s|$)`, "u").test(command)
+  ) throw new Error("Foursday dashboard port is owned by another process");
+  signal(pid);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return { replaced: true, pid };
+      throw error;
+    }
+    await wait(100);
+  }
+  throw new Error("Foursday dashboard did not stop cleanly");
+}
+
 export async function runFoursdayControlSite({
   projectRoot = fileURLToPath(new URL("../", import.meta.url)),
   environment = process.env,
   port = Number(environment.FOURSDAY_DASHBOARD_PORT ?? 9466),
+  replace = false,
 } = {}) {
+  const manifest = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+  const runtimeVersion = String(manifest.version ?? "");
+  if (replace) await replaceFoursdayControlSite({ port });
   const layout = foursdayNativeHermesLayout({ projectRoot });
   const service = new FoursdayControlService({ layout, ...controlServicePaths({ layout, environment }) });
-  const site = createFoursdayControlSite({ service, port });
+  const site = createFoursdayControlSite({ service, port, runtimeVersion });
   const status = await site.start();
   const stop = async () => { await site.stop(); process.exit(0); };
   process.once("SIGINT", stop);

@@ -52,9 +52,10 @@ function requestText(params) {
     .join(" ").replace(/["']/gu, " ").replace(/\s+/gu, " ").slice(0, 32_000);
 }
 
-export function classifyCodexServerRequest(message) {
+export function classifyCodexServerRequest(message, { maintenanceMode = false } = {}) {
   if (message?.method === "item/permissions/requestApproval") return "permission_escalation";
   if (!["item/commandExecution/requestApproval", "execCommandApproval"].includes(message?.method)) return null;
+  if (maintenanceMode) return "maintenance_command";
   const command = requestText(message.params);
   return highRiskPatterns.some((pattern) => pattern.test(command)) ? "high_risk_command" : null;
 }
@@ -198,8 +199,10 @@ export async function prepareFoursdayTurnContext(message, {
     context.providedDingtalkSources,
   );
   input[index].text = [
-    "<foursday_task_authority trust=\"connector-verified\" scope=\"project-reversible\">",
-    "Autonomously complete reversible work inside the selected primary workspace. Ask the requester only for irreducible business meaning, priority, content, or acceptance. Related scopes add context but never filesystem permission. Stop at the owner gate for push, merge, release, production, personal high-authority connectors, login-state browser actions, arbitrary shell network, secrets, payments, contracts, HR, irreversible deletion, or permission expansion.",
+    `<foursday_task_authority trust="connector-verified" scope="${context.maintenanceMode ? "reconciliation-read-only" : "project-reversible"}">`,
+    context.maintenanceMode
+      ? "This is silent state reconciliation. Read current evidence and use Foursday MCP state tools, but do not modify project files or external systems. Mark completed only when present evidence itself proves the original requested outcome."
+      : "Autonomously complete reversible work inside the selected primary workspace. Ask the requester only for irreducible business meaning, priority, content, or acceptance. Related scopes add context but never filesystem permission. Stop at the owner gate for push, merge, release, production, personal high-authority connectors, login-state browser actions, arbitrary shell network, secrets, payments, contracts, HR, irreversible deletion, or permission expansion.",
     "</foursday_task_authority>",
     "<foursday_project_context trust=\"owner-configured\">",
     context.projectContext.trim(),
@@ -618,7 +621,9 @@ export async function runFoursdayCodexProxy({
       if (message.method === "turn/completed" && eventThreadId) {
         turnStartedAt.delete(eventThreadId);
       }
-      const blocked = classifyCodexServerRequest(message);
+      const blocked = classifyCodexServerRequest(message, {
+        maintenanceMode: threadContexts.get(eventThreadId)?.maintenanceMode === true,
+      });
       if (blocked) {
         child.stdin.write(`${JSON.stringify(denial(message.id, blocked, message.method))}\n`);
         process.stderr.write(`Foursday blocked Codex request: ${blocked}\n`);

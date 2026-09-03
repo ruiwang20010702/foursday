@@ -116,7 +116,10 @@ export function userFacingTaskState(task = {}) {
       state: "background", title: "正在后台处理", detail: "AI 会在实质进展或完成时同步", owner: "ai", waitTier: "long",
     };
   }
-  if (task.worksiteGroup === "recent" || lifecycle === "accepted" || execution?.state === "completed") {
+  if (
+    task.worksiteGroup === "recent" || ["completed", "accepted"].includes(lifecycle) ||
+    execution?.state === "completed"
+  ) {
     return { state: "completed", title: "最近完成", detail: "结果与证据已经记录", owner: "none", waitTier: "none" };
   }
   if (execution?.mode === "instant") {

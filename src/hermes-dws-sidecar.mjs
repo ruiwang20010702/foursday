@@ -27,6 +27,7 @@ import { createTaskCoordinator } from "./foursday-task-coordinator.mjs";
 import { createMessageIngress } from "./foursday-message-ingress.mjs";
 import { syncFoursdayCodexProjects } from "./foursday-codex-project-sync.mjs";
 import { createHermesPersonalMemoryClient } from "./hermes-personal-memory-context.mjs";
+import { createTaskReconciliationCoordinator } from "./foursday-task-reconciliation.mjs";
 export { stableSendKey } from "./foursday-delivery-coordinator.mjs";
 import {
   diagnosticCode,
@@ -119,6 +120,10 @@ export function sidecarConfig(environment = process.env) {
   if (taskLedgerFile && !isAbsolute(taskLedgerFile)) {
     throw new Error("FOURSDAY_TASK_LEDGER_FILE must be absolute");
   }
+  const workContextFile = String(environment.FOURSDAY_WORK_CONTEXT_FILE ?? "").trim();
+  if (workContextFile && !isAbsolute(workContextFile)) {
+    throw new Error("FOURSDAY_WORK_CONTEXT_FILE must be absolute");
+  }
   const projectRegistryFile = String(environment.FOURSDAY_PROJECT_REGISTRY ?? "").trim();
   const productionConfigFile = String(environment.FOURSDAY_PRODUCTION_CONFIG ?? "").trim();
   const codexProjectStateFile = String(environment.FOURSDAY_CODEX_PROJECT_STATE_FILE ?? "").trim();
@@ -160,6 +165,7 @@ export function sidecarConfig(environment = process.env) {
     mediaRoot: mediaRoot ? resolve(mediaRoot) : null,
     controlFile: controlFile ? resolve(controlFile) : null,
     taskLedgerFile: taskLedgerFile ? resolve(taskLedgerFile) : null,
+    workContextFile: workContextFile ? resolve(workContextFile) : null,
     projectRegistryFile: projectRegistryFile ? resolve(projectRegistryFile) : null,
     codexProjectStateFile: codexProjectStateFile ? resolve(codexProjectStateFile) : null,
     projectSyncEnabled,
@@ -321,12 +327,26 @@ export async function createSidecarRuntime({
     sendEnabled: config.sendEnabled,
   });
   const { cancelExecutionGeneration } = durableExecution;
+  const taskReconciliation = createTaskReconciliationCoordinator({
+    enabled: true,
+    workContextFile: config.workContextFile,
+    projectRegistryFile: config.projectRegistryFile,
+    taskLedgerStore,
+    controlStore,
+    activeConversations,
+    state,
+    persist: persistState,
+    emit,
+    taskKey: taskId,
+    now,
+  });
   const watchers = [];
   let eventWakeController = null;
   let projectSyncTimer = null;
   let projectSyncStopped = false;
   let projectStateWatcherStarted = false;
   let projectSyncQueue = Promise.resolve();
+  let taskReconciliationStarted = false;
   let responsibilityControl;
   const ownerIntervention = createOwnerInterventionCoordinator({
     semanticEnabled: config.semanticInterventionEnabled === true,
@@ -538,6 +558,9 @@ export async function createSidecarRuntime({
       if (synchronized.changed) diagnose(
         `foursday_project_registry_synced:${synchronized.addedProjectCount}`,
       );
+      if (taskReconciliationStarted && synchronized.changed) {
+        queueMicrotask(() => taskReconciliation.run().catch(() => {}));
+      }
     } catch {
       diagnose("foursday_project_registry_sync_failed:project_registry_sync_unavailable");
     }
@@ -643,6 +666,8 @@ export async function createSidecarRuntime({
           checkpoint.request("dws_event");
         },
       });
+      taskReconciliationStarted = true;
+      taskReconciliation.start();
       if (
         config.eventWakeEnabled &&
         typeof dws.createPersonalEventWake === "function" &&
@@ -686,6 +711,7 @@ export async function createSidecarRuntime({
       for (const watcher of watchers) watcher.close();
       await projectSyncQueue.catch(() => {});
       if (eventWakeController) await eventWakeController.stop();
+      taskReconciliation.stop();
       await responsibilityControl.stop();
       await persistState();
     },

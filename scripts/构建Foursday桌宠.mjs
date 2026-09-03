@@ -22,6 +22,11 @@ if (args.some((argument) => argument !== "--apply")) {
   throw new Error("Usage: 构建Foursday桌宠.mjs [--apply]");
 }
 const source = join(projectRoot, "distribution", "pet", "macos", "FoursdayPet.swift");
+const packageManifest = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+const runtimeVersion = String(packageManifest.version ?? "");
+if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/u.test(runtimeVersion)) {
+  throw new Error("Foursday package version is invalid");
+}
 const outputRoot = join(projectRoot, ".runtime", "foursday-pet");
 const output = join(outputRoot, "Foursday Pet.app");
 const preview = {
@@ -84,6 +89,7 @@ try {
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>1</string>
+<key>FoursdayRuntimeVersion</key><string>${runtimeVersion}</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
@@ -107,6 +113,7 @@ try {
     adHocSigned: true,
     installed: false,
     dashboardReadOnly: true,
+    runtimeVersion,
   }, null, 2));
 } finally {
   await rm(stageRoot, { recursive: true, force: true });

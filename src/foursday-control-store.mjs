@@ -206,6 +206,32 @@ export class FoursdayControlStore {
     });
   }
 
+  async reassignTaskProject({
+    taskId,
+    projectId: project,
+    ownerRevision,
+    sendGeneration,
+  }) {
+    if (
+      !digest.test(String(taskId ?? "")) || !projectId.test(String(project ?? "")) ||
+      !Number.isSafeInteger(ownerRevision) || ownerRevision < 0 ||
+      !Number.isSafeInteger(sendGeneration) || sendGeneration < 0
+    ) throw new Error("Foursday task project reassignment is invalid");
+    return this.#mutate((document, timestamp) => {
+      const task = document.tasks[taskId];
+      if (!task) throw new Error("foursday_control_task_not_found");
+      if (
+        task.ownerRevision !== ownerRevision || task.sendGeneration !== sendGeneration
+      ) throw new Error("foursday_control_task_revision_conflict");
+      if (task.projectId === project) {
+        return noWrite({ reassigned: false, task: { ...task } });
+      }
+      task.projectId = project;
+      task.updatedAt = timestamp;
+      return { reassigned: true, task: { ...task } };
+    });
+  }
+
   async reopenTakenOverTask({
     taskId,
     expectedOwnerRevision,

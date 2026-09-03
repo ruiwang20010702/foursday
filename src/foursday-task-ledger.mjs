@@ -15,7 +15,7 @@ const digest = /^[a-f0-9]{64}$/u;
 const projectId = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const lifecycleStates = new Set([
   "intake", "planning", "working", "verifying", "waiting_acceptance",
-  "rework_requested", "escalated", "failed", "accepted",
+  "rework_requested", "escalated", "failed", "completed", "accepted",
 ]);
 const agentLifecycleStates = new Set([...lifecycleStates].filter((value) => value !== "accepted"));
 const evidenceKinds = new Set([

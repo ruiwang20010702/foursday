@@ -69,6 +69,9 @@ export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now
     source: "availability_fallback",
     confidence: 0,
   };
+  if (context.maintenanceMode != null && typeof context.maintenanceMode !== "boolean") {
+    throw new Error("work_context_maintenance_mode_invalid");
+  }
   if (
     !responseDuty || typeof responseDuty !== "object" || Array.isArray(responseDuty) ||
     !["action_required", "no_text_reply"].includes(responseDuty.decision) ||
@@ -160,5 +163,6 @@ export async function loadFoursdayWorkContext({ path, token, cwd, now = Date.now
     attachments,
     providedDingtalkSources,
     responseDuty: { ...responseDuty },
+    maintenanceMode: context.maintenanceMode === true,
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "foursday",
-  "version": "0.9.0-rc.4",
+  "version": "0.9.0-rc.5",
   "description": "A personal-memory-driven open-source work twin for real projects.",
   "bin": {
     "foursday": "scripts/新环境向导.mjs"

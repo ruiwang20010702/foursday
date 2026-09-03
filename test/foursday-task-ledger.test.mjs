@@ -35,6 +35,14 @@ test("task ledger persists a private semantic contract and evidence manifest", a
     sendGeneration: 3,
   });
   assert.equal(waiting.result.task.lifecycleState, "waiting_acceptance");
+  const completed = await store.upsertFromAgent({
+    ...waiting.result.task,
+    lifecycleState: "completed",
+    evidence: [{ kind: "test", status: "verified", summary: "可恢复工作已经完成并回读" }],
+    ownerRevision: 2,
+    sendGeneration: 3,
+  });
+  assert.equal(completed.result.task.lifecycleState, "completed");
   const metadata = await import("node:fs/promises").then(({ lstat }) => lstat(path));
   assert.equal(metadata.mode & 0o077, 0);
   assert.doesNotMatch(await readFile(path, "utf8"), /token\s*[:=]/iu);

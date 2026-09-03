@@ -1,6 +1,6 @@
 # Install and run
 
-> Current source candidate: `v0.9.0-rc.4`; latest GitHub Release: `v0.8.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
+> Current source candidate: `v0.9.0-rc.5`; latest GitHub Release: `v0.8.0-rc.1`. This is a breaking preview, not an in-place upgrade for the legacy `0.6.x` Runtime. For the production cutover, rollback, and single-writer checklist, see the [Chinese production migration runbook](../指南/生产迁移与回滚.md).
 
 ## 1. Run the ten-minute trial setup
 
@@ -88,7 +88,7 @@ npm run pet:build -- --apply
 open ".runtime/foursday-pet/Foursday Pet.app"
 ```
 
-On macOS the companion is the default visual worksite and starts the loopback Control service when needed. If the companion is unavailable, or on non-macOS hosts, run `npx --no-install foursday dashboard` as a hidden read-only fallback. It binds only to `127.0.0.1:9466`, has no write endpoint, and does not depend on the removed legacy 9465 administration service.
+On macOS the companion is the default visual worksite and starts the loopback Control service when needed. It checks `/api/meta` against its embedded Foursday package version; a mismatch starts `foursday dashboard --replace`, which may stop only a same-user listener whose executable, script and port exactly match Foursday. An unrelated port owner fails closed. If the companion is unavailable, or on non-macOS hosts, run `npx --no-install foursday dashboard` as a hidden read-only fallback. It binds only to `127.0.0.1:9466`, has no write endpoint, and does not depend on the removed legacy 9465 administration service.
 
 ## 5. Activate
 

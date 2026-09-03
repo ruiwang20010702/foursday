@@ -5,7 +5,10 @@ import { request as httpRequest } from "node:http";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { createFoursdayControlMcpHandler } from "../src/foursday-control-mcp.mjs";
-import { createFoursdayControlSite } from "../src/foursday-control-site.mjs";
+import {
+  createFoursdayControlSite,
+  replaceFoursdayControlSite,
+} from "../src/foursday-control-site.mjs";
 
 function service() {
   return {
@@ -101,9 +104,40 @@ test("optional status page is loopback-only, read-only and uses the same service
   assert.match(page.headers.get("content-security-policy"), /default-src 'none'/u);
   const status = await fetch(`${started.url}api/status`).then((response) => response.json());
   assert.equal(status.control.revision, 4);
+  const meta = await fetch(`${started.url}api/meta`).then((response) => response.json());
+  assert.deepEqual(meta, {
+    schema: "foursday-control-site-meta/v1",
+    runtimeVersion: "0.0.0-development",
+  });
   const post = await fetch(`${started.url}api/status`, { method: "POST" });
   assert.equal(post.status, 403);
   assert.equal(await requestWithHost(`${started.url}api/status`, "evil.example"), 403);
+});
+
+test("dashboard replacement stops only an exact same-user Foursday listener", async () => {
+  const calls = [];
+  const result = await replaceFoursdayControlSite({
+    port: 9466,
+    platform: "darwin",
+    runCommand: async (command) => {
+      calls.push(command);
+      if (command === "/usr/sbin/lsof") return { stdout: "p999999\ncnode\n" };
+      return {
+        stdout: "/opt/homebrew/opt/node@24/bin/node /Users/test/.local/lib/node_modules/foursday/scripts/新环境向导.mjs dashboard --port 9466\n",
+      };
+    },
+    signal: (pid) => calls.push(`signal:${pid}`),
+    wait: async () => {},
+  });
+  assert.equal(result.replaced, true);
+  assert.deepEqual(calls, ["/usr/sbin/lsof", "/bin/ps", "signal:999999"]);
+  await assert.rejects(replaceFoursdayControlSite({
+    port: 9466,
+    platform: "darwin",
+    runCommand: async (command) => command === "/usr/sbin/lsof"
+      ? { stdout: "p999999\ncnode\n" }
+      : { stdout: "/usr/bin/python unrelated.py --port 9466\n" },
+  }), /owned by another process/u);
 });
 
 test("public control-mcp CLI speaks clean JSON-RPC without trailing product output", async () => {

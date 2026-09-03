@@ -42,6 +42,45 @@ export function boundedReactionValue(value, maximum = 500) {
     : null;
 }
 
+function normalizeTaskReconciliation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const attemptCount = Number(value.attemptCount);
+  const lastAttemptAt = epoch(value.lastAttemptAt);
+  const nextAttemptAt = epoch(value.nextAttemptAt);
+  const requesterRole = String(value.requesterRole ?? "");
+  const provided = Array.isArray(value.providedDingtalkSources)
+    ? value.providedDingtalkSources.slice(0, 4) : [];
+  if (
+    !/^[a-f0-9]{64}$/u.test(String(value.signature ?? "")) ||
+    !/^[a-f0-9]{64}$/u.test(String(value.sourcePrincipalHash ?? "")) ||
+    !Number.isSafeInteger(attemptCount) || attemptCount < 1 || attemptCount > 4 ||
+    lastAttemptAt == null || nextAttemptAt == null || nextAttemptAt < lastAttemptAt ||
+    !["owner", "trusted"].includes(requesterRole) || provided.length === 0 ||
+    provided.some((source) =>
+      !source || typeof source !== "object" || Array.isArray(source) ||
+      !/^provided_[1-4]$/u.test(String(source.sourceId ?? "")) ||
+      source.kind !== "doc" || !/^[A-Za-z0-9]{20,80}$/u.test(String(source.nodeId ?? "")) ||
+      !/^[a-f0-9]{64}$/u.test(String(source.messageHash ?? "")) ||
+      source.requesterRole !== requesterRole
+    )
+  ) return null;
+  return {
+    signature: value.signature,
+    attemptCount,
+    lastAttemptAt: new Date(lastAttemptAt).toISOString(),
+    nextAttemptAt: new Date(nextAttemptAt).toISOString(),
+    sourcePrincipalHash: value.sourcePrincipalHash,
+    requesterRole,
+    providedDingtalkSources: provided.map((source) => ({
+      sourceId: source.sourceId,
+      kind: "doc",
+      nodeId: source.nodeId,
+      messageHash: source.messageHash,
+      requesterRole,
+    })),
+  };
+}
+
 function normalizeResponsibilityReactionEntry(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const conversationId = boundedReactionValue(value.conversationId);
@@ -244,6 +283,7 @@ function emptyState() {
       enabled: false, readyCount: 0, errorCount: 0,
       lastErrorCode: null, updatedAt: null,
     },
+    taskReconciliations: {},
   };
 }
 
@@ -366,6 +406,14 @@ export async function loadFoursdayRuntimeState(path) {
             enabled: false, readyCount: 0, errorCount: 0,
             lastErrorCode: null, updatedAt: null,
           },
+      taskReconciliations: parsed?.taskReconciliations &&
+          typeof parsed.taskReconciliations === "object" &&
+          !Array.isArray(parsed.taskReconciliations)
+        ? Object.fromEntries(Object.entries(parsed.taskReconciliations)
+          .map(([key, value]) => [key, normalizeTaskReconciliation(value)])
+          .filter(([key, value]) => /^[a-f0-9]{64}$/u.test(key) && value)
+          .slice(-64))
+        : {},
     };
   } catch (error) {
     if (error?.code === "ENOENT") return emptyState();

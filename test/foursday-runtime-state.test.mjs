@@ -34,6 +34,24 @@ test("runtime state store sanitizes restart-only and bounded fields", async (t) 
       updatedAt: "2026-09-01T00:00:00.000Z",
     },
     reactionWake: { enabled: true, readyCount: -2, errorCount: 3 },
+    taskReconciliations: {
+      ["a".repeat(64)]: {
+        signature: "b".repeat(64),
+        attemptCount: 2,
+        lastAttemptAt: "2026-09-01T00:00:00.000Z",
+        nextAttemptAt: "2026-09-01T00:30:00.000Z",
+        sourcePrincipalHash: "c".repeat(64),
+        requesterRole: "trusted",
+        providedDingtalkSources: [{
+          sourceId: "provided_1",
+          kind: "doc",
+          nodeId: "EXACTDINGTALKDOCUMENTNODE12345678",
+          messageHash: "d".repeat(64),
+          requesterRole: "trusted",
+        }],
+      },
+      invalid: { attemptCount: 999 },
+    },
   })}\n`, { mode: 0o600 });
   const state = await loadFoursdayRuntimeState(path);
   assert.equal(state.recentMessageIds.length, 5_000);
@@ -47,6 +65,8 @@ test("runtime state store sanitizes restart-only and bounded fields", async (t) 
   });
   assert.equal(state.reactionWake.readyCount, 0);
   assert.equal(state.reactionWake.errorCount, 3);
+  assert.deepEqual(Object.keys(state.taskReconciliations), ["a".repeat(64)]);
+  assert.equal(state.taskReconciliations["a".repeat(64)].attemptCount, 2);
 });
 
 test("runtime state store publishes one private atomic JSON document", async (t) => {

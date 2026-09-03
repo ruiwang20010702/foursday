@@ -24,6 +24,7 @@ import {
   legacyProjectsFromWorkScopes,
 } from "./foursday-work-scope-registry.mjs";
 import { FoursdayTaskLedgerStore } from "./foursday-task-ledger.mjs";
+import { FoursdayControlStore } from "./foursday-control-store.mjs";
 import { isMainModule } from "./main-module.mjs";
 
 const toolName = "foursday_remember_project_fact";
@@ -347,7 +348,7 @@ export const foursdayUpdateTaskContractTool = Object.freeze({
         type: "string",
         enum: [
           "intake", "planning", "working", "verifying", "waiting_acceptance",
-          "rework_requested", "escalated", "failed",
+          "rework_requested", "escalated", "failed", "completed",
         ],
       },
       confidence: { type: "number", minimum: 0.7, maximum: 1 },
@@ -722,6 +723,23 @@ async function bindProjectSelection(
   }, validProjectIds, now);
 }
 
+async function reassignSelectedTaskProject({
+  context,
+  projectId,
+  environment,
+  createStore = (path) => new FoursdayControlStore({ path }),
+} = {}) {
+  const controlPath = String(environment.FOURSDAY_CONTROL_FILE ?? "").trim();
+  if (!controlPath) return { reassigned: false, unavailable: true };
+  const store = await createStore(controlPath).open({ createParent: true });
+  return store.reassignTaskProject({
+    taskId: context.sourceSessionHash,
+    projectId,
+    ownerRevision: context.ownerRevision,
+    sendGeneration: context.sendGeneration,
+  });
+}
+
 export async function listFoursdayProjects(input, {
   environment = process.env,
   cwd = process.cwd(),
@@ -774,6 +792,7 @@ export async function selectFoursdayProject(input, {
     now,
     input.evidenceSourceId,
   );
+  await reassignSelectedTaskProject({ context, projectId: selected.projectId, environment });
   return {
     accepted: true,
     projectId: selected.projectId,
@@ -908,6 +927,11 @@ export async function selectFoursdayWorkScope(input, {
     evidenceSourceIds,
     rationale,
   }, validScopeIds, now);
+  const reassignment = await reassignSelectedTaskProject({
+    context,
+    projectId: primaryScopeId,
+    environment,
+  });
   const primary = scopes.find((scope) => scope.projectId === primaryScopeId);
   return {
     accepted: true,
@@ -917,6 +941,8 @@ export async function selectFoursdayWorkScope(input, {
     relatedGbrainSlugs,
     evidenceSourceIds,
     appliesOn: "next_turn",
+    taskProjectionUpdated: reassignment.result?.reassigned === true ||
+      reassignment.result?.reassigned === false,
     reversible: true,
     codexMayReviseOnNewEvidence: true,
   };
@@ -1288,10 +1314,19 @@ export async function updateFoursdayTaskContract(input, {
   if (!ledgerPath) throw new Error("foursday_mcp_unconfigured");
   const store = await createStore(ledgerPath).open({ createParent: true });
   const { contextToken: _discarded, ...contract } = input ?? {};
+  let selectedProjectId = context.primaryScopeId ?? context.projectId ?? null;
+  const controlPath = String(environment.FOURSDAY_CONTROL_FILE ?? "").trim();
+  if (selectedProjectId === "shared_link" && controlPath) {
+    const control = await new FoursdayControlStore({ path: controlPath }).snapshot();
+    const projected = control.tasks?.[context.sourceSessionHash]?.projectId;
+    if (projectSourceId.test(String(projected ?? "")) && projected !== "shared_link") {
+      selectedProjectId = projected;
+    }
+  }
   const result = await store.upsertFromAgent({
     ...contract,
     taskId: context.sourceSessionHash,
-    projectId: context.primaryScopeId ?? context.projectId ?? null,
+    projectId: selectedProjectId,
     ownerRevision: context.ownerRevision,
     sendGeneration: context.sendGeneration,
   });

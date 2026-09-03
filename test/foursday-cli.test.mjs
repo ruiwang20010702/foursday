@@ -35,7 +35,7 @@ test("public CLI exposes only the Foursday product lifecycle", async () => {
     "foursday status",
     "foursday control <status|tasks|schedules|memory|evidence|ACTION> [options]",
     "foursday control-mcp",
-    "foursday dashboard [--port PORT]",
+    "foursday dashboard [--port PORT] [--replace]",
   ]);
   assert.doesNotMatch(JSON.stringify(help), /legacy|ai-employee|migrate|worker|executor/iu);
   assert.doesNotMatch(help.architecture, /Hermes/iu);
@@ -57,6 +57,14 @@ test("control MCP and optional dashboard are thin CLI surfaces", async () => {
   });
   assert.equal(site.readOnly, true);
   assert.equal(siteOptions.port, 0);
+  await runFoursdayCli(["dashboard", "--replace"], {
+    controlSite: async (options) => {
+      siteOptions = options;
+      return { url: "http://127.0.0.1:9466/", readOnly: true };
+    },
+  });
+  assert.equal(siteOptions.port, 9466);
+  assert.equal(siteOptions.replace, true);
 });
 
 test("Codex shadow verification is a preview until apply", async () => {

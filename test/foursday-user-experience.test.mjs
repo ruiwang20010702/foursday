@@ -38,6 +38,9 @@ test("task translation distinguishes AI work, human need, takeover and backgroun
   assert.equal(userFacingTaskState({
     taskContract: { lifecycleState: "escalated" },
   }).owner, "you");
+  assert.equal(userFacingTaskState({
+    taskContract: { lifecycleState: "completed" },
+  }).title, "最近完成");
   assert.equal(userFacingTaskState({ state: "taken_over" }).title, "任务已由你接管");
 });
 
