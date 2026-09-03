@@ -230,6 +230,18 @@ export async function discoverFoursdayProjectRegistry({
     throw new Error("Foursday gbrain project catalog is invalid");
   }
   const existing = normalizeWorkScopeRegistry(existingRegistry);
+  const declaredScopeById = new Map((existingRegistry.schemaVersion === 2
+    ? existingRegistry.scopes
+    : existing.scopes
+  ).map((scope) => [scope.id, {
+    id: scope.id,
+    name: scope.name,
+    aliases: [...(scope.aliases ?? [])],
+    parentId: scope.parentId ?? null,
+    workspaceId: scope.workspaceId ?? null,
+    gbrainSlugs: [...(scope.gbrainSlugs ?? [])],
+    dingtalkSources: (scope.dingtalkSources ?? []).map((source) => ({ ...source })),
+  }]));
   const canonical = await canonicalCatalogProjects(catalog, { userHome });
   const existingWorkspaceByRoot = new Map(existing.workspaces.map((workspace) => [workspace.root, workspace]));
   const existingScopeByWorkspace = new Map();
@@ -243,8 +255,11 @@ export async function discoverFoursdayProjectRegistry({
   const discovered = [];
   for (const project of canonical.included) {
     const preservedWorkspace = existingWorkspaceByRoot.get(project.root);
-    const preservedScope = preservedWorkspace
+    const effectivePreservedScope = preservedWorkspace
       ? existingScopeByWorkspace.get(preservedWorkspace.id)
+      : null;
+    const preservedScope = effectivePreservedScope
+      ? declaredScopeById.get(effectivePreservedScope.id) ?? effectivePreservedScope
       : null;
     const workspaceId = preservedWorkspace?.id ?? uniqueIdentifier(
       project.name,
@@ -303,14 +318,15 @@ export async function discoverFoursdayProjectRegistry({
   const discoveredScopeIds = new Set(scopes.map((scope) => scope.id));
   for (const scope of existing.scopes) {
     if (discoveredScopeIds.has(scope.id)) continue;
+    const declared = declaredScopeById.get(scope.id) ?? scope;
     scopes.push({
-      id: scope.id,
-      name: scope.name,
-      aliases: scope.aliases,
-      parentId: scope.parentId,
-      workspaceId: scope.workspaceId,
-      gbrainSlugs: scope.gbrainSlugs,
-      dingtalkSources: scope.dingtalkSources,
+      id: declared.id,
+      name: declared.name,
+      aliases: declared.aliases,
+      parentId: declared.parentId,
+      workspaceId: declared.workspaceId,
+      gbrainSlugs: declared.gbrainSlugs,
+      dingtalkSources: declared.dingtalkSources,
     });
   }
   const registry = { schemaVersion: 2, workspaces, scopes };

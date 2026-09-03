@@ -18,7 +18,10 @@ test("Codex project sync adds saved projects, preserves authority and is preview
   const original = {
     schemaVersion: 2,
     workspaces: [{ id: "existing", root: oldRoot, gitRemote: null, runInstructions: "Keep me." }],
-    scopes: [{ id: "existing", name: "Existing", aliases: ["old"], parentId: null, workspaceId: "existing", gbrainSlugs: ["projects/existing"], dingtalkSources: [] }],
+    scopes: [
+      { id: "existing", name: "Existing", aliases: ["old"], parentId: null, workspaceId: "existing", gbrainSlugs: ["projects/existing"], dingtalkSources: [{ id: "index", name: "Index", kind: "doc", nodeId: "EXISTINGPROJECTDOCNODE123456789" }] },
+      { id: "existing_child", name: "Existing Child", aliases: [], parentId: "existing", workspaceId: null, gbrainSlugs: ["projects/existing-child"], dingtalkSources: [] },
+    ],
   };
   await writeFile(registryPath, `${JSON.stringify(original)}\n`, { mode: 0o600 });
   await writeFile(codexStatePath, `${JSON.stringify({
@@ -34,13 +37,16 @@ test("Codex project sync adds saved projects, preserves authority and is preview
   const preview = await syncFoursdayCodexProjects(options);
   assert.equal(preview.changed, true);
   assert.equal(preview.addedProjectCount, 1);
-  assert.equal(preview.fixedMemoryPageCount, 2);
+  assert.equal(preview.fixedMemoryPageCount, 3);
   assert.equal((await readFile(registryPath, "utf8")).trim(), JSON.stringify(original));
   const applied = await syncFoursdayCodexProjects({ ...options, apply: true });
   assert.equal(applied.readbackVerified, true);
   assert.equal((await stat(registryPath)).mode & 0o077, 0);
   const value = JSON.parse(await readFile(registryPath, "utf8"));
   assert.equal(value.scopes.some((scope) => scope.name === "Existing" && scope.aliases.includes("old")), true);
+  const child = value.scopes.find((scope) => scope.id === "existing_child");
+  assert.deepEqual(child.gbrainSlugs, ["projects/existing-child"]);
+  assert.deepEqual(child.dingtalkSources, []);
   const training = value.scopes.find((scope) => scope.name === "招陪考2.2");
   assert.equal(training.aliases.includes("51Talk AI 招培考 2.2 正课训练 Demo"), false);
   assert.deepEqual(training.gbrainSlugs, ["projects/training"]);

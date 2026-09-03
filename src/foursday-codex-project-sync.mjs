@@ -19,7 +19,8 @@ async function readPrivateRegistry(path) {
       !metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.size > 2 * 1024 * 1024 ||
       (typeof process.getuid === "function" && metadata.uid !== process.getuid())
     ) throw new Error("project_registry_sync_unavailable");
-    return normalizeWorkScopeRegistry(JSON.parse(await handle.readFile("utf8")));
+    const raw = JSON.parse(await handle.readFile("utf8"));
+    return { raw, normalized: normalizeWorkScopeRegistry(raw) };
   } finally { await handle.close(); }
 }
 
@@ -40,7 +41,11 @@ async function writePrivateJson(path, value) {
   } finally { await rm(temporary, { force: true }).catch(() => {}); }
 }
 
-function externalRegistry(normalized) {
+function externalRegistry(snapshot) {
+  if (snapshot?.raw?.schemaVersion === 2) {
+    return JSON.parse(JSON.stringify(snapshot.raw));
+  }
+  const normalized = snapshot?.normalized ?? snapshot;
   return {
     schemaVersion: 2,
     workspaces: normalized.workspaces.map((workspace) => ({ ...workspace })),
